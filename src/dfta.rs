@@ -174,3 +174,20 @@ where
     dfta
   }
 }
+
+impl From<&egraph_serialize::EGraph> for Dfta<String, egraph_serialize::ClassId>
+{
+  fn from(egraph: &egraph_serialize::EGraph) -> Self {
+    let mut dfta = Dfta::new();
+    for (_, node) in egraph.nodes.iter() {
+      dfta.add_rule(
+        node.op.clone(), 
+        node.children.iter().map(|id| {
+          egraph.nodes.get(id).unwrap().eclass.clone()
+        }), 
+        node.eclass.clone(),
+      );
+    }
+    dfta
+  }
+}
