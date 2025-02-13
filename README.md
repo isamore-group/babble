@@ -24,7 +24,7 @@ $ make
 Learning `filter`:
 
 ``` shellsession
-$ cargo run --release --package=babble-experiments --bin=filter-list -- examples/filter-list.bab
+$ cargo run --release --package=babble-experiments --bin=list -- examples/filter-list.bab
 ```
 
 Learning nested functions:

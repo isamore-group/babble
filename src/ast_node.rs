@@ -280,7 +280,6 @@ where
   fn try_for_each<E, F>(&self, f: F) -> Result<(), E>
   where
     F: FnMut(Id) -> Result<(), E>,
-    E: Clone,
   {
     self.iter().copied().try_for_each(f)
   }
@@ -296,7 +295,6 @@ where
   fn fold<F, T>(&self, init: T, f: F) -> T
   where
     F: FnMut(T, Id) -> T,
-    T: Clone,
   {
     self.iter().copied().fold(init, f)
   }

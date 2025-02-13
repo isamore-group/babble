@@ -11,17 +11,17 @@ repository = "https://github.com/dcao/babble"
 license = "MIT"
 keywords = ["e-graphs", "program-synthesis"]
 categories = ["command-line-utilities"]
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
-egg = { git = "https://github.com/egraphs-good/egg.git", features = ["serde-1"] }
-itertools = "0.10"
+egg = { version = "0.10.0", features = ["serde-1"]}
+itertools = "0.14.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-env_logger = "0.9"
+env_logger = "0.11"
 log = "0.4"
 anyhow = "1"
-thiserror = "1"
+thiserror = "2.0.11"
 babble-macros = { path = "babble-macros" }
 nom = "7"
 
