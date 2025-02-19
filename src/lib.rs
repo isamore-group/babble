@@ -15,15 +15,15 @@
 #![allow(clippy::non_ascii_literal)]
 #![allow(clippy::non_canonical_partial_ord_impl)]
 
-mod ast_node;
+pub mod ast_node;
 mod co_occurrence;
 mod dfta;
 pub mod extract;
-mod learn;
+pub mod learn;
 pub mod rewrites;
 pub mod sexp;
 pub mod simple_lang;
-mod teachable;
+pub mod teachable;
 pub mod util;
 
 pub use ast_node::{
