@@ -44,7 +44,7 @@ where
   ///
   /// This function returns an error if the underlying writer fails, or if the
   /// expression is malformed
-  fn print_naked<W: Write + Clone + Default + ToString>(
+  fn print_naked<W: Write + Clone + Default + ToString + Clone + Default + ToString>(
     expr: &Expr<Self>,
     printer: &mut Printer<W>,
   ) -> fmt::Result;
@@ -52,7 +52,7 @@ where
 
 /// Internal state of the pretty-printer
 #[derive(Debug, Clone)]
-pub struct Printer<W: Write + Clone + Default + ToString> {
+pub struct Printer<W: Write + Clone + Default + ToString + Clone + Default + ToString> {
   /// Buffer where result is accumulated
   pub writer: W,
   /// Precedence level of the context
@@ -65,7 +65,7 @@ pub struct Printer<W: Write + Clone + Default + ToString> {
   backup_writer: W,
 }
 
-impl<W: Write + Clone + Default + ToString> Printer<W> {
+impl<W: Write + Clone + Default + ToString + Clone + Default + ToString> Printer<W> {
   /// Create a fresh printer for the top-level expression
   fn new(writer: W) -> Self {
     Self {

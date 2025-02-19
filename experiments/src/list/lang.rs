@@ -170,7 +170,7 @@ impl Printable for ListOp {
     }
   }
 
-  fn print_naked<W: Write>(
+  fn print_naked<W: Write + Clone + Default + ToString>(
     expr: &Expr<Self>,
     printer: &mut Printer<W>,
   ) -> fmt::Result {
