@@ -112,7 +112,7 @@ fn main() {
       ]
     };
 
-    let exps = Experiments::gen(
+    let exps = Experiments::generate(
       prog,
       &[],
       &dsrs,

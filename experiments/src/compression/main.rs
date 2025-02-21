@@ -118,7 +118,7 @@ fn main() {
       ]
     };
 
-    let experiments = Experiments::gen(
+    let experiments = Experiments::generate(
       exprs,
       &[],
       &dsrs,

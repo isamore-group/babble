@@ -219,7 +219,7 @@ where
   ///
   /// This function panics if `beams` or `lpss` is empty
   #[allow(clippy::too_many_arguments)]
-  pub fn gen<Extra>(
+  pub fn generate<Extra>(
     exprs: Vec<Expr<Op>>,
     test_exprs: &[Expr<Op>],
     dsrs: &[Rewrite<AstNode<Op>, PartialLibCost>],

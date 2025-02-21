@@ -248,7 +248,7 @@ fn main() {
       vec![]
     };
 
-    let exps = Experiments::gen(
+    let exps = Experiments::generate(
       prog,
       &test_prog.unwrap_or_default(),
       &dsrs,
