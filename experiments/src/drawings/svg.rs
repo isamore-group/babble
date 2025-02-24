@@ -11,7 +11,7 @@ impl Picture {
   /// # Errors
   ///
   /// Returns `Err` if writing to `writer` produces an IO error.
-  pub(crate) fn write_svg<W: Write + Clone + Default + ToString>(&self, writer: W) -> io::Result<()> {
+  pub(crate) fn write_svg<W: Write>(&self, writer: W) -> io::Result<()> {
     let mut xml_writer =
       EmitterConfig::new().perform_indent(true).create_writer(writer);
     self.fmt_svg(&mut xml_writer).map_err(|e| match e {
@@ -20,7 +20,7 @@ impl Picture {
     })
   }
 
-  fn fmt_svg<W: Write + Clone + Default + ToString>(
+  fn fmt_svg<W: Write>(
     &self,
     xml_writer: &mut EventWriter<W>,
   ) -> writer::Result<()> {
@@ -65,7 +65,7 @@ impl Picture {
 }
 
 impl Shape {
-  fn fmt_svg<W: Write + Clone + Default + ToString>(
+  fn fmt_svg<W: Write>(
     &self,
     xml_writer: &mut EventWriter<W>,
   ) -> xml::writer::Result<()> {
