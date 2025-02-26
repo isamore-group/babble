@@ -74,11 +74,9 @@ where
     })
     .filter(|line| !line.is_empty())
   {
-    let (name, rewrite) =
-      line.split_once(':').ok_or(anyhow!("missing colon"))?;
     let (lhs, rhs) =
-      rewrite.split_once("=>").ok_or(anyhow!("missing arrow"))?;
-    let name = name.trim();
+      line.split_once("==>").ok_or(anyhow!("missing arrow"))?;
+    let name = line;
     let lhs = lhs.trim();
     let rhs = rhs.trim();
     let lhs: Pattern<L> = lhs.parse()?;
