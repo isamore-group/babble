@@ -8,6 +8,7 @@ use std::{
   error::Error,
   fmt::{self, Debug, Display, Formatter},
   hash::Hash,
+  rc::Rc,
 };
 
 /// A partial expression. This is a generalization of an abstract syntax tree
@@ -123,7 +124,8 @@ impl<Op, T> PartialExpr<Op, T> {
     }
   }
 
-  /// Returns the number of nodes in the partial expression, not including holes.
+  /// Returns the number of nodes in the partial expression, not including
+  /// holes.
   #[must_use]
   pub fn num_nodes(&self) -> usize {
     match self {
@@ -225,7 +227,10 @@ where
             build(pattern, arg);
             arg_ids.push(Id::from(pattern.len() - 1));
           }
-          pattern.push(ENodeOrVar::ENode(AstNode { operation, args: arg_ids }));
+          pattern.push(ENodeOrVar::ENode(AstNode {
+            operation,
+            args: arg_ids,
+          }));
         }
         PartialExpr::Hole(contents) => pattern.push(ENodeOrVar::Var(contents)),
       }
@@ -280,10 +285,13 @@ impl<Op, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
       PartialExpr::Node(AstNode { operation, args }) => {
         let mut new_args = Vec::with_capacity(args.len());
         for arg in args {
-          let new_child = arg.try_into()?;
-          new_args.push(new_child);
+          let expr: Expr<Op> = arg.try_into()?;
+          new_args.push(Rc::new(expr));
         }
-        let node = AstNode { operation, args: new_args };
+        let node = AstNode {
+          operation,
+          args: new_args,
+        };
         Ok(node.into())
       }
       PartialExpr::Hole(hole) => Err(IncompleteExprError { hole }),
@@ -308,8 +316,8 @@ impl<Op, T> From<AstNode<Op, Self>> for PartialExpr<Op, T> {
   }
 }
 
-impl<Op, T> From<Expr<Op>> for PartialExpr<Op, T> {
+impl<Op: Clone, T> From<Expr<Op>> for PartialExpr<Op, T> {
   fn from(expr: Expr<Op>) -> Self {
-    Self::Node(AstNode::from(expr).map(Self::from))
+    Self::Node(AstNode::from(expr).map(|x| x.as_ref().clone().into()))
   }
 }

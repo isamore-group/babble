@@ -91,9 +91,7 @@ impl<'a> TryFrom<RawStr<'a>> for DcExpr {
 }
 
 /// An AST node in the Dream&shy;Coder language.
-#[derive(
-  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DreamCoderOp {
   /// A variable.
   Var(usize),
@@ -333,9 +331,9 @@ impl FromStr for DcExpr {
   type Err = ParseExprError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    parse::parse(s)
-      .map(DcExpr)
-      .map_err(|e| ParseExprError { message: convert_error(s, e) })
+    parse::parse(s).map(DcExpr).map_err(|e| ParseExprError {
+      message: convert_error(s, e),
+    })
   }
 }
 
@@ -347,17 +345,22 @@ impl DiscriminantEq for DreamCoderOp {
 
 #[cfg(test)]
 mod tests {
+  use std::rc::Rc;
+
   use crate::AstNode;
 
   use super::{DcExpr, DreamCoderOp};
 
   impl DcExpr {
     fn lambda(body: Self) -> Self {
-      Self(AstNode::new(DreamCoderOp::Lambda, [body.0]).into())
+      Self(AstNode::new(DreamCoderOp::Lambda, [Rc::new(body.0)]).into())
     }
 
     fn app(fun: Self, arg: Self) -> Self {
-      Self(AstNode::new(DreamCoderOp::App, [fun.0, arg.0]).into())
+      Self(
+        AstNode::new(DreamCoderOp::App, [Rc::new(fun.0), Rc::new(arg.0)])
+          .into(),
+      )
     }
 
     fn symbol(name: &str) -> Self {

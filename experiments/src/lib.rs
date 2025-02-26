@@ -23,12 +23,13 @@ pub mod dreamcoder;
 mod eqsat_experiment;
 
 #[derive(
-  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize,
 )]
-pub struct Summary<Op> {
-  pub initial_expr_groups: Vec<Vec<Expr<Op>>>,
+// pub struct Summary<Op> {
+pub struct Summary {
+  // pub initial_expr_groups: Vec<Vec<Expr<Op>>>,
   pub initial_cost: usize,
-  pub final_expr: Expr<Op>,
+  // pub final_expr: Expr<Op>,
   pub final_cost: usize,
   pub num_libs: usize,
   pub run_time: Duration,
@@ -70,8 +71,9 @@ where
   /// The list of domain-specific rewrites used in this experiment.
   fn dsrs(&self) -> &[Rewrite<AstNode<Op>, PartialLibCost>];
 
-  // Ideally exprs would have type `I: IntoIterator<Item = Expr<Op>>` but that's not object-safe.
-  // This function also gets a writer method to write out intermediate results to the csv.
+  // Ideally exprs would have type `I: IntoIterator<Item = Expr<Op>>` but that's
+  // not object-safe. This function also gets a writer method to write out
+  // intermediate results to the csv.
   fn run(
     &self,
     exprs: Vec<Expr<Op>>,
@@ -80,7 +82,8 @@ where
 
   fn run_multi(&self, expr_groups: Vec<Vec<Expr<Op>>>) -> ExperimentResult<Op>;
 
-  fn run_multi_summary(&self, expr_groups: Vec<Vec<Expr<Op>>>) -> Summary<Op> {
+  fn run_multi_summary(&self, expr_groups: Vec<Vec<Expr<Op>>>) -> Summary /*<Op>*/
+  {
     let start_time = Instant::now();
 
     let initial_expr_groups = expr_groups.clone();
@@ -95,9 +98,9 @@ where
     let final_cost = final_expr.len();
 
     Summary {
-      initial_expr_groups,
+      // initial_expr_groups,
       initial_cost,
-      final_expr,
+      // final_expr,
       final_cost,
       num_libs: res.num_libs,
       run_time: start_time.elapsed(),
@@ -128,7 +131,13 @@ where
 
   /// Run experiment and write results to CSV.
   fn run_csv(&self, exprs: Vec<Expr<Op>>, writer: &mut CsvWriter) {
-    println!("{}", ExperimentTitle { experiment: self, phantom: PhantomData });
+    println!(
+      "{}",
+      ExperimentTitle {
+        experiment: self,
+        phantom: PhantomData
+      }
+    );
 
     let start_time = Instant::now();
 
@@ -180,7 +189,10 @@ impl<Op: Debug> Debug for Experiments<Op> {
 
 impl<Op> Default for Experiments<Op> {
   fn default() -> Self {
-    Self { experiments: vec![], exprs: vec![] }
+    Self {
+      experiments: vec![],
+      exprs: vec![],
+    }
   }
 }
 
@@ -268,7 +280,10 @@ where
       }
     }
 
-    Self { exprs, experiments: res }
+    Self {
+      exprs,
+      experiments: res,
+    }
   }
 
   /// Runs all experiments in this set
@@ -287,10 +302,11 @@ where
   }
 }
 
-/// Defines some helper functions for finagling with the results of a library learning run.
-/// These runs return a single `RecExpr`, but when running library learning multiple times in
-/// a row, we need to get the defined libs and individual expressions out from this single `RecExpr`;
-/// this is what the functions in this module are for.
+/// Defines some helper functions for finagling with the results of a library
+/// learning run. These runs return a single `RecExpr`, but when running library
+/// learning multiple times in a row, we need to get the defined libs and
+/// individual expressions out from this single `RecExpr`; this is what the
+/// functions in this module are for.
 pub mod plumbing {
   use std::{collections::HashMap, hash::BuildHasher};
 
@@ -301,7 +317,8 @@ pub mod plumbing {
   /// The result of running library learning after one pass.
   type LLRes<'a, Op> = &'a [AstNode<Op>];
 
-  /// At the end of all rounds, combine libs hashmap, and list of exprs back into one big recexpr
+  /// At the end of all rounds, combine libs hashmap, and list of exprs back
+  /// into one big recexpr
   ///
   /// # Panics
   ///
@@ -336,9 +353,9 @@ pub mod plumbing {
     res.into()
   }
 
-  /// Gets all of the libs and their defns out of the result of a lib learning pass.
-  /// We take into account the current number of libs defined so that we don't overwrite existing
-  /// libs from previous runs.
+  /// Gets all of the libs and their defns out of the result of a lib learning
+  /// pass. We take into account the current number of libs defined so that we
+  /// don't overwrite existing libs from previous runs.
   pub fn libs<Op>(llr: LLRes<'_, Op>) -> HashMap<LibId, Vec<AstNode<Op>>>
   where
     Op: Teachable + Clone + std::hash::Hash + Ord + std::fmt::Debug,
@@ -401,7 +418,8 @@ pub mod plumbing {
     }
   }
 
-  /// Returns a list of rewritten expressions from the result of a lib learning pass.
+  /// Returns a list of rewritten expressions from the result of a lib learning
+  /// pass.
   pub fn exprs<Op>(llr: LLRes<'_, Op>) -> Vec<Expr<Op>>
   where
     Op: Teachable + Clone + std::hash::Hash + Ord + std::fmt::Debug,
@@ -500,7 +518,11 @@ where
   Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
 {
   pub fn new(rounds: usize, experiment: T) -> Self {
-    Self { rounds, experiment, phantom: PhantomData }
+    Self {
+      rounds,
+      experiment,
+      phantom: PhantomData,
+    }
   }
 }
 
@@ -577,7 +599,11 @@ where
     .unwrap();
 
     // Combine back into one big recexpr at the end
-    ExperimentResult { final_expr, num_libs: ll, rewrites: current_rewrites }
+    ExperimentResult {
+      final_expr,
+      num_libs: ll,
+      rewrites: current_rewrites,
+    }
   }
 
   fn run_multi(&self, expr_groups: Vec<Vec<Expr<Op>>>) -> ExperimentResult<Op> {
@@ -736,7 +762,12 @@ where
     + 'static,
 {
   pub fn new(experiment: T, test_set: Vec<Expr<Op>>, rounds: usize) -> Self {
-    Self { experiment, test_set, rounds, phantom: PhantomData }
+    Self {
+      experiment,
+      test_set,
+      rounds,
+      phantom: PhantomData,
+    }
   }
 
   /// Create an egraph out of `exprs` rewritten with my DSRs.
@@ -844,7 +875,13 @@ where
 
   /// Run experiment and write results to CSV.
   fn run_csv(&self, exprs: Vec<Expr<Op>>, writer: &mut CsvWriter) {
-    println!("{}", ExperimentTitle { experiment: self, phantom: PhantomData });
+    println!(
+      "{}",
+      ExperimentTitle {
+        experiment: self,
+        phantom: PhantomData
+      }
+    );
 
     let start_time = Instant::now();
 

@@ -8,7 +8,7 @@
   anonymous_parameters,
   elided_lifetimes_in_paths,
   missing_copy_implementations,
-  trivial_casts,
+  // trivial_casts,
   unreachable_pub,
   unused_lifetimes
 )]

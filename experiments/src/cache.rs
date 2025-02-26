@@ -55,7 +55,11 @@ where
   pub fn from_dir(path: PathBuf) -> anyhow::Result<Self> {
     fs::create_dir_all(&path)?;
 
-    let mut cache = Self { path, index: BTreeMap::new(), phantom: PhantomData };
+    let mut cache = Self {
+      path,
+      index: BTreeMap::new(),
+      phantom: PhantomData,
+    };
 
     let index_file = cache.index_file();
     if index_file.exists() {
@@ -99,7 +103,7 @@ where
   pub fn insert<S: Into<String>>(
     &mut self,
     experiment: S,
-    result: &Summary<Op>,
+    result: &Summary,
   ) -> anyhow::Result<()> {
     let experiment = experiment.into();
     let experiment_file =
@@ -116,7 +120,7 @@ where
   /// # Errors
   ///
   /// Errors if the cache is malformed.
-  pub fn get(&self, experiment: &str) -> anyhow::Result<Option<Summary<Op>>> {
+  pub fn get(&self, experiment: &str) -> anyhow::Result<Option<Summary>> {
     if let Some(file) = self.index.get(experiment) {
       let experiment_str = fs::read_to_string(file)?;
       Ok(Some(ron::from_str(&experiment_str)?))
@@ -132,11 +136,11 @@ where
   /// # Errors
   ///
   /// Errors if the cache is malformed.
-  pub fn get_or_insert_with<F: FnOnce() -> Summary<Op>>(
+  pub fn get_or_insert_with<F: FnOnce() -> Summary>(
     &mut self,
     experiment: &str,
     default: F,
-  ) -> anyhow::Result<Summary<Op>> {
+  ) -> anyhow::Result<Summary> {
     if let Some(summary) = self.get(experiment)? {
       Ok(summary)
     } else {

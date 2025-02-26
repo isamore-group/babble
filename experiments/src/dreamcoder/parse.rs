@@ -1,7 +1,7 @@
 use super::expr::DreamCoderOp;
 use babble::{AstNode, Expr};
 use egg::Symbol;
-use std::str::FromStr;
+use std::{rc::Rc, str::FromStr};
 
 use nom::{
   branch::alt,
@@ -34,7 +34,11 @@ fn parenthesized<'a, O, P>(
 where
   P: Parser<&'a str, O, VerboseError<&'a str>>,
 {
-  delimited(char('('), delimited(multispace0, parser, multispace0), char(')'))
+  delimited(
+    char('('),
+    delimited(multispace0, parser, multispace0),
+    char(')'),
+  )
 }
 
 fn var(s: &str) -> ParseResult<'_, Expr<DreamCoderOp>> {
@@ -70,7 +74,7 @@ fn lambda(s: &str) -> ParseResult<'_, Expr<DreamCoderOp>> {
     "lambda",
     map(
       parenthesized(preceded(tag("lambda"), preceded(multispace1, cut(expr)))),
-      |body| AstNode::new(DreamCoderOp::Lambda, [body]).into(),
+      |body| AstNode::new(DreamCoderOp::Lambda, [Rc::new(body)]).into(),
     ),
   )(s)
 }
@@ -82,7 +86,9 @@ fn app(s: &str) -> ParseResult<'_, Expr<DreamCoderOp>> {
       fold_many1(
         preceded(multispace1, expr),
         move || fun.clone(),
-        |fun, arg| AstNode::new(DreamCoderOp::App, [fun, arg]).into(),
+        |fun, arg| {
+          AstNode::new(DreamCoderOp::App, [Rc::new(fun), Rc::new(arg)]).into()
+        },
       )
     })),
   )(s)
