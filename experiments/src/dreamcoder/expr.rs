@@ -345,7 +345,7 @@ impl DiscriminantEq for DreamCoderOp {
 
 #[cfg(test)]
 mod tests {
-  use std::rc::Rc;
+  use std::{rc::Rc, sync::Arc};
 
   use crate::AstNode;
 
@@ -353,12 +353,12 @@ mod tests {
 
   impl DcExpr {
     fn lambda(body: Self) -> Self {
-      Self(AstNode::new(DreamCoderOp::Lambda, [Rc::new(body.0)]).into())
+      Self(AstNode::new(DreamCoderOp::Lambda, [Arc::new(body.0)]).into())
     }
 
     fn app(fun: Self, arg: Self) -> Self {
       Self(
-        AstNode::new(DreamCoderOp::App, [Rc::new(fun.0), Rc::new(arg.0)])
+        AstNode::new(DreamCoderOp::App, [Arc::new(fun.0), Arc::new(arg.0)])
           .into(),
       )
     }

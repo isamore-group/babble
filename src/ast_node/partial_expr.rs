@@ -8,7 +8,7 @@ use std::{
   error::Error,
   fmt::{self, Debug, Display, Formatter},
   hash::Hash,
-  rc::Rc,
+  sync::Arc,
 };
 
 /// A partial expression. This is a generalization of an abstract syntax tree
@@ -286,7 +286,7 @@ impl<Op, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
         let mut new_args = Vec::with_capacity(args.len());
         for arg in args {
           let expr: Expr<Op> = arg.try_into()?;
-          new_args.push(Rc::new(expr));
+          new_args.push(Arc::new(expr));
         }
         let node = AstNode {
           operation,

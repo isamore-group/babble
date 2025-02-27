@@ -1,7 +1,7 @@
 use super::expr::DreamCoderOp;
 use babble::{AstNode, Expr};
 use egg::Symbol;
-use std::{rc::Rc, str::FromStr};
+use std::{str::FromStr, sync::Arc};
 
 use nom::{
   branch::alt,
@@ -74,7 +74,7 @@ fn lambda(s: &str) -> ParseResult<'_, Expr<DreamCoderOp>> {
     "lambda",
     map(
       parenthesized(preceded(tag("lambda"), preceded(multispace1, cut(expr)))),
-      |body| AstNode::new(DreamCoderOp::Lambda, [Rc::new(body)]).into(),
+      |body| AstNode::new(DreamCoderOp::Lambda, [Arc::new(body)]).into(),
     ),
   )(s)
 }
@@ -87,7 +87,7 @@ fn app(s: &str) -> ParseResult<'_, Expr<DreamCoderOp>> {
         preceded(multispace1, expr),
         move || fun.clone(),
         |fun, arg| {
-          AstNode::new(DreamCoderOp::App, [Rc::new(fun), Rc::new(arg)]).into()
+          AstNode::new(DreamCoderOp::App, [Arc::new(fun), Arc::new(arg)]).into()
         },
       )
     })),

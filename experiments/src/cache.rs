@@ -1,11 +1,11 @@
 //! Provide a mechanism to cache the results of experiments.
 
 use super::Summary;
-use serde::{Deserialize, Serialize};
+// use serde::{Deserialize, Serialize};
 use std::{
   collections::BTreeMap,
   fs,
-  marker::PhantomData,
+  // marker::PhantomData,
   path::{Path, PathBuf},
 };
 use time::{
@@ -20,17 +20,17 @@ const DATE_FORMAT: Iso8601<ISO8601_CONFIG> = Iso8601;
 
 /// A cache of experiment results.
 #[derive(Clone, Debug)]
-pub struct Cache<Op> {
+pub struct Cache {
   path: PathBuf,
   index: BTreeMap<String, PathBuf>,
-  phantom: PhantomData<Op>,
+  // phantom: PhantomData,
 }
 
 // This lint gives false positives for higher-rank trait bounds.
 #[allow(single_use_lifetimes)]
-impl<Op> Cache<Op>
-where
-  Op: Serialize + for<'b> Deserialize<'b>,
+impl Cache
+//where
+// Op: Serialize + for<'b> Deserialize<'b>,
 {
   /// Load an experiment cache from the given directory. If the directory does
   /// not already contain a cache, create a new empty cache in that directory.
@@ -58,7 +58,7 @@ where
     let mut cache = Self {
       path,
       index: BTreeMap::new(),
-      phantom: PhantomData,
+      // phantom: PhantomData,
     };
 
     let index_file = cache.index_file();

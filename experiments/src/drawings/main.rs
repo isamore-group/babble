@@ -33,7 +33,8 @@ mod svg;
 #[derive(Parser)]
 #[clap(version, author, about)]
 struct Opts {
-  /// The file with training programs. If no file is specified, reads from stdin.
+  /// The file with training programs. If no file is specified, reads from
+  /// stdin.
   #[clap(parse(from_os_str))]
   file: Option<PathBuf>,
 
@@ -41,7 +42,8 @@ struct Opts {
   #[clap(long, default_value = "harness/data_gen/res_drawing.csv")]
   output: String,
 
-  /// The file with test programs. If no file is specified, just compresses training data.
+  /// The file with test programs. If no file is specified, just compresses
+  /// training data.
   #[clap(parse(from_os_str))]
   test_file: Option<PathBuf>,
 
@@ -122,7 +124,7 @@ fn walk(
     loop {
       // The first argument will be another application, a LibVar,
       // or something else.
-      match cur.as_ref().as_binding_expr() {
+      match cur.as_ref().0.as_binding_expr() {
         Some(BindingExpr::Apply(ie, arg)) => {
           // Recurse over body and continue
           q.push(arg);
@@ -184,7 +186,8 @@ fn main() {
     .0
     .into_iter()
     .map(|x| {
-      x.try_into().expect("Training input is not a valid list of expressions")
+      x.try_into()
+        .expect("Training input is not a valid list of expressions")
     }) // Vec<Sexp> -> Vec<Expr>
     .collect();
 
@@ -206,7 +209,8 @@ fn main() {
       .0
       .into_iter()
       .map(|x| {
-        x.try_into().expect("Test input is not a valid list of expressions")
+        x.try_into()
+          .expect("Test input is not a valid list of expressions")
       })
       .collect()
   });
@@ -272,8 +276,9 @@ fn print_svg(selection: &[usize], mut prog: Vec<Expr<Drawing>>) {
 
   let expr: Expr<_> = combine_exprs(prog).into();
   let value = eval::eval(&expr).expect("Failed to evaluate expression");
-  let picture =
-    value.into_picture().expect("Result of evaluation is not a picture");
+  let picture = value
+    .into_picture()
+    .expect("Result of evaluation is not a picture");
   picture.write_svg(io::stdout()).expect("Error writing SVG");
 }
 
@@ -320,7 +325,8 @@ fn eval_lib(
 
   let value = eval::eval(&fin)
     .unwrap_or_else(|_| panic!("{}", "lib {l} doesn't produce pictures"));
-  let picture =
-    value.into_picture().expect("Result of evaluation is not a picture");
+  let picture = value
+    .into_picture()
+    .expect("Result of evaluation is not a picture");
   picture.write_svg(io::stdout()).expect("Error writing SVG");
 }

@@ -33,7 +33,8 @@ use rayon::prelude::*;
 #[derive(Parser)]
 #[clap(version, author, about)]
 struct Opts {
-  /// The input directory. If none is specified, defaults to `"harness/data/dreamcoder-benchmarks/benches"`.
+  /// The input directory. If none is specified, defaults to
+  /// `"harness/data/dreamcoder-benchmarks/benches"`.
   #[clap(parse(from_os_str))]
   file: Option<PathBuf>,
 
@@ -87,8 +88,8 @@ struct Compression {
   run_time: f32,
 }
 
-impl<'a, Op> From<&'a Summary<Op>> for Compression {
-  fn from(summary: &'a Summary<Op>) -> Self {
+impl<'a> From<&'a Summary> for Compression {
+  fn from(summary: &'a Summary) -> Self {
     Self {
       initial_size: summary.initial_cost,
       final_size: summary.final_cost,
@@ -97,8 +98,8 @@ impl<'a, Op> From<&'a Summary<Op>> for Compression {
   }
 }
 
-impl<'a, Op> From<&'a Option<Summary<Op>>> for Compression {
-  fn from(summary: &'a Option<Summary<Op>>) -> Self {
+impl<'a> From<&'a Option<Summary>> for Compression {
+  fn from(summary: &'a Option<Summary>) -> Self {
     Self {
       initial_size: summary.as_ref().map_or_else(|| 1, |x| x.initial_cost),
       final_size: summary.as_ref().map_or_else(|| 1, |x| x.final_cost),
@@ -114,14 +115,17 @@ struct BenchResults {
   domain: String,
   benchmark: String,
   file: String,
-  summary: Summary<DreamCoderOp>,
+  summary: Summary,
 }
 
 fn main() -> anyhow::Result<()> {
   env_logger::init();
   let opts: Opts = Opts::parse();
 
-  let cache = opts.cache.clone().map_or_else(Cache::new, Cache::from_dir)?;
+  let cache = opts
+    .cache
+    .clone()
+    .map_or_else(Cache::new, Cache::from_dir)?;
 
   println!("using cache: {}", cache.path().to_str().unwrap());
 
@@ -145,10 +149,10 @@ fn main() -> anyhow::Result<()> {
   for benchmark_dir in &benchmark_dirs {
     let dir_name = benchmark_dir.file_name().unwrap().to_str().unwrap();
     let (domain, benchmark_name) = dir_name.split_once('_').unwrap();
-    domains
-      .entry(domain)
-      .or_default()
-      .push(Benchmark { name: benchmark_name, path: benchmark_dir.as_path() });
+    domains.entry(domain).or_default().push(Benchmark {
+      name: benchmark_name,
+      path: benchmark_dir.as_path(),
+    });
   }
 
   println!("domains:");
@@ -171,14 +175,16 @@ fn run_domain(
   domain: &str,
   opts: &Opts,
   benchmarks: &[Benchmark<'_>],
-  _cache: &Mutex<Cache<DreamCoderOp>>,
+  _cache: &Mutex<Cache>,
 ) {
   let results = Mutex::new(Vec::new());
 
   println!("domain: {domain}");
 
   let dsr_file = PathBuf::from(DSR_PATH).join(format!("{domain}.rewrites"));
-  let rewrites = rewrites::try_from_file(dsr_file).unwrap().unwrap_or_default();
+  let rewrites = rewrites::try_from_file(dsr_file)
+    .unwrap()
+    .unwrap_or_default();
 
   println!("  found {} domain-specific rewrites", rewrites.len());
 
@@ -208,8 +214,10 @@ fn run_domain(
         .iter()
         .cloned()
         .map(|frontier| -> Vec<Expr<DreamCoderOp>> {
-          let programs =
-            frontier.programs.into_iter().map(|program| program.program.into());
+          let programs = frontier
+            .programs
+            .into_iter()
+            .map(|program| program.program.into());
 
           if opts.use_all > 0 {
             programs.collect()
@@ -288,7 +296,14 @@ fn plot_raw_data(results: &[BenchResults], opts: &Opts) -> anyhow::Result<()> {
     domain,
     benchmark,
     file,
-    summary: Summary { initial_cost, final_cost, num_libs, run_time, .. },
+    summary:
+      Summary {
+        initial_cost,
+        final_cost,
+        num_libs,
+        run_time,
+        ..
+      },
   } in results
   {
     csv_writer.serialize((
