@@ -2,8 +2,11 @@ pub use self::beam_experiment::BeamExperiment;
 pub use self::eqsat_experiment::EqsatExperiment;
 
 use babble::{
+  DiscriminantEq,
+  ast_node::{Arity, AstNode, Expr, Pretty, Printable},
   extract::{apply_libs, beam::PartialLibCost},
-  util, Arity, AstNode, DiscriminantEq, Expr, Pretty, Printable, Teachable,
+  teachable::Teachable,
+  util,
 };
 use egg::{EGraph, Id, RecExpr, Rewrite, Runner};
 use itertools::Itertools;
@@ -19,13 +22,11 @@ use std::{
 
 mod beam_experiment;
 pub mod cache;
-pub mod dreamcoder;
 mod eqsat_experiment;
 
 #[derive(
-  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize,
+  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
-// pub struct Summary<Op> {
 pub struct Summary {
   // pub initial_expr_groups: Vec<Vec<Expr<Op>>>,
   pub initial_cost: usize,
@@ -82,8 +83,7 @@ where
 
   fn run_multi(&self, expr_groups: Vec<Vec<Expr<Op>>>) -> ExperimentResult<Op>;
 
-  fn run_multi_summary(&self, expr_groups: Vec<Vec<Expr<Op>>>) -> Summary /*<Op>*/
-  {
+  fn run_multi_summary(&self, expr_groups: Vec<Vec<Expr<Op>>>) -> Summary {
     let start_time = Instant::now();
 
     let initial_expr_groups = expr_groups.clone();
@@ -98,9 +98,9 @@ where
     let final_cost = final_expr.len();
 
     Summary {
-      // initial_expr_groups,
+    //   initial_expr_groups,
       initial_cost,
-      // final_expr,
+    //   final_expr,
       final_cost,
       num_libs: res.num_libs,
       run_time: start_time.elapsed(),
@@ -130,14 +130,15 @@ where
   fn total_rounds(&self) -> usize;
 
   /// Run experiment and write results to CSV.
-  fn run_csv(&self, exprs: Vec<Expr<Op>>, writer: &mut CsvWriter) {
-    println!(
-      "{}",
-      ExperimentTitle {
-        experiment: self,
-        phantom: PhantomData
-      }
-    );
+  fn run_csv(
+    &self,
+    exprs: Vec<Expr<Op>>,
+    writer: &mut CsvWriter,
+  ) -> ExperimentResult<Op> {
+    println!("{}", ExperimentTitle {
+      experiment: self,
+      phantom: PhantomData
+    });
 
     let start_time = Instant::now();
 
@@ -152,7 +153,9 @@ where
     // Print our analysis on this
     println!("Final beam results");
     println!("{}", Pretty(&res.final_expr));
-    println!("cost diff: {initial_cost} -> {final_cost} (compression ratio {compression})",);
+    println!(
+      "cost diff: {initial_cost} -> {final_cost} (compression ratio {compression})",
+    );
     // println!("learned rewrites: {:?}", res.rewrites);
     println!("total time: {}ms", time_elapsed.as_millis());
     println!();
@@ -166,6 +169,7 @@ where
       res.num_libs,
       time_elapsed,
     );
+    res
   }
 }
 
@@ -256,7 +260,7 @@ where
         // TODO: be more graceful about this too
         assert!(lps <= beam, "lps {} greater than beam {}", lps, beam);
 
-        let beam_experiment = BeamExperiment::new(
+        let beam_experiment: BeamExperiment<Op, Extra> = BeamExperiment::new(
           dsrs.to_owned(),
           beam,
           beam,
@@ -292,13 +296,18 @@ where
   ///
   /// Panics if a csv cannot be created at the given path, or if any of the
   /// experiments' `run_csv` methods panic.
-  pub fn run(self, csv_path: &str) {
+  pub fn run(self, csv_path: &str) -> Vec<Expr<Op>> {
     let file = std::fs::File::create(csv_path).unwrap();
     let mut writer: CsvWriter = csv::Writer::from_writer(Box::new(file));
-
+    let mut results: Vec<Expr<Op>> = Vec::new();
     for experiment in self.experiments {
-      experiment.run_csv(self.exprs.clone(), &mut writer);
+      results.push(
+        experiment
+          .run_csv(self.exprs.clone(), &mut writer)
+          .final_expr,
+      );
     }
+    results
   }
 }
 
@@ -312,7 +321,11 @@ pub mod plumbing {
 
   use egg::{Id, Language, RecExpr};
 
-  use babble::{Arity, AstNode, Expr, LibId, Teachable};
+  use babble::{
+    ast_node::{Arity, AstNode, Expr},
+    learn::LibId,
+    teachable::Teachable,
+  };
 
   /// The result of running library learning after one pass.
   type LLRes<'a, Op> = &'a [AstNode<Op>];
@@ -874,14 +887,15 @@ where
   }
 
   /// Run experiment and write results to CSV.
-  fn run_csv(&self, exprs: Vec<Expr<Op>>, writer: &mut CsvWriter) {
-    println!(
-      "{}",
-      ExperimentTitle {
-        experiment: self,
-        phantom: PhantomData
-      }
-    );
+  fn run_csv(
+    &self,
+    exprs: Vec<Expr<Op>>,
+    writer: &mut CsvWriter,
+  ) -> ExperimentResult<Op> {
+    println!("{}", ExperimentTitle {
+      experiment: self,
+      phantom: PhantomData
+    });
 
     let start_time = Instant::now();
 
@@ -896,7 +910,9 @@ where
     // Print our analysis on this
     println!("Final beam results");
     println!("{}", Pretty(&res.final_expr));
-    println!("cost diff: {initial_cost} -> {final_cost} (compression factor {compression})");
+    println!(
+      "cost diff: {initial_cost} -> {final_cost} (compression factor {compression})"
+    );
     // println!("learned rewrites: {:?}", res.rewrites);
     println!("total time: {}ms", time_elapsed.as_millis());
     println!();
@@ -910,6 +926,7 @@ where
       res.num_libs,
       time_elapsed,
     );
+    res
   }
 
   fn run_multi(
