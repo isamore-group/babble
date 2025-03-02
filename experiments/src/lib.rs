@@ -23,6 +23,7 @@ use std::{
 mod beam_experiment;
 pub mod cache;
 mod eqsat_experiment;
+pub mod dreamcoder;
 
 #[derive(
   Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,

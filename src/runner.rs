@@ -103,7 +103,7 @@ where
 }
 
 /// Configuration for beam search
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BeamConfig {
     /// The final beam size to use
     pub final_beams: usize,
@@ -370,7 +370,7 @@ where
 }
 
 /// Configuration for Pareto-optimal beam search
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ParetoConfig {
     /// The final beam size to use
     pub final_beams: usize,
