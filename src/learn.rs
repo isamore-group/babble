@@ -25,10 +25,7 @@ use itertools::Itertools;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::{
-  collections::{BTreeMap, BTreeSet},
-  fmt::{Debug, Display},
-  num::ParseIntError,
-  str::FromStr,
+  collections::{BTreeMap, BTreeSet}, fmt::{Debug, Display}, num::ParseIntError, str::FromStr
 };
 use thiserror::Error;
 
@@ -643,7 +640,11 @@ where
           // if size(e[x_1/e_1, ..., x_n/e_n]) > 2n + 1. This
           // corresponds to an anti-unification containing at least n
           // + 1 nodes.
-          if learn_trivial
+          
+          // println!("au: {:?}", au);
+          // println!("num_nodes: {}, num_vars: {}, num_holes: {}", au.num_nodes(), num_vars, au.num_holes());
+          if 
+            learn_trivial
             || num_vars < au.num_holes()
             || au.num_nodes() > num_vars + 1
           {

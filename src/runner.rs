@@ -227,6 +227,11 @@ where
             dedup_time.elapsed().as_millis()
         );
 
+        println!("learned {} libs", learned_lib.size());
+        for lib in &learned_lib.libs().collect::<Vec<_>>() {
+            println!("{}", lib);
+        }
+
         info!("Adding libs and running beam search... ");
         let lib_rewrite_time = Instant::now();
         let runner = EggRunner::<_, _, ()>::new(PartialLibCost::new(
