@@ -7,6 +7,8 @@ use std::{
   fmt::Debug,
 };
 
+//使用info!
+use log::info;
 /// A binary relation on e-class ids,
 /// which says whether they can co-occur in a single extracted program.
 /// The relation is symmetric but not reflexive or transitive.
@@ -45,6 +47,8 @@ pub struct COBuilder<
   reachable: HashMap<Id, HashSet<Id>>,
   /// For each e-class, which other e-classes it can co-occur with
   co_occurs: HashMap<Id, HashSet<Id>>,
+  /// for each e-class, the set to note the times it has been visited
+  visited: HashMap<Id, i32>,
 }
 
 impl<'a, Op, N> COBuilder<'a, Op, N>
@@ -56,7 +60,7 @@ where
   /// Initialize a builder
   #[must_use]
   pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, roots: &'a [Id]) -> Self {
-    Self { egraph, roots, reachable: HashMap::new(), co_occurs: HashMap::new() }
+    Self { egraph, roots, reachable: HashMap::new(), co_occurs: HashMap::new(), visited: HashMap::new() }
   }
 
   /// Build the co-occurrence relation
@@ -66,6 +70,7 @@ where
   /// - When processing an e-node with multiple children, mark any two e-classes reachable from different children as co-occurring (because they can be siblings / uncles).
   #[must_use]
   pub fn run(mut self) -> CoOccurrences {
+    info!("Computing co-occurrence relation");
     self.process_children(self.roots);
     CoOccurrences { data: self.co_occurs }
   }
@@ -76,6 +81,13 @@ where
       // Already visited; we must be in a cycle
       return;
     }
+    if self.visited.contains_key(&id) {
+      self.visited.insert(id, self.visited[&id] + 1);
+    } else {
+      self.visited.insert(id, 1);
+    }
+    info!("Processing e-class {}, times: {}, eclass_size: {}", id, self.visited[&id], self.visited.len());
+
     // Mark as visited
     self.reachable.insert(id, HashSet::new());
     self.co_occurs.insert(id, HashSet::new());
@@ -95,7 +107,10 @@ where
   /// Return all e-classes reachable from a given e-node
   /// (and fill in their rechable and co-occurrence sets)
   fn run_from_node(&mut self, node: &AstNode<Op>) -> HashSet<Id> {
+    // info!("Processing node {:?}", node);
+    // Otherwise, process the children and cache the result
     self.process_children(node.children())
+
   }
 
   /// Process a list of e-classes that can all co-occur with each other
@@ -103,6 +118,7 @@ where
     // Set of e-classes reachable from any of the children
     let mut reach = HashSet::new();
     for id in children {
+
       self.run_from_class(*id);
       // Mark as co-occurring any pair of e-classes
       // where one is reachable from the current child,

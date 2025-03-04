@@ -95,6 +95,8 @@ where
     info!("Initial egraph size: {}", egraph.total_size());
     info!("Running {} DSRs... ", self.dsrs.len());
 
+    println!("initial elass size: {}", egraph.classes().len());
+
     let runner = Runner::<_, _, ()>::new(PartialLibCost::empty())
       .with_egraph(egraph)
       .with_time_limit(timeout)
@@ -109,6 +111,8 @@ where
       aeg.total_size()
     );
 
+    println!("Final egraph size: {}", aeg.total_size());
+
     info!("Running co-occurrence analysis... ");
     let co_time = Instant::now();
     let co_ext = COBuilder::new(&aeg, roots);
@@ -117,7 +121,7 @@ where
 
     info!("Running anti-unification... ");
     let au_time = Instant::now();
-    let mut learned_lib = LearnedLibraryBuilder::default()
+    let mut learned_lib = LearnedLibraryBuilder::make_with_egraph(aeg.clone())
       .learn_constants(self.learn_constants)
       .max_arity(self.max_arity)
       .with_co_occurs(co_occurs)
@@ -161,6 +165,7 @@ where
     info!("Number of nodes: {}", egraph.total_size());
 
     debug!("learned libs");
+
     let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut chosen_rewrites = Vec::new();
     for lib in &cs.set[0].libs {

@@ -16,12 +16,15 @@ use thiserror::Error;
 ///
 /// This type implements [`Language`] for arguments of type [`Id`].
 #[derive(
-  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize
 )]
 pub struct AstNode<Op, T = Id> {
   operation: Op,
   args: Vec<T>,
 }
+
+  
+
 
 pub use expr::{combine_exprs, Expr};
 pub use partial_expr::PartialExpr;

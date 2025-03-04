@@ -19,6 +19,8 @@ use std::{
   marker::PhantomData,
   time::{Duration, Instant},
 };
+use std::fs::File;
+use std::io::Write;
 
 mod beam_experiment;
 pub mod cache;
@@ -152,12 +154,16 @@ where
 
     // Print our analysis on this
     println!("Final beam results");
-    println!("{}", Pretty(&res.final_expr));
-    println!(
+    // 将最终结果写入文件
+    let mut file = File::create("final_expr_matrix_mul").unwrap();
+    let result = format!("{}", Pretty(&res.final_expr));
+    writeln!(file, "{}", result).unwrap();
+    writeln!(
+      file,
       "cost diff: {initial_cost} -> {final_cost} (compression ratio {compression})",
     );
     // println!("learned rewrites: {:?}", res.rewrites);
-    println!("total time: {}ms", time_elapsed.as_millis());
+    writeln!(file, "total time: {}ms", time_elapsed.as_millis());
     println!();
 
     self.write_to_csv(

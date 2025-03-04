@@ -1,7 +1,7 @@
 use crate::teachable::BindingExpr;
 
 use super::{super::teachable::Teachable, AstNode, Expr};
-use egg::{ENodeOrVar, Id, Language, Pattern, RecExpr, Var};
+use egg::{AstSize, CostFunction, ENodeOrVar, Id, Language, Pattern, RecExpr, Var};
 use std::{
   collections::HashSet,
   convert::{TryFrom, TryInto},
@@ -14,12 +14,20 @@ use std::{
 /// A partial expression. This is a generalization of an abstract syntax tree
 /// where subexpressions can be replaced by "holes", i.e., values of type `T`.
 /// The type [`Expr<Op>`] is isomorphic to `PartialExpr<Op, !>`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
 pub enum PartialExpr<Op, T> {
   /// A node in the abstract syntax tree.
   Node(AstNode<Op, Self>),
   /// A hole containing a value of type `T`.
   Hole(T),
+}
+
+/// impl Ord for PartialExpr<Op, T>
+impl <Op: PartialOrd + Eq , T: PartialOrd + Eq > Ord for PartialExpr<Op, T> {
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    // 用size()比较
+    self.size().cmp(&other.size())
+  }
 }
 
 impl<Op, T> PartialExpr<Op, T>
