@@ -1,5 +1,6 @@
 //! `extract::beam_pareto` implements a Pareto-optimal beam search extractor
 //! that considers both area and delay costs.
+//! This one doesn't work well.
 
 use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language, RecExpr};
 use log::debug;
