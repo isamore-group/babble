@@ -72,6 +72,10 @@ where
   pub fn run(mut self) -> CoOccurrences {
     info!("Computing co-occurrence relation");
     self.process_children(self.roots);
+    // 打印出每个Id的可达的Id数目
+    for (k, v) in self.reachable.iter() {
+      println!("Id: {}, reachable: {}", k, v.len());
+    }
     CoOccurrences { data: self.co_occurs }
   }
 

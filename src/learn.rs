@@ -33,7 +33,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::au_search::{get_random_aus};
+use crate::au_search::{get_random_aus, kd_random_aus};
 
 use crate::ga::genetic_algorithm_aus;
 
@@ -142,15 +142,15 @@ impl<Op, T> AU<Op, T> {
 // 为AU实现Ord，只对比matches的大小
 impl<Op: Eq, T: Eq> PartialOrd for AU<Op, T> {
   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-    Some(self.matches.cmp(&other.matches))
-    // Some(self.expr.size().cmp(&other.expr.size()))
+    // Some(self.matches.cmp(&other.matches))
+    Some(self.expr.size().cmp(&other.expr.size()))
   }
 }
 
 impl<Op: Eq, T:Eq> Ord for AU<Op, T> {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-    self.matches.cmp(&other.matches)
-    // self.expr.size().cmp(&other.expr.size())
+    // self.matches.cmp(&other.matches)
+    self.expr.size().cmp(&other.expr.size())
   }
 }
 
@@ -928,25 +928,6 @@ where
       self.aus.extend(nontrivial_aus);
     }
 
-    // if aus.len() > 10_000 {
-    //   warn!(
-    //     "Large number of antiunifications for state {state:?}: {}",
-    //     aus.len()
-    //   );
-    // }
-    // 在做完以上操作后，如果aus的数目超过了1000个，就从aus中均匀选择1000个
-    if aus.len() > 100 {
-      // 将aus转化成vec
-      let aus_vec: Vec<AU<Op,_>> = aus.clone().into_iter().collect();
-      // 计算索引间隔
-      let interval = aus_vec.len() / 100;
-      // 从aus_vec中均匀选择100个
-      let mut aus_vec_new = Vec::new();
-      for i in 0..100 {
-        aus_vec_new.push(aus_vec[i * interval].clone());
-      }
-      aus = aus_vec_new.into_iter().collect();
-    }
 
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
   }

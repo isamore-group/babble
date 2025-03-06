@@ -1,7 +1,7 @@
 //! ycy：实现不使用笛卡尔积的au选择算法
 use crate::learn::*;
 use rand::seq::SliceRandom;
-
+use rand::thread_rng;
 use crate::{
   ast_node::{Arity, AstNode, PartialExpr}, co_occurrence::CoOccurrences, dfta::Dfta, extract::beam::PartialLibCost, teachable::{BindingExpr, Teachable}, COBuilder, Pretty
 };
@@ -38,21 +38,21 @@ impl <Op> VecPE<Op> {
 /// 为VecPE实现PartialOrd
 impl <Op: Eq> PartialOrd for VecPE<Op> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.matches.cmp(&other.matches))
+        // Some(self.matches.cmp(&other.matches))
         // 计算exprs中PE的size()的和
-        // let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
-        // let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
-        // Some(self_size.cmp(&other_size))
+        let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
+        let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
+        Some(self_size.cmp(&other_size))
     }
 }
 
 /// 为VecPE实现Ord
 impl <Op: Eq> Ord for VecPE<Op> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.matches.cmp(&other.matches)
-        // let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
-        // let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
-        // self_size.cmp(&other_size)
+        // self.matches.cmp(&other.matches)
+        let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
+        let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
+        self_size.cmp(&other_size)
     }
 }
 
@@ -76,8 +76,9 @@ where
         return vec![];
     }
 
+
     info!("get_random_aus");
-    let range = 50 * m;
+    let range = 10 * m;
 
     // 计算aus中每个Vec的size的乘积
     let cartesian_product_size:usize = aus.iter().map(|x| x.len()).product();
@@ -259,4 +260,152 @@ where
 
 
 
+
+fn binary_split(m: usize, n: usize) -> Vec<Vec<usize>> {
+    // 初始区间：[0, m)
+    let mut segments: Vec<Vec<usize>> = vec![(0..m).collect()];
+    
+    // 进行 n 次二分切分
+    for _ in 0..n {
+        let mut new_segments = Vec::new();
+        for seg in segments.iter() {
+            if seg.len() > 1 {
+                // 取中间位置进行分割
+                let mid = seg.len() / 2;
+                new_segments.push(seg[..mid].to_vec());
+                new_segments.push(seg[mid..].to_vec());
+            } else {
+                // 当区间只有一个元素时，复制该区间到两个子区间
+                new_segments.push(seg.clone());
+                new_segments.push(seg.clone());
+            }
+        }
+        segments = new_segments;
+    }
+    
+    segments
+}
+
+
+pub fn kd_random_aus<Op>(
+    aus: Vec<Vec<AU<Op, (Id, Id)>>>,
+    m: usize,
+  ) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
+  where
+    Op: Clone + Debug + Hash + Ord + Display + Arity + Teachable + Sync + Send + 'static,
+  {
+    // 如果aus是空的，或者aus中的元素是空的，直接返回空
+    if aus.is_empty() || aus.iter().all(|x| x.is_empty()) {
+        return vec![];
+    }
+
+    // 计算aus中每个Vec的size的乘积
+    let cartesian_product_size:usize = aus.iter().map(|x| x.len()).product();
+
+    let cal_cartesian_flag = cartesian_product_size < m;
+
+    let cartesian_product = if cal_cartesian_flag {
+        info!("cal_cartesian");
+        // 计算aus中每个Vec的size的乘积
+        let cartesian_product: Vec<Vec<AU<Op, (Id, Id)>>> = aus
+            .iter()
+            .multi_cartesian_product()
+            .map(|x| x.into_iter().cloned().collect())
+            .collect();
+        cartesian_product
+    } else {
+        vec![]
+    };
+
+    // 如果cartesian_product的size小于m, 直接返回cartesian_product
+    if cal_cartesian_flag && cartesian_product.len() < 10 * m {
+        // 将cartesian_product中的每个Vec转换为PartialExpr<Op, (Id, Id)>的Vec
+        return cartesian_product.iter().map(|x| x.iter().map(|y| y.expr().clone()).collect()).collect();
+    }
+    // 定义一个闭包，用于将Vec<AU<Op, (Id, Id)>>中的PE和matches分别对应收集起来，组成VecPE
+    let au2pe = |vec: &Vec<AU<Op, (Id, Id)>>| {
+        let mut exprs = Vec::new();
+        let mut matches = Vec::new();
+        for au in vec {
+            exprs.push(au.expr().clone());
+            matches.push(au.matches().clone());
+        }
+        VecPE::new(exprs, matches)
+    };
+    let candidates = if cal_cartesian_flag {
+        info!("insert into BTreeSet");
+        info!("cartesian_product.size: {}", cartesian_product.len());
+        // 需要将VecPe插入进BTreeSet进行排序
+        let start_time = Instant::now();
+        let mut candidates = BTreeSet::new();
+        for i in 0..cartesian_product.len() {
+            // 使用au2pe将Vec<AU<Op, (Id, Id)>>转换为VecPE
+            candidates.insert(au2pe(&cartesian_product[i]));
+        }
+        info!("insert into BTreeSet cost: {:?}", start_time.elapsed());
+        candidates
+    } else {
+        // 首先，对lgm求上界得到递归次数
+        let depth = (m as f64).log2().ceil() as usize;
+        // 接下来确定每个集合被切分的次数
+        let n = aus.len();
+        // 基础次数为depth/n
+        let base = depth / n;
+        // 创建切分次数数组，每个集合切分base次
+        let mut split_times = vec![base; n];
+        // depth%n次的切分加到前面的集合中
+        for i in 0..depth % n {
+            split_times[i] += 1;
+        }
+        // 初始化结果数组
+        let mut results = BTreeSet::new();
+        let mut segments = Vec::new();
+        for i in 0..n {
+            segments.push(binary_split(aus[i].len(), split_times[i]));
+        }
+        // 对segments进行笛卡尔积
+        let mut cartesian_product = Vec::new();
+        for seg in segments.iter().multi_cartesian_product() {
+            let mut vec = Vec::new();
+            for i in 0..n {
+                vec.push(seg[i].clone());
+            }
+            cartesian_product.push(vec);
+        }
+        // cartesian_product[i]是抽取第i个解时，每个集合的限制条件，如果cartesian_product[i].size() = k,那么就说明第i个解的前k个维度的索引值只能从cartesian_product[i][k]中选取，剩下的维度l的索引值可以从aus[l]中任意选取
+        // 遍历cartesian_product
+        let rng = &mut thread_rng();
+        for i in 0..cartesian_product.len() {
+            // 每个方案抽取10个解
+            for _ in 0..10 {
+                let mut result = Vec::new();
+                // 从cartesian_product[i]中的每个集合中随机选取一个元素作为index
+                for j in 0..cartesian_product[i].len() {
+                    // 随机选取cartesian_product[i][j]中的一个元素
+                    let index = cartesian_product[i][j].choose(rng).unwrap().clone();
+                    result.push(aus[j][index].clone());
+                }
+                // 如果cartesian_product[i].size() < n, 那么剩下的维度的索引值可以从aus中任意选取
+                for j in cartesian_product[i].len()..n {
+                    // 在aus[j]中随机选取一个元素
+                    let au = aus[j].choose(rng).unwrap().clone();
+                    result.push(au.clone());
+                }
+                results.insert(au2pe(&result));
+            }
+        }
+        results
+    };
+    let n = candidates.len();
+    let step = n as f64 / m as f64; // 步长计算为浮点数
+    let mut selected_elements = Vec::new();
+    let selected_aus = candidates.iter().collect::<Vec<_>>();
+    for i in 0..m {
+        let index = (i as f64 * step).round() as usize;
+        // 确保索引不会超出范围
+        let index = index.min(n - 1); // 避免越界
+        selected_elements.push(selected_aus[index].clone().exprs.clone());
+    }
+    selected_elements
+  }
 
