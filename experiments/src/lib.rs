@@ -1,6 +1,5 @@
 pub use self::beam_experiment::BeamExperiment;
 pub use self::eqsat_experiment::EqsatExperiment;
-
 use babble::{
   DiscriminantEq,
   ast_node::{Arity, AstNode, Expr, Pretty, Printable},
@@ -10,6 +9,7 @@ use babble::{
 };
 use egg::{EGraph, Id, RecExpr, Rewrite, Runner};
 use itertools::Itertools;
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::{
   collections::HashMap,
@@ -141,11 +141,14 @@ where
       experiment: self,
       phantom: PhantomData
     });
+    info!("Running beam experiment");
 
     let start_time = Instant::now();
 
     // Add one to account for root node, not added yet
     let initial_cost = exprs.iter().map(Expr::len).sum::<usize>() + 1;
+
+    info!("beam run");
     let res = self.run(exprs, writer);
 
     let final_cost = res.final_expr.len();
@@ -155,7 +158,7 @@ where
     // Print our analysis on this
     println!("Final beam results");
     // 将最终结果写入文件
-    let mut file = File::create("final_expr_matrix_mul").unwrap();
+    let mut file = File::create("final_expr_2d_2d_conv").unwrap();
     let result = format!("{}", Pretty(&res.final_expr));
     writeln!(file, "{}", result).unwrap();
     writeln!(
@@ -219,7 +222,7 @@ where
     + Hash
     + Ord
     + DiscriminantEq
-    + 'static,
+    + 'static
 {
   /// Creates a new empty set of experiments
   #[must_use]
@@ -306,6 +309,7 @@ where
     let file = std::fs::File::create(csv_path).unwrap();
     let mut writer: CsvWriter = csv::Writer::from_writer(Box::new(file));
     let mut results: Vec<Expr<Op>> = Vec::new();
+    log::info!("Running experiments");
     for experiment in self.experiments {
       results.push(
         experiment

@@ -18,19 +18,37 @@ use std::{
 };
 
 use thiserror::Error;
+use crate::learn::{Match, AU};
+
 
 /// 定义Vec<PatialExpr<Op, Var>>的类型
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd)]
-pub struct VecPE<Op>(Vec<PartialExpr<Op, (Id, Id)>>);
-/// 为VecPE实现Ord
-impl<Op: Ord + PartialOrd > Ord for VecPE<Op> {
-  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-    // 将每个partial_expr的size相加，然后比较
-    let self_size = self.0.iter().map(|x| x.size()).sum::<usize>();
-    let other_size = other.0.iter().map(|x| x.size()).sum::<usize>();
-    self_size.cmp(&other_size)
-  }
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VecPE<Op> {
+    pub exprs: Vec<PartialExpr<Op, (Id, Id)>>,
+    pub matches: Vec<Vec<Match>>,
 }
+/// 为VecPE实现new_with_egraph
+impl <Op> VecPE<Op> {
+    pub fn new(expr: Vec<PartialExpr<Op, (Id, Id)>>, matches: Vec<Vec<Match>>) -> Self {
+        Self { exprs: expr, matches }
+    }
+
+}
+
+/// 为VecPE实现PartialOrd
+impl <Op: Eq> PartialOrd for VecPE<Op> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.matches.cmp(&other.matches))
+    }
+}
+
+/// 为VecPE实现Ord
+impl <Op: Eq> Ord for VecPE<Op> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.matches.cmp(&other.matches)
+    }
+}
+
 
 
 // - 基于随机寻优的方法：
@@ -40,18 +58,18 @@ impl<Op: Ord + PartialOrd > Ord for VecPE<Op> {
 /// 从指定的集合中随机抽取K个特征解
 
 pub fn get_random_aus<Op>(
-  aus: Vec<Vec<PartialExpr<Op, (Id, Id)>>>,
+  aus: Vec<Vec<AU<Op, (Id, Id)>>>,
   m: usize,
 ) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
 where
-  Op: Clone + Debug + Hash + Ord + Display + Arity,
+  Op: Clone + Debug + Hash + Ord + Display + Arity + Teachable + Sync + Send + 'static,
 {
     // 如果aus是空的，直接返回空
     if aus.is_empty() {
         return vec![];
     }
 
-    
+    info!("get_random_aus");
     let range = 10 * m;
 
     // 计算aus中每个Vec的size的乘积
@@ -60,8 +78,13 @@ where
     let cal_cartesian_flag = cartesian_product_size < range;
 
     let cartesian_product = if cal_cartesian_flag {
+        info!("cal_cartesian");
         // 计算aus中每个Vec的size的乘积
-        let cartesian_product: Vec<Vec<PartialExpr<Op, (Id, Id)>>> = aus.iter().cloned().multi_cartesian_product().collect();
+        let cartesian_product: Vec<Vec<AU<Op, (Id, Id)>>> = aus
+            .iter()
+            .multi_cartesian_product()
+            .map(|x| x.into_iter().cloned().collect())
+            .collect();
         cartesian_product
     } else {
         vec![]
@@ -69,15 +92,30 @@ where
 
     // 如果cartesian_product的size小于m, 直接返回cartesian_product
     if cal_cartesian_flag && cartesian_product.len() < m {
-        return cartesian_product;
+        // 将cartesian_product中的每个Vec转换为PartialExpr<Op, (Id, Id)>的Vec
+        return cartesian_product.iter().map(|x| x.iter().map(|y| y.expr().clone()).collect()).collect();
     }
-
+    // 定义一个闭包，用于将Vec<AU<Op, (Id, Id)>>中的PE和matches分别对应收集起来，组成VecPE
+    let au2pe = |vec: &Vec<AU<Op, (Id, Id)>>| {
+        let mut exprs = Vec::new();
+        let mut matches = Vec::new();
+        for au in vec {
+            exprs.push(au.expr().clone());
+            matches.push(au.matches().clone());
+        }
+        VecPE::new(exprs, matches)
+    };
     let candidates = if cal_cartesian_flag {
+        info!("insert into BTreeSet");
+        info!("cartesian_product.size: {}", cartesian_product.len());
         // 需要将VecPe插入进BTreeSet进行排序
+        let start_time = Instant::now();
         let mut candidates = BTreeSet::new();
         for i in 0..cartesian_product.len() {
-            candidates.insert(VecPE(cartesian_product[i].clone()));
+            // 使用au2pe将Vec<AU<Op, (Id, Id)>>转换为VecPE
+            candidates.insert(au2pe(&cartesian_product[i]));
         }
+        info!("insert into BTreeSet cost: {:?}", start_time.elapsed());
         candidates
     } else {
         // 如果cartesian_product的size大于range, 就需要自己另行构造candidates
@@ -90,14 +128,16 @@ where
         }
         let mut selected_aus  = BTreeSet::new();
         // 将上下界加入candidates
-        selected_aus.insert(VecPE(lower_bound));
-        selected_aus.insert(VecPE(upper_bound));
+        selected_aus.insert(au2pe(&lower_bound));
+        selected_aus.insert(au2pe(&upper_bound));
         // 从每个集合中随机抽样获得range个样本集
-        for i in 0..aus.len() {
-            let mut sample_aus = aus[i].iter().cloned().collect::<Vec<_>>();
-            sample_aus.shuffle(&mut rand::thread_rng());
-            let sample_aus = VecPE(sample_aus.into_iter().take(range).collect::<Vec<_>>());
-            selected_aus.insert(sample_aus);
+        let mut rng = rand::thread_rng();
+        for _ in 0..range {
+            let sample_aus: Vec<AU<_, _>> = aus
+                .iter()
+                .filter_map(|vec| vec.choose(&mut rng).cloned()) // 从每个 `aus[i]` 里随机选一个
+                .collect();
+            selected_aus.insert(au2pe(&sample_aus));
         }
         selected_aus
     };
@@ -107,10 +147,9 @@ where
     let selected_aus = candidates.iter().collect::<Vec<_>>();
     for i in 0..m {
         let index = (i as f64 * step).round() as usize;
-        
         // 确保索引不会超出范围
         let index = index.min(n - 1); // 避免越界
-        selected_elements.push(selected_aus[index].0.clone());
+        selected_elements.push(selected_aus[index].exprs.clone());
     }
     selected_elements
 }
@@ -133,83 +172,83 @@ where
 
 
 
-pub fn beam_search_aus<Op>(
-    aus: Vec<Vec<PartialExpr<Op, (Id, Id)>>>,
-    m: usize,
-    b: usize, // 束宽
-) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
-where
-    Op: Clone + std::fmt::Debug + std::hash::Hash + Ord + std::fmt::Display,
-{
-    // 如果aus为空，返回空
-    if aus.is_empty() {
-        return vec![];
-    }
+// pub fn beam_search_aus<Op>(
+//     aus: Vec<Vec<PartialExpr<Op, (Id, Id)>>>,
+//     m: usize,
+//     b: usize, // 束宽
+// ) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
+// where
+//     Op: Clone + std::fmt::Debug + std::hash::Hash + Ord + std::fmt::Display,
+// {
+//     // 如果aus为空，返回空
+//     if aus.is_empty() {
+//         return vec![];
+//     }
 
-    // 用来存储当前的解
-    let mut current_solutions: BTreeSet<VecPE<_>> = BTreeSet::new();
-    // 将aus[0]添加进current_solutions
-    for elem in &aus[0] {
-        current_solutions.insert(VecPE(vec![elem.clone()]));
-    }
+//     // 用来存储当前的解
+//     let mut current_solutions: BTreeSet<VecPE<_>> = BTreeSet::new();
+//     // 将aus[0]添加进current_solutions
+//     for elem in &aus[0] {
+//         current_solutions.insert(VecPE(vec![elem.clone()]));
+//     }
 
-    // 对于后续的每一个集合，计算笛卡尔积
-    for i in 1..aus.len() {
-        info!("current index: {}", i);
-        // 如果aus[i]为空，直接continue
-        if aus[i].is_empty() {
-            continue;
-        }
-        let mut solutions: BTreeSet<VecPE<_>> = BTreeSet::new();
-        // 当前候选解
-        let mut candidate_vecs: BTreeSet<VecPE<_>> = BTreeSet::new();
-        for solution in &current_solutions {
-            for elem in &aus[i] {
-                let mut new_solution = solution.clone();
-                new_solution.0.push(elem.clone());
-                candidate_vecs.insert(new_solution);
-            }
-        }
-        // 如果候选解的数量小于b, 直接将solutions设置为candidate_vecs
-        if candidate_vecs.len() < b {
-            current_solutions = candidate_vecs.iter().map(|x| x.clone()).collect();
-            info!("current_solutions.size: {}", current_solutions.len());
-            continue;
-        }
-        // 否则均匀选择b个解
-        let n = candidate_vecs.len();
-        let step = n as f64 / b as f64; // 步长计算为浮点数
-        let selected_aus = candidate_vecs.iter().collect::<Vec<_>>();
-        for i in 0..b {
-            let index = (i as f64 * step).round() as usize;
-            // 确保索引不会超出范围
-            let index = index.min(n - 1); // 避免越界
-            solutions.insert(selected_aus[index].clone());
-        }
-        current_solutions = solutions;
-    }
+//     // 对于后续的每一个集合，计算笛卡尔积
+//     for i in 1..aus.len() {
+//         info!("current index: {}", i);
+//         // 如果aus[i]为空，直接continue
+//         if aus[i].is_empty() {
+//             continue;
+//         }
+//         let mut solutions: BTreeSet<VecPE<_>> = BTreeSet::new();
+//         // 当前候选解
+//         let mut candidate_vecs: BTreeSet<VecPE<_>> = BTreeSet::new();
+//         for solution in &current_solutions {
+//             for elem in &aus[i] {
+//                 let mut new_solution = solution.clone();
+//                 new_solution.0.push(elem.clone());
+//                 candidate_vecs.insert(new_solution);
+//             }
+//         }
+//         // 如果候选解的数量小于b, 直接将solutions设置为candidate_vecs
+//         if candidate_vecs.len() < b {
+//             current_solutions = candidate_vecs.iter().map(|x| x.clone()).collect();
+//             info!("current_solutions.size: {}", current_solutions.len());
+//             continue;
+//         }
+//         // 否则均匀选择b个解
+//         let n = candidate_vecs.len();
+//         let step = n as f64 / b as f64; // 步长计算为浮点数
+//         let selected_aus = candidate_vecs.iter().collect::<Vec<_>>();
+//         for i in 0..b {
+//             let index = (i as f64 * step).round() as usize;
+//             // 确保索引不会超出范围
+//             let index = index.min(n - 1); // 避免越界
+//             solutions.insert(selected_aus[index].clone());
+//         }
+//         current_solutions = solutions;
+//     }
         
-    // 如果current_solutions的size小于m, 直接返回current_solutions
-    if current_solutions.len() < m {
-        info!("current_solutions.size: {}", current_solutions.len());
-        return current_solutions.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
-    }
+//     // 如果current_solutions的size小于m, 直接返回current_solutions
+//     if current_solutions.len() < m {
+//         info!("current_solutions.size: {}", current_solutions.len());
+//         return current_solutions.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
+//     }
 
-    // 从current_solutions中均匀选择m个解
-    let n = current_solutions.len();
-    let step = n as f64 / m as f64; // 步长计算为浮点数
-    let mut selected_elements = Vec::new();
-    let selected_aus = current_solutions.iter().collect::<Vec<_>>();
-    for i in 0..m {
-        let index = (i as f64 * step).round() as usize;
+//     // 从current_solutions中均匀选择m个解
+//     let n = current_solutions.len();
+//     let step = n as f64 / m as f64; // 步长计算为浮点数
+//     let mut selected_elements = Vec::new();
+//     let selected_aus = current_solutions.iter().collect::<Vec<_>>();
+//     for i in 0..m {
+//         let index = (i as f64 * step).round() as usize;
         
-        // 确保索引不会超出范围
-        let index = index.min(n - 1); // 避免越界
-        selected_elements.push(selected_aus[index].clone().0);
-    }
-    info!("selected_elements.size: {}", selected_elements.len());
-    selected_elements
-}
+//         // 确保索引不会超出范围
+//         let index = index.min(n - 1); // 避免越界
+//         selected_elements.push(selected_aus[index].clone().0);
+//     }
+//     info!("selected_elements.size: {}", selected_elements.len());
+//     selected_elements
+// }
 
 
 

@@ -1,20 +1,29 @@
 use crate::teachable::BindingExpr;
 
 use super::{super::teachable::Teachable, AstNode, Expr};
-use egg::{AstSize, CostFunction, ENodeOrVar, Id, Language, Pattern, RecExpr, Var};
+use egg::{Analysis, AstSize, CostFunction, EGraph, ENodeOrVar, Id, Language, Pattern, RecExpr, Var, Searcher};
+use crate::extract::beam::PartialLibCost;
+use crate::ast_node::Arity;
 use std::{
-  collections::HashSet,
+  collections::{HashSet,HashMap},
   convert::{TryFrom, TryInto},
   error::Error,
   fmt::{self, Debug, Display, Formatter},
   hash::Hash,
   sync::Arc,
 };
+use crate::learn::Match;
+use crate::learn::normalize;
+// 为Op定义一个trait名为GetHash
+pub trait GetCost {
+  fn get_cost(&self) -> u32;
+}
+
 
 /// A partial expression. This is a generalization of an abstract syntax tree
 /// where subexpressions can be replaced by "holes", i.e., values of type `T`.
 /// The type [`Expr<Op>`] is isomorphic to `PartialExpr<Op, !>`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub enum PartialExpr<Op, T> {
   /// A node in the abstract syntax tree.
   Node(AstNode<Op, Self>),
@@ -22,18 +31,49 @@ pub enum PartialExpr<Op, T> {
   Hole(T),
 }
 
-/// impl Ord for PartialExpr<Op, T>
-impl <Op: PartialOrd + Eq , T: PartialOrd + Eq > Ord for PartialExpr<Op, T> {
-  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-    // 用size()比较
-    self.size().cmp(&other.size())
-  }
+
+impl <Op, T> PartialExpr<Op, T> 
+where 
+Op:Clone
++ Arity
++ Debug
++ Display
++ Ord
++ Send
++ Sync
++ Teachable
++ 'static
++ Hash,
+AstNode<Op>: Language,
+T: Eq + Clone + Hash
+{
+  pub fn get_match(self, egraph: &EGraph<AstNode<Op>, PartialLibCost>) -> Vec<Match> {
+    let pattern: Pattern<_> = normalize(self.clone()).0.into();
+    // A key in `cache` is a set of matches
+    // represented as a sorted vector.
+    let mut key = vec![];
+
+    for m in pattern.search(egraph) {
+      for sub in m.substs {
+        let actuals: Vec<_> =
+          pattern.vars().iter().map(|v| sub[*v]).collect();
+        let match_signature = Match::new(m.eclass, actuals);
+        key.push(match_signature);
+      }
+    }
+
+    key.sort();
+    key
+  } 
 }
+
+
 
 impl<Op, T> PartialExpr<Op, T>
 where
-  Op: Teachable,
+  Op: Teachable
 {
+
   /// Same as [`Self::fill`], but also provides the number of outer binders
   /// to the function.
   pub fn fill_with_binders<U, F>(self, mut f: F) -> PartialExpr<Op, U>

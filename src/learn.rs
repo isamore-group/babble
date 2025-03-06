@@ -19,13 +19,13 @@ use rand::seq::SliceRandom;
 use crate::{
   ast_node::{Arity, AstNode, PartialExpr}, co_occurrence::CoOccurrences, dfta::Dfta, extract::beam::PartialLibCost, teachable::{BindingExpr, Teachable}, COBuilder, Pretty
 };
-use std::{hash::Hash, time::Instant};
+use std::{hash::Hash, time::Instant, vec};
 use egg::{Analysis, EGraph, Id, Language, Pattern, Rewrite, Searcher, Var};
 use itertools::Itertools;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::{
-  collections::{BTreeMap, BTreeSet, HashSet},
+  collections::{BTreeMap, BTreeSet, HashMap},
   fmt::{Debug, Display},
   num::ParseIntError,
   str::FromStr,
@@ -33,9 +33,11 @@ use std::{
 
 use thiserror::Error;
 
-use crate::au_search::{get_random_aus, beam_search_aus};
+use crate::au_search::{get_random_aus};
 
 use crate::ga::genetic_algorithm_aus;
+
+
 
 /// A library function's name.
 #[derive(
@@ -84,8 +86,8 @@ impl FromStr for LibId {
 
 /// Signature of a pattern match in an e-graph.
 /// Used to deduplicate equivalent patterns.
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
-struct Match {
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Hash)]
+pub struct Match {
   /// The e-class that the match is found in.
   class: Id,
   /// The range of the match's substitution
@@ -94,11 +96,63 @@ struct Match {
 }
 
 impl Match {
-  fn new(class: Id, mut actuals: Vec<Id>) -> Self {
+  pub fn new(class: Id, mut actuals: Vec<Id>) -> Self {
     actuals.sort();
     Self { class, actuals }
   }
 }
+// 用来保存AU和其对应的Match
+#[derive(PartialEq, Eq, Debug, Clone, Hash)]
+pub struct AU<Op, T>{
+  /// The anti-unification
+  expr: PartialExpr<Op, T>,
+  /// The matches
+  matches: Vec<Match>,
+}
+
+impl<Op, T> AU<Op, T> {
+  pub fn new(expr: PartialExpr<Op, T>, matches: Vec<Match>) -> Self {  
+    Self { expr, matches }
+  }
+  pub fn new_cal_matches(expr: PartialExpr<Op, T>, egraph: &EGraph<AstNode<Op>, PartialLibCost>) -> Self 
+  where 
+    Op:Clone
+    + Arity
+    + Debug
+    + Display
+    + Ord
+    + Send
+    + Sync
+    + Teachable
+    + 'static
+    + Hash,
+    AstNode<Op>: Language,
+    T: Clone + Debug + Hash + Ord,
+  {
+    let matches = expr.clone().get_match(egraph);
+    Self { expr, matches }
+  }
+  pub fn expr(&self) -> &PartialExpr<Op, T> {
+    &self.expr
+  }
+  pub fn matches(&self) -> &Vec<Match> {
+    &self.matches
+  }
+}
+// 为AU实现Ord，只对比matches的大小
+impl<Op: Eq, T: Eq> PartialOrd for AU<Op, T> {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    Some(self.matches.cmp(&other.matches))
+  }
+}
+
+impl<Op: Eq, T:Eq> Ord for AU<Op, T> {
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    self.matches.cmp(&other.matches)
+  }
+}
+
+
 
 #[derive(Clone, Debug)]
 pub struct LearnedLibraryBuilder<Op>
@@ -267,9 +321,9 @@ pub struct LearnedLibrary<Op, T> where
 {
   egraph: EGraph<AstNode<Op>, PartialLibCost>,
   /// A map from DFTA states (i.e. pairs of enodes) to their antiunifications.
-  aus_by_state: BTreeMap<T, BTreeSet<PartialExpr<Op, T>>>,
+  aus_by_state: BTreeMap<T, BTreeSet<AU<Op, T>>>,
   /// A set of all the antiunifications discovered.
-  aus: BTreeSet<PartialExpr<Op, Var>>,
+  aus: BTreeSet<AU<Op, Var>>,
   /// Whether to learn "trivial" anti-unifications.
   learn_trivial: bool,
   /// Whether to also learn "library functions" which take no arguments.
@@ -280,6 +334,9 @@ pub struct LearnedLibrary<Op, T> where
   banned_ops: Vec<Op>,
   /// Data about which e-classes can co-occur.
   co_occurrences: CoOccurrences,
+  // /// 存储deduplicate_from_candidates中cache已经存储过的值
+  // pattern_cache: HashMap<PartialExpr<Op, (Id, Id)>, Vec<Match>>,
+
 }
 
 #[allow(unused)]
@@ -331,9 +388,10 @@ where
       max_arity,
       banned_ops,
       co_occurrences,
+      // pattern_cache: HashMap::new(),
     };
 
-    if dfta {
+    if !dfta {
       let dfta = Dfta::from(egraph);
       let dfta = dfta.cross_over();
       debug!("crossed over dfta");
@@ -349,11 +407,41 @@ where
         .cartesian_product(classes.iter())
         .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)));
 
+      println!("there are {} eclass pairs", eclass_pairs.clone().count());
+      // let mut count = 0;
+      // for (ecls1, ecls2) in eclass_pairs.clone() {
+      //   // 收集每个elcass中的op组成的集合
+      //   let mut ecls1_ops = egraph[ecls1].nodes.iter().map(|enode| enode.operation().clone()).collect::<Vec<_>>();
+      //   let mut ecls2_ops = egraph[ecls2].nodes.iter().map(|enode| enode.operation().clone()).collect::<Vec<_>>();
+      //   ecls1_ops.sort();
+      //   ecls2_ops.sort();
+      //   if ecls1_ops == ecls2_ops {
+      //     count += 1;
+      //   }
+      // }
+      // println!("there are {} similar eclass pairs", count);
       for (ecls1, ecls2) in eclass_pairs {
-        learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
+        // 我在想，现在两个eclass肯定是eqsat的状态，我们能不能通过二者op的数量判断是否需要anti-unify，只有相似的eclass才需要anti-unify
+        let ecls1_size = egraph[ecls1].nodes.len();
+        let ecls2_size = egraph[ecls2].nodes.len();
+        if ecls1_size.abs_diff(ecls2_size) < 1 {
+          learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
+        }
       }
+
+    }
+    // 如果learned_lib中的aus数量大于500，就从排序结果中按照间隔均匀采样500个
+    if learned_lib.aus.len() > 500 {
+      let aus = learned_lib.aus.iter().collect::<Vec<_>>();
+      let mut sampled_aus = BTreeSet::new();
+      let step = aus.len() / 500;
+      for i in (0..aus.len()).step_by(step) {
+        sampled_aus.insert(aus[i].clone());
+      }
+      learned_lib.aus = sampled_aus;
     }
 
+    
     learned_lib
   }
 }
@@ -398,8 +486,8 @@ where
     &self,
   ) -> impl Iterator<Item = Rewrite<AstNode<Op>, A>> + '_ {
     self.aus.iter().enumerate().map(|(i, au)| {
-      let searcher: Pattern<_> = au.clone().into();
-      let applier: Pattern<_> = reify(LibId(i), au.clone()).into();
+      let searcher: Pattern<_> = au.expr.clone().into();
+      let applier: Pattern<_> = reify(LibId(i), au.expr.clone()).into();
       let name = format!("anti-unify {i}");
       debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
 
@@ -411,7 +499,7 @@ where
   /// Right-hand sides of library rewrites.
   pub fn libs(&self) -> impl Iterator<Item = Pattern<AstNode<Op>>> + '_ {
     self.aus.iter().enumerate().map(|(i, au)| {
-      let applier: Pattern<_> = reify(LibId(i), au.clone()).into();
+      let applier: Pattern<_> = reify(LibId(i), au.expr.clone()).into();
       applier
     })
   }
@@ -420,20 +508,25 @@ where
   where
     F: Fn(&PartialExpr<Op, Var>) -> PartialExpr<Op, Var>,
   {
-    self.aus = self.aus.iter().map(f).collect();
+    let mut new_aus = BTreeSet::new();
+    for au in &self.aus {
+      let new_au = f(&au.expr);
+      new_aus.insert(AU::new(new_au, au.matches.clone()));
+    }
+    self.aus = new_aus;
   }
 
   /// The raw anti-unifications that we have collected
   pub fn anti_unifications(
     &self,
   ) -> impl Iterator<Item = &PartialExpr<Op, Var>> {
-    self.aus.iter()
+    self.aus.iter().map(|au| &au.expr)
   }
 
   /// Extend the set of anti-unifications externally
   pub fn extend(
     &mut self,
-    aus: impl IntoIterator<Item = PartialExpr<Op, Var>>,
+    aus: impl IntoIterator<Item = AU<Op, Var>>,
   ) {
     self.aus.extend(aus);
   }
@@ -468,10 +561,12 @@ where
     let mut cache: BTreeMap<Vec<Match>, PartialExpr<Op, Var>> = BTreeMap::new();
 
     for au in &self.aus {
+      let au = au.expr.clone();
       let pattern: Pattern<_> = au.clone().into();
       // A key in `cache` is a set of matches
       // represented as a sorted vector.
       let mut key = vec![];
+
       for m in pattern.search(egraph) {
         for sub in m.substs {
           let actuals: Vec<_> =
@@ -480,9 +575,10 @@ where
           key.push(match_signature);
         }
       }
+
       key.sort();
       match cache.get(&key) {
-        Some(cached) if cached.size() <= au.size() => {
+        Some(cached) if cached.size() <= au.clone().size() => {
           debug!(
             "Pruning pattern {}\n as a duplicate of {}",
             pattern,
@@ -494,34 +590,39 @@ where
         }
       }
     }
-    self.aus = cache.values().cloned().collect();
-    println!("after deduplicating: ");
-    for lib in self.libs().collect::<Vec<_>>() {
-      println!("{}", lib);
-    }
+    self.aus = cache.into_iter().map(|(matches, expr)| AU::new(expr, matches)).collect();
+
   }
 
   pub fn deduplicate_from_candidates<A: Analysis<AstNode<Op>>>(
-    &self,
+    &mut self,
     candidates: impl IntoIterator<Item = PartialExpr<Op, (Id, Id)>>,  // 修改为 (Id, Id)
-) -> Vec<PartialExpr<Op, (Id, Id)>> {  // 修改返回类型
+) -> Vec<AU<Op, (Id, Id)>> {  // 修改返回类型
     // 创建一个缓存，用于保存已经遇到的匹配集合与对应的最小模式
-    let mut cache: BTreeMap<Vec<Match>, PartialExpr<Op, (Id, Id)>> = BTreeMap::new();  // 修改为 (Id, Id)
+    let mut cache:BTreeMap<Vec<Match>, PartialExpr<Op, (Id, Id)>> = BTreeMap::new();
+    // info!("cache.size: {}", self.pattern_cache.len());
     // 遍历所有候选的模式
 
     for au in candidates {
+      if au.size() > 300 {
+        continue;
+      }
+
         let pattern: Pattern<_> = normalize(au.clone()).0.into();
         let mut key = vec![];
-        let egraph = &self.egraph;
-        // 在 e-graph 中搜索该模式，生成匹配集合
-        for m in pattern.search(egraph) {
+        let matches = pattern.search(&self.egraph);
+        for m in matches {
             for sub in m.substs {
                 let actuals: Vec<_> = pattern.vars().iter().map(|v| sub[*v]).collect();
                 let match_signature = Match::new(m.eclass, actuals);
                 key.push(match_signature);
             }
         }
+        // 如果大于100ms，就打印出来
+
         key.sort();
+        // 直接将key作为matches
+        
 
         // 如果缓存中已经有相同的匹配集合，则只保留较小的那个
         match cache.get(&key) {
@@ -532,9 +633,9 @@ where
             }
         }
     }
-
-    // 返回缓存中所有去重后的模式
-    cache.into_values().collect()
+    // 将cache中的模式转换为AU
+    let result = cache.into_iter().map(|(matches, expr)| AU::new(expr, matches)).collect();
+    result
 }
 
 
@@ -569,7 +670,7 @@ where
       return;
     }
 
-    let mut aus: BTreeSet<PartialExpr<Op, (Id, Id)>> = BTreeSet::new();
+    let mut aus: BTreeSet<AU<Op, (Id, Id)>> = BTreeSet::new();
 
     let mut same = false;
     let mut different = false;
@@ -577,12 +678,12 @@ where
     // if there is a rule that produces this state
     if let Some(rules) = dfta.get_by_output(&state) {  // 获得可以产生当前状态的rule(输入状态和op)
       for ((op1, op2), inputs) in rules {
-        info!("input size: {}", inputs.len());
-        info!("Processing op ({:?}, {:?})", op1, op2);
+        info!("op1: {:?}, op2: {:?}, input size: {}", op1, op2, inputs.len());
         if op1 == op2 {
           same = true;  
           if inputs.is_empty() {
-            aus.insert(AstNode::leaf(op1.clone()).into()); // 插入一个叶节点，因为没有子节点)
+            let new_au = PartialExpr::from(AstNode::leaf(op1.clone()));
+            aus.insert(AU::new_cal_matches(new_au, &self.egraph));
           } else {
             // Recursively enumerate the inputs to this rule.
             for &input in inputs {
@@ -614,12 +715,14 @@ where
                 // }
                 data
               });
-              let au_range: Vec<Vec<PartialExpr<Op, (Id, Id)>>> = au_range.collect::<Vec<_>>();
-              get_random_aus(au_range, 1000)
-              // beam_search_aus(au_range, 1000, 3000)
+              let au_range:Vec<Vec<AU<Op, (Id, Id)>>> = au_range.collect::<Vec<_>>();
+              get_random_aus(au_range, 10)
+              //beam_search_aus(au_range, 1000, 2000)
               // genetic_algorithm_aus(au_range, 1000, 500, 50)
+             // au_range.into_iter().multi_cartesian_product()
               .into_iter()
               .map(|inputs| {
+                println!("inputs length is {}", inputs.len());
                 let result = PartialExpr::from(AstNode::new(op1.clone(), inputs));
                 result
               })
@@ -642,11 +745,11 @@ where
             // }
             // // 使用deduplicate_from_candidates去重
             info!("aus_state.len() is {}", self.aus_by_state.len());
-            // info!("deduplicating new_aus last: {} ", new_aus.clone().count());
-            // let new_aus_dedu = self.deduplicate_from_candidates::<PartialLibCost>(new_aus.clone());
-            // info!("now  is {}", new_aus_dedu.len());
+            info!("deduplicating new_aus last: {} ", new_aus.clone().count());
+            let new_aus_dedu = self.deduplicate_from_candidates::<PartialLibCost>(new_aus.clone());
+            info!("now  is {}", new_aus_dedu.len());
             let start_total = Instant::now(); // 总的执行时间
-            aus.extend(new_aus);
+            aus.extend(new_aus_dedu);
             info!("Total processing time: {:?}, lenth of new_aus and aus is {}", start_total.elapsed(), aus.len()); // 总的处理时间
           }
         } else {
@@ -656,7 +759,8 @@ where
     }
 
     if same && different {
-      aus.insert(PartialExpr::Hole(state));
+      let new_expr = PartialExpr::Hole(state);
+      aus.insert(AU::new_cal_matches(new_expr, &self.egraph));
     }
     self.filter_aus(aus, state);
     
@@ -682,19 +786,24 @@ where
       return;
     }
 
-    let mut aus: BTreeSet<PartialExpr<Op, (Id, Id)>> = BTreeSet::new();
+    let mut aus: BTreeSet<AU<Op, (Id, Id)>> = BTreeSet::new();
 
     let mut same = false;
     let mut different = false;
 
     let ops1 = egraph[state.0].nodes.iter().map(AstNode::as_parts);
+    let ops2 = egraph[state.1].nodes.iter().map(AstNode::as_parts);
+    
     for (op1, args1) in ops1 {
-      for (op2, args2) in egraph[state.1].nodes.iter().map(AstNode::as_parts) {
+      for (op2, args2) in ops2.clone() {
         if op1 == op2 {
           same = true;
           if args1.is_empty() && args2.is_empty() {
-            aus.insert(AstNode::leaf(op1.clone()).into());
+            // FIXME: is that right? 
+            let new_expr = AstNode::leaf(op1.clone()).into();
+            aus.insert(AU::new_cal_matches(new_expr, &self.egraph));
           } else {
+            info!("Processing op1 {:?} and op2 {:?}", op1, op2);
             // recursively enumerate the inputs to this rule.
             let inputs: Vec<_> =
               args1.iter().copied().zip(args2.iter().copied()).collect();
@@ -703,20 +812,33 @@ where
               self.enumerate_over_egraph(egraph, *next_state);
             }
 
+            let smax_arity = self.max_arity;
+            // let au_range: Vec<Vec<PartialExpr<Op, (Id, Id)>>> = au_range.collect::<Vec<_>>();
             let new_aus = inputs
               .iter()
-              .map(|input| self.aus_by_state[input].iter().cloned())
-              .multi_cartesian_product()
+              .map(|input| {
+                let aus = self.aus_by_state[input].iter().cloned().collect::<Vec<_>>();
+                aus
+          });
+            let au_range = new_aus.collect::<Vec<_>>();
+            let new_aus = get_random_aus(au_range, 100).into_iter()
               .map(|inputs| {
                 PartialExpr::from(AstNode::new(op1.clone(), inputs))
               })
               .filter(|au| {
-                self.max_arity.map_or(true, |max_arity| {
+                smax_arity.map_or(true, |max_arity| {
                   au.unique_holes().len() <= max_arity
                 })
               });
-
-            aus.extend(new_aus);
+            
+              info!("aus_state.len() is {}", self.aus_by_state.len());
+              info!("deduplicating new_aus last: {} ", new_aus.clone().count());
+              
+              let new_aus_dedu = self.deduplicate_from_candidates::<PartialLibCost>(new_aus.clone());
+              info!("now  is {}", new_aus_dedu.len());
+              let start_total = Instant::now(); // 总的执行时间
+              aus.extend(new_aus_dedu);
+              info!("Total processing time: {:?}, lenth of new_aus and aus is {}", start_total.elapsed(), aus.len()); // 总的处理时间
           }
         } else {
           different = true;
@@ -725,7 +847,8 @@ where
     }
 
     if same && different {
-      aus.insert(PartialExpr::Hole(state));
+      let new_expr = PartialExpr::Hole(state);
+      aus.insert(AU::new_cal_matches(new_expr, &self.egraph));
     }
 
     self.filter_aus(aus, state);
@@ -733,11 +856,12 @@ where
 
   fn filter_aus(
     &mut self,
-    mut aus: BTreeSet<PartialExpr<Op, (Id, Id)>>,
+    mut aus: BTreeSet<AU<Op, (Id, Id)>>,
     state: (Id, Id),
   ) {
     if aus.is_empty() {
-      aus.insert(PartialExpr::Hole(state));
+      let new_expr = PartialExpr::Hole(state);
+      aus.insert(AU::new_cal_matches(new_expr, &self.egraph));
     } else {
       // If the two e-classes cannot co-occur in the same program, do not produce an AU for them!
       // We filter out the anti-unifications which are just concrete
@@ -752,10 +876,10 @@ where
 
       let nontrivial_aus = aus
         .iter()
-        .filter(|au| learn_constants || au.has_holes())
+        .filter(|au| learn_constants || au.expr.has_holes())
         .cloned()
-        .map(normalize)
-        .filter_map(|(au, num_vars)| {
+        .map(|au|(normalize(au.expr), au.matches.clone()))
+        .filter_map(|((au, num_vars), matches)| {
           // Here we filter out rewrites that don't actually simplify
           // anything. We say that an AU rewrite simplifies an
           // expression if it replaces that expression with a function
@@ -785,12 +909,12 @@ where
             || au.num_nodes() > 1 + num_vars// FIXME:num_vars + 1, 这里改为2*num_vars是为了减少重复的模式
           {
             // println!("learn_trivial: {}, num_vars < au.num_holes(): {}, au.num_nodes() > num_vars: {}", learn_trivial, num_vars < au.num_holes(), au.num_nodes() > num_vars);
-            Some(au)
+            Some(AU::new(au, matches))
           } else {
             None
           }
         })
-        .filter(|au| match au {
+        .filter(|au| match au.expr.clone() {
           PartialExpr::Node(ast_node) => !banned_ops
             .iter()
             .any(|op| ast_node.operation().discriminant_eq(op)),
@@ -809,7 +933,7 @@ where
     // 在做完以上操作后，如果aus的数目超过了1000个，就从aus中均匀选择1000个
     if aus.len() > 100 {
       // 将aus转化成vec
-      let aus_vec: Vec<PartialExpr<Op, (Id, Id)>> = aus.clone().into_iter().collect();
+      let aus_vec: Vec<AU<Op,_>> = aus.clone().into_iter().collect();
       // 计算索引间隔
       let interval = aus_vec.len() / 100;
       // 从aus_vec中均匀选择100个
@@ -829,7 +953,7 @@ where
 /// anti-unifications. Returns a pair of the anti-unification and the number of
 /// unique variables it contains.
 #[must_use]
-fn normalize<Op, T: Eq>(
+pub fn normalize<Op, T: Eq>(
   au: PartialExpr<Op, T>,
 ) -> (PartialExpr<Op, Var>, usize) {
   let mut metavars = Vec::new();

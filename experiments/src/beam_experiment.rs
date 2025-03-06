@@ -17,6 +17,7 @@ use babble::{
 
 use super::{CsvWriter, Experiment, ExperimentResult};
 
+
 /// A `BeamExperiment` contains all of the information needed to run a
 /// library learning experiment with the beam extractor.
 #[derive(Debug)]
@@ -132,15 +133,15 @@ where
       au_time.elapsed().as_millis()
     );
 
-    info!("Deduplicating patterns... ");
-    let dedup_time = Instant::now();
-    learned_lib.deduplicate(&aeg);
+    // info!("Deduplicating patterns... ");
+    // let dedup_time = Instant::now();
+    // // learned_lib.deduplicate(&aeg);
     let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
-    info!(
-      "Reduced to {} patterns in {}ms",
-      learned_lib.size(),
-      dedup_time.elapsed().as_millis()
-    );
+    // info!(
+    //   "Reduced to {} patterns in {}ms",
+    //   learned_lib.size(),
+    //   dedup_time.elapsed().as_millis()
+    // );
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
@@ -219,6 +220,7 @@ where
     exprs: Vec<Expr<Op>>,
     _writer: &mut CsvWriter,
   ) -> ExperimentResult<Op> {
+    info!("Running beam experiment...");
     // First, let's turn our list of exprs into a list of recexprs
     let recexprs: Vec<RecExpr<AstNode<Op>>> =
       exprs.into_iter().map_into().collect();
@@ -237,7 +239,9 @@ where
       self.lps,
     ));
     let roots = recexprs.iter().map(|x| egraph.add_expr(x)).collect::<Vec<_>>();
+    info!("egraph rebuild");
     egraph.rebuild();
+    info!("Initial egraph size: {}", egraph.total_size());
 
     self.run_egraph(&roots, egraph)
   }
