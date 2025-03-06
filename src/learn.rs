@@ -143,12 +143,14 @@ impl<Op, T> AU<Op, T> {
 impl<Op: Eq, T: Eq> PartialOrd for AU<Op, T> {
   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
     Some(self.matches.cmp(&other.matches))
+    // Some(self.expr.size().cmp(&other.expr.size()))
   }
 }
 
 impl<Op: Eq, T:Eq> Ord for AU<Op, T> {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     self.matches.cmp(&other.matches)
+    // self.expr.size().cmp(&other.expr.size())
   }
 }
 
@@ -422,15 +424,17 @@ where
       // println!("there are {} similar eclass pairs", count);
       for (ecls1, ecls2) in eclass_pairs {
         // 我在想，现在两个eclass肯定是eqsat的状态，我们能不能通过二者op的数量判断是否需要anti-unify，只有相似的eclass才需要anti-unify
-        let ecls1_size = egraph[ecls1].nodes.len();
-        let ecls2_size = egraph[ecls2].nodes.len();
-        if ecls1_size.abs_diff(ecls2_size) < 1 {
           learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
-        }
       }
 
     }
-    // 如果learned_lib中的aus数量大于500，就从排序结果中按照间隔均匀采样500个
+    // 如果learned_lib中的aus数量大于500，就从排序结果中随机选取500个
+    // if learned_lib.aus.len() > 500 {
+    //   let mut aus = learned_lib.aus.iter().cloned().collect::<Vec<_>>();
+    //   aus.shuffle(&mut rand::thread_rng());
+    //   let aus = aus.into_iter().take(500).collect::<BTreeSet<_>>();
+    //   learned_lib.aus = aus;
+    // }
     if learned_lib.aus.len() > 500 {
       let aus = learned_lib.aus.iter().collect::<Vec<_>>();
       let mut sampled_aus = BTreeSet::new();
@@ -604,7 +608,7 @@ where
     // 遍历所有候选的模式
 
     for au in candidates {
-      if au.size() > 300 {
+      if au.size() > 400 {
         continue;
       }
 
@@ -821,7 +825,7 @@ where
                 aus
           });
             let au_range = new_aus.collect::<Vec<_>>();
-            let new_aus = get_random_aus(au_range, 100).into_iter()
+            let new_aus = get_random_aus(au_range, 1000).into_iter()
               .map(|inputs| {
                 PartialExpr::from(AstNode::new(op1.clone(), inputs))
               })

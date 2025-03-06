@@ -39,6 +39,10 @@ impl <Op> VecPE<Op> {
 impl <Op: Eq> PartialOrd for VecPE<Op> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.matches.cmp(&other.matches))
+        // 计算exprs中PE的size()的和
+        // let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
+        // let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
+        // Some(self_size.cmp(&other_size))
     }
 }
 
@@ -46,6 +50,9 @@ impl <Op: Eq> PartialOrd for VecPE<Op> {
 impl <Op: Eq> Ord for VecPE<Op> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.matches.cmp(&other.matches)
+        // let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
+        // let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
+        // self_size.cmp(&other_size)
     }
 }
 
@@ -70,7 +77,7 @@ where
     }
 
     info!("get_random_aus");
-    let range = 10 * m;
+    let range = 50 * m;
 
     // 计算aus中每个Vec的size的乘积
     let cartesian_product_size:usize = aus.iter().map(|x| x.len()).product();
