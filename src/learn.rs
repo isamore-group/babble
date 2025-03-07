@@ -171,21 +171,6 @@ where
     dfta: bool,
 }
 
-// impl<Op: Ord+ Debug + Clone + Hash, A: egg::Analysis<AstNode<Op>>> Default for LearnedLibraryBuilder<Op, A> {
-//   fn default() -> Self {
-//     Self {
-//       egraph: EGraph::new(PartialLibCost::default()),
-//       learn_trivial: false,
-//       learn_constants: false,
-//       max_arity: None,
-//       banned_ops: vec![],
-//       roots: vec![],
-//       co_occurences: None,
-//       dfta: true,
-//     }
-//   }
-// }
-
 // 为 LearnedLibraryBuilder 实现自定义的构造函数make_with_egraph
 impl<Op> LearnedLibraryBuilder<Op>
 where

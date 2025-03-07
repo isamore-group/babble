@@ -21,6 +21,7 @@ mod dfta;
 pub mod extract;
 pub mod learn;
 pub mod rewrites;
+pub mod runner;
 pub mod sexp;
 pub mod simple_lang;
 pub mod teachable;
@@ -35,6 +36,9 @@ pub use ast_node::{
 pub use co_occurrence::{COBuilder, CoOccurrences};
 pub use learn::{
   DiscriminantEq, LearnedLibrary, LearnedLibraryBuilder, LibId, ParseLibIdError,
+};
+pub use runner::{
+  BabbleResult, BabbleRunner, BeamConfig, BeamRunner
 };
 pub use teachable::{
   BindingExpr, DeBruijnIndex, ParseDeBruijnIndexError, Teachable,
