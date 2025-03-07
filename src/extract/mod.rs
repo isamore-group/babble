@@ -1,6 +1,7 @@
 //! Extracting expressions with learned libs out of egraphs
 
 pub mod beam;
+pub mod cost;
 
 use std::collections::HashMap;
 
@@ -38,6 +39,38 @@ where
   let root = fin.add(AstNode::new(Op::list(), roots.iter().copied()));
 
   let mut extractor = beam::LibExtractor::new(&fin);
+  let best = extractor.best(root);
+  lift_libs(&best)
+}
+
+/// Given an `egraph` that contains the original expression at `roots`,
+/// and a set of library `rewrites`, extract the programs rewritten using the library
+/// with Pareto optimization for area and delay.
+pub fn apply_libs_pareto<Op, A>(
+  egraph: EGraph<AstNode<Op>, A>,
+  roots: &[Id],
+  rewrites: &[Rewrite<AstNode<Op>, A>],
+  strategy: beam::OptimizationStrategy,
+) -> RecExpr<AstNode<Op>>
+where
+  Op: Clone
+    + Teachable
+    + Ord
+    + std::fmt::Debug
+    + std::fmt::Display
+    + std::hash::Hash
+    + Arity
+    + Send
+    + Sync,
+  A: Analysis<AstNode<Op>> + Default + Clone,
+{
+  let mut fin = Runner::<_, _, ()>::new(Default::default())
+    .with_egraph(egraph)
+    .run(rewrites.iter())
+    .egraph;
+  let root = fin.add(AstNode::new(Op::list(), roots.iter().copied()));
+
+  let mut extractor = beam::LibExtractor::with_strategy(&fin, strategy);
   let best = extractor.best(root);
   lift_libs(&best)
 }
