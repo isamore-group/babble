@@ -26,6 +26,7 @@ pub mod sexp;
 pub mod simple_lang;
 pub mod teachable;
 pub mod util;
+pub mod au_search;
 
 pub use ast_node::{
   combine_exprs, Arity, AstNode, Expr, PartialExpr, Precedence, Pretty,
