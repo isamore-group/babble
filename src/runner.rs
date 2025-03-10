@@ -15,15 +15,7 @@ use log::{debug, info};
 
 use crate::{
     extract::{
-        apply_libs, 
-        apply_libs_pareto,
-        apply_libs_knapsack,
-        apply_libs_area_delay,
-        beam::PartialLibCost,
-        beam::OptimizationStrategy,
-        beam_pareto::{BeamAreaDelay, LibSelAreaDelay, CostSetAreaDelay},
-        beam_knapsack,
-        cost::{LangCost, LangGain},
+        apply_libs, apply_libs_area_delay, apply_libs_knapsack, apply_libs_pareto, beam::{OptimizationStrategy, PartialLibCost}, beam_knapsack, beam_pareto::{BeamAreaDelay, CostSetAreaDelay, LibSelAreaDelay}, cost::{DelayCost, LangCost, LangGain}
     },
     Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder,
     Pretty, Printable, Teachable,
@@ -250,7 +242,7 @@ where
         let mut egraph = runner.egraph;
         let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
         let mut cs = egraph[egraph.find(root)].data.clone();
-        println!("root: {:#?}", egraph[egraph.find(root)]);
+        // println!("root: {:#?}", egraph[egraph.find(root)]);
         // println!("cs: {:#?}", cs);
         cs.set.sort_unstable_by_key(|elem| elem.full_cost);
 
@@ -380,7 +372,7 @@ where
 }
 
 /// Configuration for Pareto-optimal beam search
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ParetoConfig {
     /// The final beam size to use
     pub final_beams: usize,
@@ -777,7 +769,7 @@ where
 }
 
 /// Configuration for beam search
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct KnapsackConfig {
     /// The final beam size to use
     pub final_beams: usize,
@@ -791,6 +783,8 @@ pub struct KnapsackConfig {
     pub learn_constants: bool,
     /// Maximum arity of a library function
     pub max_arity: Option<usize>,
+    /// Maximum library area cost
+    pub max_area: usize,
 }
 
 impl Default for KnapsackConfig {
@@ -802,6 +796,7 @@ impl Default for KnapsackConfig {
             lps: 1,
             learn_constants: false,
             max_arity: None,
+            max_area: 100,
         }
     }
 }
@@ -860,11 +855,19 @@ where
     fn run_egraph(
         &self,
         roots: &[Id],
-        egraph: EGraph<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>,
+        egraph: EGraph<AstNode<Op>, 
+        beam_knapsack::PartialLibCost<Op, LA, LD>>,
     ) -> KnapsackResult<Op, LA, LD> {
         let start_time = Instant::now();
         let timeout = Duration::from_secs(60 * 100_000);
 
+        let mut init_cost: usize = 0;
+        for root in roots {
+            let extractor = egg::Extractor::new(&egraph, DelayCost::new(self.lang_gain.clone()));
+            let (_, expr) = extractor.find_best(*root);
+            init_cost = std::cmp::max(init_cost, DelayCost::new(self.lang_gain.clone()).cost_rec(&expr));
+        }
+    
         info!("Initial egraph size: {}", egraph.total_size());
         info!("Running {} DSRs... ", self.dsrs.len());
 
@@ -934,13 +937,15 @@ where
         let mut egraph = runner.egraph;
         let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
         let mut cs = egraph[egraph.find(root)].data.clone();
-        println!("root: {:#?}", egraph[egraph.find(root)]);
-        println!("cs: {:#?}", cs);
+        // println!("root: {:#?}", egraph[egraph.find(root)]);
+        // println!("cs: {:#?}", cs);
         cs.set.sort_unstable_by_key(|elem| elem.expr_delay);
 
         info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
         info!("Stop reason: {:?}", runner.stop_reason.unwrap());
         info!("Number of nodes: {}", egraph.total_size());
+
+        // println!("egraph: {:#?}", egraph);
 
         println!("learned libs");
         let all_libs: Vec<_> = learned_lib.libs().collect();
@@ -951,33 +956,22 @@ where
         }
 
         debug!("upper bound ('full') cost: {}", cs.set[0].expr_delay);
-        println!("Size of cs.set: {}", cs.set.len());
 
         let ex_time = Instant::now();
         info!("Extracting... ");
         let lifted = apply_libs_knapsack(aeg.clone(), roots, &chosen_rewrites, self.lang_cost.clone(), self.lang_gain.clone());
-        let final_cost = AstSize.cost_rec(&lifted);
+        let final_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(&lifted);
 
         info!("Finished in {}ms", ex_time.elapsed().as_millis());
         info!("final cost: {}", final_cost);
         debug!("{}", Pretty(&Expr::from(lifted.clone())));
         info!("round time: {}ms", start_time.elapsed().as_millis());
 
-        // Calculate initial cost
-        let initial_cost = {
-            let s: usize = roots.iter().map(|id| {
-                let extractor = egg::Extractor::new(&egraph, AstSize);
-                let (_, expr) = extractor.find_best(*id);
-                AstSize.cost_rec(&expr)
-            }).sum();
-            s + 1 // Add one to account for root node
-        };
-
         KnapsackResult {
             final_expr: lifted.into(),
             num_libs: chosen_rewrites.len(),
             rewrites: chosen_rewrites,
-            initial_cost,
+            initial_cost: init_cost,
             final_cost,
             run_time: start_time.elapsed(),
         }

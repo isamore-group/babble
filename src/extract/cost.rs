@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 use egg::CostFunction;
-use crate::ast_node::AstNode;
+use crate::{ast_node::AstNode, Teachable, teachable::BindingExpr};
 
 /// Trait for language-specific area cost
 pub trait LangCost<Op>: Debug + Clone + Send + Sync {
@@ -81,7 +81,7 @@ where
 impl<L, Op> CostFunction<AstNode<Op>> for DelayCost<L, Op>
 where
     L: LangGain<Op>,
-    Op: Clone + Debug + Ord + std::hash::Hash,
+    Op: Clone + Debug + Ord + std::hash::Hash + Teachable,
 {
     type Cost = usize;
 
@@ -98,7 +98,21 @@ where
         // Calculate the gain of this operation
         let op_gain = self.lang_gain.op_gain(enode.operation(), &arg_costs);
         
-        // Return the critical path delay
-        max_child_cost + op_gain
+        match enode.as_binding_expr() {
+            Some(expr) => {
+                match expr {
+                    BindingExpr::Lib(_, _, _) => {
+                        max_child_cost / 2 + op_gain
+                    }
+                    _ => {
+                        max_child_cost + op_gain
+                    }
+                }
+            },
+            None => {
+                // Otherwise, just return the critical path delay
+                max_child_cost + op_gain
+            }
+        }
     }
 } 

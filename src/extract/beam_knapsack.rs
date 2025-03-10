@@ -505,9 +505,9 @@ where
         // This is some other operation of some kind.
         // We test the arity of the function
         let op_delay = self_ref.lang_gain.op_gain(enode.operation(), &[]);
-        println!("op: {:#?}", enode.operation());
-        println!("op_delay: {:#?}", op_delay);
-        println!("number of args: {:#?}", enode.args().len());
+        // println!("op: {:#?}", enode.operation());
+        // println!("op_delay: {:#?}", op_delay);
+        // println!("number of args: {:#?}", enode.args().len());
         if enode.is_empty() {
           // 0 args. Return intro.
           
@@ -667,12 +667,13 @@ where
   pub fn best(&mut self, id: Id) -> RecExpr<AstNode<Op>> {
     // Populate the memo:
     self.extract(id);
+    // println!("{:#?}", self.egraph);
     // Get the best expression from the memo:
     self.get_from_memo(id).unwrap().clone().unwrap()
   }
 
   /// Expression gain used by this extractor
-  fn gain(&self, expr: &RecExpr<AstNode<Op>>) -> usize {
+  pub fn gain(&self, expr: &RecExpr<AstNode<Op>>) -> usize {
     DelayCost::new(self.lang_gain.clone()).cost_rec(expr)
   }
 
@@ -690,11 +691,16 @@ where
       // Initialize memo with None to prevent infinite recursion in case of cycles in the egraph
       self.insert_into_memo(id, None);
       // Extract a candidate expression from each node
+      // println!("Extracting eclass {:#?}", self.egraph[id]);
       for node in self.egraph[id].iter() {
         match self.extract_node(node) {
           None => (), // Extraction for this node failed (must be a cycle)
           Some(cand) => {
             // Extraction succeeded: check if cand is better than what we have so far
+            // print!("eclss: {}, ", id);
+            // print!("node: {}, ", node.operation());
+            // print!("cand: {}, ", cand.pretty(100));
+            // println!("cand gain: {}", Self::gain(&self, &cand));
             match self.get_from_memo(id).unwrap() {
               // If we already had an expression and it was better, do nothing
               Some(prev) if Self::gain(&self, prev) <= Self::gain(&self, &cand) => (),
