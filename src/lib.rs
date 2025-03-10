@@ -36,7 +36,7 @@ pub use learn::{
   DiscriminantEq, LearnedLibrary, LearnedLibraryBuilder, LibId, ParseLibIdError,
 };
 pub use runner::{
-  BabbleResult, BabbleRunner, BeamConfig, BeamRunner, ParetoConfig, ParetoRunner,
+  BabbleResult, BabbleRunner, BeamConfig, BeamRunner, ParetoConfig, ParetoRunner, KnapsackConfig, KnapsackRunner,
 };
 pub use teachable::{
   BindingExpr, DeBruijnIndex, ParseDeBruijnIndexError, Teachable,
