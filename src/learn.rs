@@ -645,7 +645,7 @@ where
 
         // 如果缓存中已经有相同的匹配集合，则只保留较小的那个
         match cache.get(&key) {
-            Some(cached) if cached.size() <= au.size() => {
+            Some(cached) if cached.size() >= au.size() => {
             }
             _ => {
                 cache.insert(key, au);
@@ -856,6 +856,8 @@ where
               let new_aus_dedu = self.deduplicate_from_candidates::<PartialLibCost>(new_aus.clone());
               info!("now  is {}", new_aus_dedu.len());
               let start_total = Instant::now(); // 总的执行时间
+              // 为每一个新的模式生成一个AU
+              // aus.extend(new_aus.map(|au| AU::new_cal_matches(au, &self.egraph)));
               aus.extend(new_aus_dedu);
               info!("Total processing time: {:?}, lenth of new_aus and aus is {}", start_total.elapsed(), aus.len()); // 总的处理时间
           }
@@ -1086,6 +1088,3 @@ where
 
   PartialExpr::Node(BindingExpr::Lib(ix, fun, body).into())
 }
-
-
-
