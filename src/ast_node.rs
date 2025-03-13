@@ -25,7 +25,7 @@ pub struct AstNode<Op, T = Id> {
 
 pub use expr::{combine_exprs, Expr};
 pub use partial_expr::PartialExpr;
-pub use pretty::{Precedence, Pretty, Printable, Printer};
+pub use pretty::{Precedence, Pretty, Printable, Printer, Memoize};
 
 mod expr;
 mod partial_expr;

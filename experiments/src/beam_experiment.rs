@@ -1,7 +1,5 @@
 use std::{
-  fmt::{self, Debug, Display, Formatter},
-  hash::Hash,
-  time::{Duration, Instant},
+  fmt::{self, Debug, Display, Formatter}, hash::Hash, sync::Arc, time::{Duration, Instant}
 };
 
 use egg::{AstSize, CostFunction, EGraph, Id, RecExpr, Rewrite, Runner};
@@ -177,7 +175,7 @@ where
 
     info!("Finished in {}ms", ex_time.elapsed().as_millis());
     info!("final cost: {}", final_cost);
-    debug!("{}", Pretty(&Expr::from(lifted.clone())));
+    debug!("{}", Pretty::new(Arc::new(Expr::from(lifted.clone()))));
     info!("round time: {}ms", start_time.elapsed().as_millis());
 
     ExperimentResult {

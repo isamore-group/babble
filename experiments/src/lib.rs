@@ -12,18 +12,13 @@ use egg::{EGraph, Id, RecExpr, Rewrite, Runner};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::{
-  collections::HashMap,
-  fmt::{self, Debug, Display, Formatter},
-  hash::Hash,
-  io,
-  marker::PhantomData,
-  time::{Duration, Instant},
+  collections::HashMap, fmt::{self, Debug, Display, Formatter}, hash::Hash, io, marker::PhantomData, sync::Arc, time::{Duration, Instant}
 };
 
 mod beam_experiment;
 pub mod cache;
 mod eqsat_experiment;
-pub mod dreamcoder;
+// pub mod dreamcoder;
 
 #[derive(
   Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -39,7 +34,7 @@ pub struct Summary {
 
 struct ExperimentTitle<
   'a,
-  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
+  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord + Display,
   T: Experiment<Op> + ?Sized,
 > {
   experiment: &'a T,
@@ -47,7 +42,7 @@ struct ExperimentTitle<
 }
 impl<'a, Op, T: Experiment<Op> + ?Sized> Display for ExperimentTitle<'a, Op, T>
 where
-  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
+  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord + Display,
 {
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     self.experiment.fmt_title(f)
@@ -56,7 +51,7 @@ where
 
 /// Output of library learning.
 pub struct ExperimentResult<
-  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
+  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord + Display,
 > {
   pub final_expr: Expr<Op>,
   pub num_libs: usize,
@@ -68,7 +63,7 @@ pub type CsvWriter = csv::Writer<Box<dyn io::Write>>;
 /// Library learning experiment.
 pub trait Experiment<Op>
 where
-  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
+  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord + Display,
 {
   /// The list of domain-specific rewrites used in this experiment.
   fn dsrs(&self) -> &[Rewrite<AstNode<Op>, PartialLibCost>];
@@ -153,7 +148,7 @@ where
 
     // Print our analysis on this
     println!("Final beam results");
-    println!("{}", Pretty(&res.final_expr));
+    println!("{}", Pretty::new(Arc::new(res.final_expr.clone())));
     println!(
       "cost diff: {initial_cost} -> {final_cost} (compression ratio {compression})",
     );
@@ -520,7 +515,7 @@ pub mod plumbing {
 #[derive(Debug)]
 pub struct Rounds<Op, T: Experiment<Op>>
 where
-  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
+  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord + Display,
 {
   rounds: usize,
   experiment: T,
@@ -529,7 +524,7 @@ where
 
 impl<Op, T: Experiment<Op>> Rounds<Op, T>
 where
-  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
+  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord + Display,
 {
   pub fn new(rounds: usize, experiment: T) -> Self {
     Self {
@@ -596,7 +591,7 @@ where
           self.rounds,
         );
 
-        log::debug!("{}", Pretty(&inter_expr));
+        log::debug!("{}", Pretty::new(Arc::new(inter_expr.clone())));
       }
     }
 
@@ -662,7 +657,7 @@ where
         compression
       );
 
-      log::debug!("{}", Pretty(&inter_expr));
+      log::debug!("{}", Pretty::new(Arc::new(inter_expr.clone())));
     }
 
     for round in 1..self.rounds {
@@ -702,7 +697,7 @@ where
           compression
         );
 
-        log::debug!("{}", Pretty(&inter_expr));
+        log::debug!("{}", Pretty::new(Arc::new(inter_expr.clone())));
       }
     }
 
@@ -750,7 +745,7 @@ where
 #[derive(Debug)]
 pub struct Generalization<Op, T: Experiment<Op>>
 where
-  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord,
+  Op: Printable + Teachable + Hash + Clone + Debug + Arity + Ord + Display,
 {
   experiment: T,
   test_set: Vec<Expr<Op>>,
@@ -910,7 +905,7 @@ where
 
     // Print our analysis on this
     println!("Final beam results");
-    println!("{}", Pretty(&res.final_expr));
+    println!("{}", Pretty::new(Arc::new(res.final_expr.clone())));
     println!(
       "cost diff: {initial_cost} -> {final_cost} (compression factor {compression})"
     );
