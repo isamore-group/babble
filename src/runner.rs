@@ -24,6 +24,7 @@ use crate::{
   },
 };
 
+use crate::USE_RULES;
 /// Result of running a BabbleRunner experiment
 #[derive(Clone)]
 pub struct BabbleResult<Op>
@@ -133,51 +134,68 @@ impl Default for BeamConfig {
 }
 
 /// A BabbleRunner that uses regular beam search
-pub struct BeamRunner<Op>
+pub struct BeamRunner<Op, LD>
 where
-  Op: Display + Hash + Clone + Ord + Teachable + Arity + Send + Sync + 'static,
+    Op: Display + Hash + Clone + Ord + Teachable + Arity + Send + Sync + 'static,
+    LD: LangGain<Op> + Clone + Send + Sync + 'static,
 {
-  /// The domain-specific rewrites to apply
-  dsrs: Vec<Rewrite<AstNode<Op>, PartialLibCost>>,
-  /// Configuration for the beam search
-  config: BeamConfig,
+    /// The domain-specific rewrites to apply
+    dsrs: Vec<Rewrite<AstNode<Op>, PartialLibCost>>,
+    /// Configuration for the beam search
+    config: BeamConfig,
+
+    lang_gain: LD,
 }
 
-impl<Op> BeamRunner<Op>
+impl<Op, LD> BeamRunner<Op, LD>
 where
-  Op: Arity
-    + Teachable
-    + Printable
-    + Debug
-    + Display
-    + Hash
-    + Clone
-    + Ord
-    + Sync
-    + Send
-    + DiscriminantEq
-    + 'static,
+    Op: Arity
+        + Teachable
+        + Printable
+        + Debug
+        + Default
+        + Display
+        + Hash
+        + Clone
+        + Ord
+        + Sync
+        + Send
+        + DiscriminantEq
+        + 'static,
+    LD: LangGain<Op> + Clone + Default + Send + Sync + 'static,
 {
-  /// Create a new BeamRunner with the given domain-specific rewrites and
-  /// configuration
-  pub fn new<I>(dsrs: I, config: BeamConfig) -> Self
-  where
-    I: IntoIterator<Item = Rewrite<AstNode<Op>, PartialLibCost>>,
-  {
-    Self {
-      dsrs: dsrs.into_iter().collect(),
-      config,
+    /// Create a new BeamRunner with the given domain-specific rewrites and configuration
+    pub fn new<I>(
+        dsrs: I,
+        config: BeamConfig,
+        lang_gain: LD,
+    ) -> Self
+    where
+        I: IntoIterator<Item = Rewrite<AstNode<Op>, PartialLibCost>>,
+    {
+        // 如果USE_RULES为false，将dsrs清空
+        let dsrs = if !USE_RULES {
+            Vec::new()
+        } else {
+            dsrs.into_iter().collect()
+        };
+        Self {
+            dsrs,
+            config,
+            lang_gain,
+        }
     }
-  }
 
-  /// Run the e-graph and library learning process
-  fn run_egraph(
-    &self,
-    roots: &[Id],
-    egraph: EGraph<AstNode<Op>, PartialLibCost>,
-  ) -> BabbleResult<Op> {
-    let start_time = Instant::now();
-    let timeout = Duration::from_secs(60 * 100_000);
+    /// Run the e-graph and library learning process
+    fn run_egraph(
+        &self,
+        roots: &[Id],
+        egraph: EGraph<AstNode<Op>, PartialLibCost>,
+    ) -> BabbleResult<Op> 
+    {
+        let start_time = Instant::now();
+        let timeout = Duration::from_secs(60 * 100_000);
+        
 
     info!("Initial egraph size: {}", egraph.total_size());
     info!("Running {} DSRs... ", self.dsrs.len());
@@ -202,18 +220,18 @@ where
     let co_occurs = co_ext.run();
     info!("Finished in {}ms", co_time.elapsed().as_millis());
 
-    info!("Running anti-unification... ");
-    let au_time = Instant::now();
-    let mut learned_lib = LearnedLibraryBuilder::default()
-      .learn_constants(self.config.learn_constants)
-      .max_arity(self.config.max_arity)
-      .with_co_occurs(co_occurs)
-      .build(&aeg);
-    info!(
-      "Found {} patterns in {}ms",
-      learned_lib.size(),
-      au_time.elapsed().as_millis()
-    );
+        info!("Running anti-unification... ");
+        let au_time = Instant::now();
+        let mut learned_lib = LearnedLibraryBuilder::default()
+            .learn_constants(self.config.learn_constants)
+            .max_arity(self.config.max_arity)
+            .with_co_occurs(co_occurs)
+            .build(&aeg, self.lang_gain.clone());
+        info!(
+            "Found {} patterns in {}ms",
+            learned_lib.size(),
+            au_time.elapsed().as_millis()
+        );
 
     info!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
@@ -299,20 +317,22 @@ where
   }
 }
 
-impl<Op> BabbleRunner<Op> for BeamRunner<Op>
+impl<Op, LD> BabbleRunner<Op> for BeamRunner<Op, LD>
 where
-  Op: Arity
-    + Teachable
-    + Printable
-    + Debug
-    + Display
-    + Hash
-    + Clone
-    + Ord
-    + Sync
-    + Send
-    + DiscriminantEq
-    + 'static,
+    Op: Arity
+        + Teachable
+        + Printable
+        + Debug
+        + Display
+        + Default
+        + Hash
+        + Clone
+        + Ord
+        + Sync
+        + Send
+        + DiscriminantEq
+        + 'static,
+    LD: LangGain<Op> + Clone + Default + Send + Sync + 'static,
 {
   fn run(&self, expr: Expr<Op>) -> BabbleResult<Op> {
     self.run_multi(vec![expr])
@@ -373,16 +393,18 @@ where
 }
 
 // Implement Debug that doesn't depend on Op being Debug
-impl<Op> std::fmt::Debug for BeamRunner<Op>
+impl<Op, LD> std::fmt::Debug for BeamRunner<Op, LD>
 where
-  Op: Display + Hash + Clone + Ord + Teachable + Arity + Send + Sync + 'static,
+    Op: Display + Hash + Clone + Ord + Teachable + Arity + Send + Sync + 'static,
+    LD: LangGain<Op> + Clone + Default + Send + Sync + 'static,
 {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("BeamRunner")
-      .field("dsrs_count", &self.dsrs.len())
-      .field("config", &self.config)
-      .finish()
-  }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BeamRunner")
+            .field("dsrs_count", &self.dsrs.len())
+            .field("config", &self.config)
+            .field("lang_gain", &PhantomData::<LD>)
+            .finish()
+    }
 }
 
 /// Configuration for Pareto-optimal beam search
@@ -437,39 +459,45 @@ where
 
 impl<Op, LA, LD> ParetoRunner<Op, LA, LD>
 where
-  Op: Arity
-    + Teachable
-    + Printable
-    + Debug
-    + Display
-    + Hash
-    + Clone
-    + Ord
-    + Sync
-    + Send
-    + DiscriminantEq
-    + 'static,
-  LA: LangCost<Op> + Clone + Send + Sync + 'static,
-  LD: LangGain<Op> + Clone + Send + Sync + 'static,
+    Op: Arity
+        + Teachable
+        + Printable
+        + Debug
+        + Default
+        + Display
+        + Hash
+        + Clone
+        + Ord
+        + Sync
+        + Send
+        + DiscriminantEq
+        + 'static,
+    LA: LangCost<Op> + Clone + Send + Sync + 'static,
+    LD: LangGain<Op> + Clone + Default + Send + Sync + 'static,
 {
-  /// Create a new ParetoRunner with the given domain-specific rewrites,
-  /// configuration, and cost models
-  pub fn new<I>(
-    dsrs: I,
-    config: ParetoConfig,
-    area_cost: LA,
-    delay_cost: LD,
-  ) -> Self
-  where
-    I: IntoIterator<Item = Rewrite<AstNode<Op>, BeamAreaDelay>>,
-  {
-    Self {
-      dsrs: dsrs.into_iter().collect(),
-      config,
-      area_cost,
-      delay_cost,
+    /// Create a new ParetoRunner with the given domain-specific rewrites, configuration, and cost models
+    pub fn new<I>(
+        dsrs: I,
+        config: ParetoConfig,
+        area_cost: LA,
+        delay_cost: LD,
+    ) -> Self
+    where
+        I: IntoIterator<Item = Rewrite<AstNode<Op>, BeamAreaDelay>>,
+    {
+        // 如果USE_RULES为false，将dsrs清空
+        let dsrs = if !USE_RULES {
+            Vec::new()
+        } else {
+            dsrs.into_iter().collect()
+        };
+        Self {
+            dsrs,
+            config,
+            area_cost,
+            delay_cost,
+        }
     }
-  }
 
   /// Run the e-graph and library learning process with Pareto-optimal beam
   /// search
@@ -504,18 +532,18 @@ where
     let co_occurs = co_ext.run();
     info!("Finished in {}ms", co_time.elapsed().as_millis());
 
-    info!("Running anti-unification... ");
-    let au_time = Instant::now();
-    let mut learned_lib = LearnedLibraryBuilder::default()
-      .learn_constants(self.config.learn_constants)
-      .max_arity(self.config.max_arity)
-      .with_co_occurs(co_occurs)
-      .build(&aeg);
-    info!(
-      "Found {} patterns in {}ms",
-      learned_lib.size(),
-      au_time.elapsed().as_millis()
-    );
+        info!("Running anti-unification... ");
+        let au_time = Instant::now();
+        let mut learned_lib = LearnedLibraryBuilder::default()
+            .learn_constants(self.config.learn_constants)
+            .max_arity(self.config.max_arity)
+            .with_co_occurs(co_occurs)
+            .build(&aeg, self.delay_cost.clone());
+        info!(
+            "Found {} patterns in {}ms",
+            learned_lib.size(),
+            au_time.elapsed().as_millis()
+        );
 
     info!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
@@ -625,20 +653,21 @@ where
 
 impl<Op, LA, LD> BabbleRunner<Op> for ParetoRunner<Op, LA, LD>
 where
-  Op: Arity
-    + Teachable
-    + Printable
-    + Debug
-    + Display
-    + Hash
-    + Clone
-    + Ord
-    + Sync
-    + Send
-    + DiscriminantEq
-    + 'static,
-  LA: LangCost<Op> + Clone + Send + Sync + 'static,
-  LD: LangGain<Op> + Clone + Send + Sync + 'static,
+    Op: Arity
+        + Teachable
+        + Printable
+        + Debug
+        + Default
+        + Display
+        + Hash
+        + Clone
+        + Ord
+        + Sync
+        + Send
+        + DiscriminantEq
+        + 'static,
+    LA: LangCost<Op> + Clone + Send + Sync + 'static,
+    LD: LangGain<Op> + Clone + Default + Send + Sync + 'static,
 {
   fn run(&self, expr: Expr<Op>) -> BabbleResult<Op> {
     self.run_multi(vec![expr])
@@ -861,41 +890,46 @@ where
 
 impl<Op, LA, LD> KnapsackRunner<Op, LA, LD>
 where
-  Op: Arity
-    + Teachable
-    + Printable
-    + Debug
-    + Display
-    + Hash
-    + Clone
-    + Ord
-    + Sync
-    + Send
-    + DiscriminantEq
-    + 'static,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
+    Op: Arity
+        + Teachable
+        + Printable
+        + Debug
+        + Default
+        + Display
+        + Hash
+        + Clone
+        + Ord
+        + Sync
+        + Send
+        + DiscriminantEq
+        + 'static,
+    LA: LangCost<Op> + Clone + Default,
+    LD: LangGain<Op> + Clone + Default,
 {
-  /// Create a new BeamRunner with the given domain-specific rewrites and
-  /// configuration
-  pub fn new<I>(
-    dsrs: I,
-    config: KnapsackConfig,
-    lang_cost: LA,
-    lang_gain: LD,
-  ) -> Self
-  where
-    I: IntoIterator<
-      Item = Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>,
-    >,
-  {
-    Self {
-      dsrs: dsrs.into_iter().collect(),
-      config,
-      lang_cost,
-      lang_gain,
+    /// Create a new BeamRunner with the given domain-specific rewrites and configuration
+    pub fn new<I>(
+        dsrs: I,
+        config: KnapsackConfig,
+        lang_cost: LA,
+        lang_gain: LD,
+    ) -> Self
+    where
+        I: IntoIterator<Item = Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>,>,
+    {
+
+        // 如果USE_RULES为false，将dsrs清空
+        let dsrs = if !USE_RULES {
+            Vec::new()
+        } else {
+            dsrs.into_iter().collect()
+        };
+        Self {
+            dsrs,
+            config,
+            lang_cost,
+            lang_gain,
+        }
     }
-  }
 
   /// Run the e-graph and library learning process
   fn run_egraph(
@@ -941,18 +975,18 @@ where
     let co_occurs = co_ext.run();
     info!("Finished in {}ms", co_time.elapsed().as_millis());
 
-    info!("Running anti-unification... ");
-    let au_time = Instant::now();
-    let mut learned_lib = LearnedLibraryBuilder::default()
-      .learn_constants(self.config.learn_constants)
-      .max_arity(self.config.max_arity)
-      .with_co_occurs(co_occurs)
-      .build(&aeg);
-    info!(
-      "Found {} patterns in {}ms",
-      learned_lib.size(),
-      au_time.elapsed().as_millis()
-    );
+        info!("Running anti-unification... ");
+        let au_time = Instant::now();
+        let mut learned_lib = LearnedLibraryBuilder::default()
+            .learn_constants(self.config.learn_constants)
+            .max_arity(self.config.max_arity)
+            .with_co_occurs(co_occurs)
+            .build(&aeg, self.lang_gain.clone());
+        info!(
+            "Found {} patterns in {}ms",
+            learned_lib.size(),
+            au_time.elapsed().as_millis()
+        );
 
     info!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
@@ -1037,20 +1071,21 @@ where
 
 impl<Op, LA, LD> BabbleKnapsackRunner<Op, LA, LD> for KnapsackRunner<Op, LA, LD>
 where
-  Op: Arity
-    + Teachable
-    + Printable
-    + Debug
-    + Display
-    + Hash
-    + Clone
-    + Ord
-    + Sync
-    + Send
-    + DiscriminantEq
-    + 'static,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
+    Op: Arity
+        + Teachable
+        + Printable
+        + Debug
+        + Default
+        + Display
+        + Hash
+        + Clone
+        + Ord
+        + Sync
+        + Send
+        + DiscriminantEq
+        + 'static,
+    LA: LangCost<Op> + Clone + Default,
+    LD: LangGain<Op> + Clone + Default,
 {
   fn run(&self, expr: Expr<Op>) -> KnapsackResult<Op, LA, LD> {
     self.run_multi(vec![expr])

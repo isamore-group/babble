@@ -2,6 +2,7 @@ use crate::teachable::BindingExpr;
 
 use super::{super::teachable::Teachable, AstNode, Expr};
 use egg::{Analysis, AstSize, CostFunction, EGraph, ENodeOrVar, Id, Language, Pattern, RecExpr, Var, Searcher};
+use crate::extract::cost::{DelayCost, LangGain};
 use crate::extract::beam::PartialLibCost;
 use crate::ast_node::Arity;
 use std::{
@@ -35,6 +36,7 @@ pub enum PartialExpr<Op, T> {
 impl <Op, T> PartialExpr<Op, T> 
 where 
 Op:Clone
++ Default
 + Arity
 + Debug
 + Display
@@ -45,7 +47,7 @@ Op:Clone
 + 'static
 + Hash,
 AstNode<Op>: Language,
-T: Eq + Clone + Hash
+T: Eq + Clone + Hash + Debug
 {
   pub fn get_match(self, egraph: &EGraph<AstNode<Op>, PartialLibCost>) -> Vec<Match> {
     let pattern: Pattern<_> = normalize(self.clone()).0.into();
@@ -65,6 +67,18 @@ T: Eq + Clone + Hash
     key.sort();
     key
   } 
+  // 定义get_delay函数，输入是一个PartialExpr<Op, T>，输出是一个u32
+    pub fn get_delay<LD>(&self, lang_gain: LD) -> usize 
+    where LD: LangGain<Op>,
+    {
+        // 首先将PE转化为Expr
+        let expr: Expr<Op> = self.clone().try_into().unwrap();
+        // 将Expr转化成RecExpr
+        let rec_expr: RecExpr<AstNode<Op>> = expr.into();
+        // 使用lang_gain计算delay
+        DelayCost::new(lang_gain).cost_rec(&rec_expr)
+        
+    }
 }
 
 
@@ -325,7 +339,9 @@ impl<T: Debug> Display for IncompleteExprError<T> {
   }
 }
 
-impl<Op, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
+// 修改从PE转化到Expr的函数，当PE是Hole的时候，不再返回错误，而是返回一个叶子节点表示的表达式
+
+impl<Op: Default + Arity + Debug, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
   type Error = IncompleteExprError<T>;
 
   fn try_from(partial_expr: PartialExpr<Op, T>) -> Result<Self, Self::Error> {
@@ -342,7 +358,11 @@ impl<Op, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
         };
         Ok(node.into())
       }
-      PartialExpr::Hole(hole) => Err(IncompleteExprError { hole }),
+      PartialExpr::Hole(_) => {
+        // 首先，我们将PE转化为Expr只是为了转化成Recexpr进行delay计算，所以Hole可以不需要在意，将其作为一个叶节点处理就好，目前直接使用Op(也就是RdgEgg的default，我设定default是const 0)
+        let node = AstNode::leaf(Op::default());
+        Ok(node.into())
+      }
     }
   }
 }
