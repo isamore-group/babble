@@ -16,33 +16,58 @@ use std::{
   num::ParseIntError,
   str::FromStr,
 };
-
+use crate::COST;
 use thiserror::Error;
 use crate::learn::{Match, AU};
 
 
 /// 定义Vec<PatialExpr<Op, Var>>的类型
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VecPE<Op> {
-    pub exprs: Vec<PartialExpr<Op, (Id, Id)>>,
-    pub matches: Vec<Vec<Match>>,
+pub struct VecPE<Op>{
+    aus: Vec<AU<Op, (Id, Id)>>,
 }
 /// 为VecPE实现new_with_egraph
 impl <Op> VecPE<Op> {
-    pub fn new(expr: Vec<PartialExpr<Op, (Id, Id)>>, matches: Vec<Vec<Match>>) -> Self {
-        Self { exprs: expr, matches }
+    pub fn new(aus: Vec<AU<Op, (Id, Id)>>) -> Self {
+        Self { aus }
     }
-
 }
 
 /// 为VecPE实现PartialOrd
 impl <Op: Eq> PartialOrd for VecPE<Op> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         // Some(self.matches.cmp(&other.matches))
-        // 计算exprs中PE的size()的和
-        let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
-        let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
-        Some(self_size.cmp(&other_size))
+        // 计算exprs中每个au的expr()的size的和
+        // let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+        // let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+        // self_size.partial_cmp(&other_size)
+        // 计算每个au.delay()的和
+        // let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
+        // let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
+        // Some(self_delay.cmp(&other_delay))
+        match COST {
+            "Match" => {
+                // 将matches收集起来
+                let self_matched = self.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
+                let other_matched = other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
+                Some(self_matched.cmp(&other_matched))
+            },
+            "size" => {
+                let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
+                let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
+                Some(self_delay.cmp(&other_delay))
+            },
+            "delay" => {
+                let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+                let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+                Some(self_size.cmp(&other_size))
+            }
+            _ => {
+                let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
+                let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
+                Some(self_delay.cmp(&other_delay))
+            }
+        }
     }
 }
 
@@ -50,9 +75,34 @@ impl <Op: Eq> PartialOrd for VecPE<Op> {
 impl <Op: Eq> Ord for VecPE<Op> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // self.matches.cmp(&other.matches)
-        let self_size = self.exprs.iter().map(|x| x.size()).sum::<usize>();
-        let other_size = other.exprs.iter().map(|x| x.size()).sum::<usize>();
-        self_size.cmp(&other_size)
+        // let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+        // let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+        // self_size.cmp(&other_size)
+        // let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
+        // let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
+        // self_delay.cmp(&other_delay)
+        match COST {
+            "Match" => {
+                let self_matched = self.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
+                let other_matched = other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
+                self_matched.cmp(&other_matched)
+            },
+            "size" => {
+                let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+                let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+                self_size.cmp(&other_size)
+            },
+            "delay" => {
+                let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
+                let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
+                self_delay.cmp(&other_delay)
+            },
+            _ => {
+                let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+                let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
+                self_size.cmp(&other_size)
+            }
+        }
     }
 }
 
@@ -103,15 +153,9 @@ where
         // 将cartesian_product中的每个Vec转换为PartialExpr<Op, (Id, Id)>的Vec
         return cartesian_product.iter().map(|x| x.iter().map(|y| y.expr().clone()).collect()).collect();
     }
-    // 定义一个闭包，用于将Vec<AU<Op, (Id, Id)>>中的PE和matches分别对应收集起来，组成VecPE
-    let au2pe = |vec: &Vec<AU<Op, (Id, Id)>>| {
-        let mut exprs = Vec::new();
-        let mut matches = Vec::new();
-        for au in vec {
-            exprs.push(au.expr().clone());
-            matches.push(au.matches().clone());
-        }
-        VecPE::new(exprs, matches)
+    // 定义一个闭包，用于将Vec<AU<Op, (Id, Id)>>组成VecPE
+    let au2pe = |vec: Vec<AU<Op, (Id, Id)>>| {
+        VecPE::new(vec)
     };
     let mut lower_bound = Vec::new();
     let mut upper_bound = Vec::new();
@@ -127,7 +171,7 @@ where
         let mut candidates = BTreeSet::new();
         for i in 0..cartesian_product.len() {
             // 使用au2pe将Vec<AU<Op, (Id, Id)>>转换为VecPE
-            candidates.insert(au2pe(&cartesian_product[i]));
+            candidates.insert(au2pe(cartesian_product[i].clone()));
         }
         info!("insert into BTreeSet cost: {:?}", start_time.elapsed());
         candidates
@@ -136,8 +180,8 @@ where
         // 首先，由于aus中的每个vec都是从BTreeSet中收集的，所以已经根据cost排序了，首先需要取出上下界，上界取出最后一个，下界取出第一个
         let mut selected_aus  = BTreeSet::new();
         // 将上下界加入candidates
-        selected_aus.insert(au2pe(&lower_bound));
-        selected_aus.insert(au2pe(&upper_bound));
+        selected_aus.insert(au2pe(lower_bound.clone()));
+        selected_aus.insert(au2pe(upper_bound.clone()));
         // 从每个集合中随机抽样获得range个样本集
         let mut rng = rand::thread_rng();
         for _ in 0..range {
@@ -145,7 +189,7 @@ where
                 .iter()
                 .filter_map(|vec| vec.choose(&mut rng).cloned()) // 从每个 `aus[i]` 里随机选一个
                 .collect();
-            selected_aus.insert(au2pe(&sample_aus));
+            selected_aus.insert(au2pe(sample_aus));
         }
         selected_aus
     };
@@ -163,10 +207,12 @@ where
         let index = (i as f64 * step).round() as usize;
         // 确保索引不会超出范围
         let index = index.min(n - 1); // 避免越界
-        selected_elements.push(selected_aus[index].exprs.clone());
+        selected_elements.push(selected_aus[index].aus.clone().iter().map(|x| x.expr().clone()).collect());
     }
     // 加入上界
     selected_elements.push(upper_bound.iter().map(|x| x.expr().clone()).collect());
+    // 加入下界
+    selected_elements.push(lower_bound.iter().map(|x| x.expr().clone()).collect());
     selected_elements
 }
 
@@ -331,14 +377,8 @@ pub fn kd_random_aus<Op>(
         return cartesian_product.iter().map(|x| x.iter().map(|y| y.expr().clone()).collect()).collect();
     }
     // 定义一个闭包，用于将Vec<AU<Op, (Id, Id)>>中的PE和matches分别对应收集起来，组成VecPE
-    let au2pe = |vec: &Vec<AU<Op, (Id, Id)>>| {
-        let mut exprs = Vec::new();
-        let mut matches = Vec::new();
-        for au in vec {
-            exprs.push(au.expr().clone());
-            matches.push(au.matches().clone());
-        }
-        VecPE::new(exprs, matches)
+    let au2pe = |vec: Vec<AU<Op, (Id, Id)>>| {
+        VecPE::new(vec)
     };
     let candidates = if cal_cartesian_flag {
         info!("insert into BTreeSet");
@@ -348,7 +388,7 @@ pub fn kd_random_aus<Op>(
         let mut candidates = BTreeSet::new();
         for i in 0..cartesian_product.len() {
             // 使用au2pe将Vec<AU<Op, (Id, Id)>>转换为VecPE
-            candidates.insert(au2pe(&cartesian_product[i]));
+            candidates.insert(au2pe(cartesian_product[i].clone()));
         }
         info!("insert into BTreeSet cost: {:?}", start_time.elapsed());
         candidates
@@ -429,7 +469,7 @@ pub fn kd_random_aus<Op>(
                     let au = aus[j].choose(rng).unwrap().clone();
                     result.push(au.clone());
                 }
-                results.insert(au2pe(&result));
+                results.insert(au2pe(result.clone()));
             }
         }
         results
@@ -442,8 +482,17 @@ pub fn kd_random_aus<Op>(
         let index = (i as f64 * step).round() as usize;
         // 确保索引不会超出范围
         let index = index.min(n - 1); // 避免越界
-        selected_elements.push(selected_aus[index].clone().exprs.clone());
+        selected_elements.push(selected_aus[index].aus.clone().iter().map(|x| x.expr().clone()).collect());
     }
+    // 加入上下界
+    let mut lower_bound = Vec::new();
+    let mut upper_bound = Vec::new();
+    for i in 0..aus.len() {
+        lower_bound.push(aus[i][0].clone());
+        upper_bound.push(aus[i][aus[i].len()-1].clone());
+    }
+    selected_elements.push(upper_bound.iter().map(|x| x.expr().clone()).collect());
+    selected_elements.push(lower_bound.iter().map(|x| x.expr().clone()).collect());
     selected_elements
   }
 

@@ -48,6 +48,7 @@ where
     + Teachable
     + Printable
     + Debug
+    + Default
     + Display
     + Hash
     + Clone

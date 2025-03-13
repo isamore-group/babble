@@ -78,6 +78,7 @@ where
     }
 }
 
+
 impl<L, Op> CostFunction<AstNode<Op>> for DelayCost<L, Op>
 where
     L: LangGain<Op>,
