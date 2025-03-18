@@ -940,15 +940,20 @@ where
     let start_time = Instant::now();
     let timeout = Duration::from_secs(60 * 100_000);
 
-    let mut init_cost: usize = 0;
+    let mut init_cost: usize = match roots.len() {
+      0 | 1 => 0,
+      _ => 1,
+    };
     for root in roots {
       let extractor =
         egg::Extractor::new(&egraph, DelayCost::new(self.lang_gain.clone()));
       let (_, expr) = extractor.find_best(*root);
-      init_cost = std::cmp::max(
-        init_cost,
-        DelayCost::new(self.lang_gain.clone()).cost_rec(&expr),
-      );
+      let cost = DelayCost::new(self.lang_gain.clone()).cost_rec(&expr);
+      let selected_cost = match cost.2 {
+          true => cost.0,
+          false => cost.1,
+      };
+      init_cost += selected_cost;
     }
 
     info!("Initial egraph size: {}", egraph.total_size());
@@ -1052,9 +1057,13 @@ where
       self.lang_gain.clone(),
     );
     let final_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(&lifted);
+    let selected_final_cost = match final_cost.2 {
+        true => final_cost.0,
+        false => final_cost.1,
+    };
 
     info!("Finished in {}ms", ex_time.elapsed().as_millis());
-    info!("final cost: {}", final_cost);
+    info!("final cost: {}", selected_final_cost);
     debug!("{}", Pretty::new(Arc::new(Expr::from(lifted.clone()))));
     info!("round time: {}ms", start_time.elapsed().as_millis());
 
@@ -1063,7 +1072,7 @@ where
       num_libs: chosen_rewrites.len(),
       rewrites: chosen_rewrites,
       initial_cost: init_cost,
-      final_cost,
+      final_cost: selected_final_cost,
       run_time: start_time.elapsed(),
     }
   }

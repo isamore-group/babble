@@ -16,6 +16,50 @@ pub trait LangGain<Op>: Debug + Clone + Send + Sync {
     fn op_gain(&self, op: &Op, args: &[usize]) -> usize;
 }
 
+pub trait LibCheck<Op> 
+where 
+    Op: Teachable,
+{
+    fn is_lib(&self, enode: &AstNode<Op>) -> bool {
+        match enode.as_binding_expr() {
+            Some(expr) => {
+                match expr {
+                    BindingExpr::Lib(_, _, _) => {
+                        true
+                    }
+                    _ => {
+                        false
+                    }
+                }
+            },
+            None => {
+                false
+            }
+        }
+    }
+
+    fn is_var(&self, enode: &AstNode<Op>) -> bool {
+        match enode.as_binding_expr() {
+            Some(expr) => {
+                match expr {
+                    BindingExpr::Var(_) => {
+                        true
+                    }
+                    BindingExpr::LibVar(_) => {
+                        true
+                    }
+                    _ => {
+                        false
+                    }
+                }
+            },
+            None => {
+                false
+            }
+        }
+    }
+}
+
 /// Cost function that uses LangCost to calculate area
 #[derive(Debug, Clone)]
 pub struct AreaCost<L, Op> {
@@ -35,6 +79,8 @@ where
         }
     }
 }
+
+impl<L, Op> LibCheck<Op> for AreaCost<L, Op> where Op: Teachable {}
 
 impl<L, Op> CostFunction<AstNode<Op>> for AreaCost<L, Op>
 where
@@ -78,42 +124,59 @@ where
     }
 }
 
+impl<L, Op> LibCheck<Op> for DelayCost<L, Op> where Op: Teachable {}
 
 impl<L, Op> CostFunction<AstNode<Op>> for DelayCost<L, Op>
 where
     L: LangGain<Op>,
     Op: Clone + Debug + Ord + std::hash::Hash + Teachable,
 {
-    type Cost = usize;
+    /// The cost is a tuple of two usize values: the cost in the case that
+    /// the operation is in a library, the cost in the case that the operation 
+    /// is not in a library, and a boolean indicating whether the operation is
+    /// in a library (true) or not (false).
+    type Cost = (usize, usize, bool);
 
     fn cost<C>(&mut self, enode: &AstNode<Op>, mut costs: C) -> Self::Cost
     where
         C: FnMut(egg::Id) -> Self::Cost,
     {
-        // Get costs of children
-        let arg_costs: Vec<usize> = enode.args().iter().map(|&id| costs(id)).collect();
-        
-        // For delay, we take the maximum of child delays plus the operation delay
-        let max_child_cost = arg_costs.iter().max().copied().unwrap_or(0);
-        
-        // Calculate the gain of this operation
-        let op_gain = self.lang_gain.op_gain(enode.operation(), &arg_costs);
-        
-        match enode.as_binding_expr() {
+        let arg_costs: Vec<Self::Cost> = enode.args().iter().map(|&id| costs(id)).collect();
+        let arg_selected_costs: Vec<usize> = arg_costs.iter().map(|&cost| {
+            if cost.2 {
+                cost.0
+            } else {
+                cost.1
+            }
+        }).collect();
+        let op_gain = self.lang_gain.op_gain(enode.operation(), &arg_selected_costs);
+        let in_lib = match enode.as_binding_expr() {
             Some(expr) => {
                 match expr {
                     BindingExpr::Lib(_, _, _) => {
-                        max_child_cost / 2 + op_gain
+                        // If the operation is in a Lib, we regard it as a out-of-library operation
+                        false
+                    }
+                    BindingExpr::LibVar(_) | BindingExpr::Var(_) => {
+                        true
                     }
                     _ => {
-                        max_child_cost + op_gain
+                        // If any of the children are in a Lib, we regard it as a in-library operation
+                        arg_costs.iter().any(|&cost| cost.2)
                     }
                 }
             },
             None => {
-                // Otherwise, just return the critical path delay
-                max_child_cost + op_gain
+                false
             }
-        }
+        };
+        let in_lib_cost = match arg_costs.iter().map(|&cost| {
+            cost.0
+        }).max() {
+            Some(cost) => cost + op_gain,
+            None => op_gain,
+        };
+        let out_of_lib_cost = arg_selected_costs.iter().sum::<usize>() + op_gain;
+        (in_lib_cost, out_of_lib_cost, in_lib)
     }
 } 

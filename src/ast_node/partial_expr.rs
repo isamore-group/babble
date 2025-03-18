@@ -76,7 +76,7 @@ T: Eq + Clone + Hash + Debug
         // 将Expr转化成RecExpr
         let rec_expr: RecExpr<AstNode<Op>> = expr.into();
         // 使用lang_gain计算delay
-        DelayCost::new(lang_gain).cost_rec(&rec_expr)
+        DelayCost::new(lang_gain).cost_rec(&rec_expr).0
         
     }
 }

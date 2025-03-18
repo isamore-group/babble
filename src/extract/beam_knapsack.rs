@@ -674,7 +674,11 @@ where
 
   /// Expression gain used by this extractor
   pub fn gain(&self, expr: &RecExpr<AstNode<Op>>) -> usize {
-    DelayCost::new(self.lang_gain.clone()).cost_rec(expr)
+    let cost = DelayCost::new(self.lang_gain.clone()).cost_rec(expr);
+    match cost.2 {
+      true => cost.0,
+      false => cost.1,
+    }
   }
 
   /// Extract the expression with the largest gain from the eclass id and its 
