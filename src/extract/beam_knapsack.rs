@@ -667,7 +667,8 @@ where
   pub fn best(&mut self, id: Id) -> RecExpr<AstNode<Op>> {
     // Populate the memo:
     self.extract(id);
-    // println!("{:#?}", self.egraph);
+    // println!("id: {:#?}", id);
+    // println!("{:#?}", self.egraph[id]);
     // Get the best expression from the memo:
     self.get_from_memo(id).unwrap().clone().unwrap()
   }

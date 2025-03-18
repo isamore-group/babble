@@ -157,17 +157,14 @@ where
                         // If the operation is in a Lib, we regard it as a out-of-library operation
                         false
                     }
-                    BindingExpr::LibVar(_) | BindingExpr::Var(_) => {
-                        true
-                    }
                     _ => {
-                        // If any of the children are in a Lib, we regard it as a in-library operation
-                        arg_costs.iter().any(|&cost| cost.2)
+                        true
                     }
                 }
             },
             None => {
-                false
+                // If any of the children are in a Lib, we regard it as a in-library operation
+                arg_costs.iter().any(|&cost| cost.2)
             }
         };
         let in_lib_cost = match arg_costs.iter().map(|&cost| {
@@ -177,6 +174,9 @@ where
             None => op_gain,
         };
         let out_of_lib_cost = arg_selected_costs.iter().sum::<usize>() + op_gain;
+        // println!("op_type: {:?}, op_gain: {}", enode.operation(), op_gain);
+        // println!("arg_costs: {:?}", arg_costs);
+        // println!("in_lib_cost: {}, out_of_lib_cost: {}, in_lib: {}", in_lib_cost, out_of_lib_cost, in_lib);
         (in_lib_cost, out_of_lib_cost, in_lib)
     }
 } 

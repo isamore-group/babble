@@ -13,15 +13,9 @@ use egg::{
 use log::{debug, info};
 
 use crate::{
-  Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder,
-  Pretty, Printable, Teachable,
   extract::{
-    apply_libs, apply_libs_area_delay, apply_libs_knapsack, apply_libs_pareto,
-    beam::{OptimizationStrategy, PartialLibCost},
-    beam_knapsack,
-    beam_pareto::{BeamAreaDelay, CostSetAreaDelay, LibSelAreaDelay},
-    cost::{DelayCost, LangCost, LangGain},
-  },
+    self, apply_libs, apply_libs_area_delay, apply_libs_knapsack, apply_libs_pareto, beam::{OptimizationStrategy, PartialLibCost}, beam_knapsack, beam_pareto::{BeamAreaDelay, CostSetAreaDelay, LibSelAreaDelay}, cost::{DelayCost, LangCost, LangGain}
+  }, Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty, Printable, Teachable
 };
 
 use crate::USE_RULES;
@@ -1035,6 +1029,8 @@ where
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
     info!("Number of nodes: {}", egraph.total_size());
 
+    egraph.dot().to_png("target/foo.png").unwrap();
+
     // println!("egraph: {:#?}", egraph);
 
     println!("learned libs");
@@ -1049,18 +1045,20 @@ where
 
     let ex_time = Instant::now();
     info!("Extracting... ");
-    let lifted = apply_libs_knapsack(
+    let best = apply_libs_knapsack(
       aeg.clone(),
       roots,
       &chosen_rewrites,
       self.lang_cost.clone(),
       self.lang_gain.clone(),
     );
-    let final_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(&lifted);
+    let final_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(&best);
     let selected_final_cost = match final_cost.2 {
         true => final_cost.0,
         false => final_cost.1,
     };
+
+    let lifted = extract::lift_libs(&best);
 
     info!("Finished in {}ms", ex_time.elapsed().as_millis());
     info!("final cost: {}", selected_final_cost);

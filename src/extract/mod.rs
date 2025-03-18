@@ -76,8 +76,7 @@ where
   let root = fin.add(AstNode::new(Op::list(), roots.iter().copied()));
 
   let mut extractor = beam_knapsack::LibExtractor::new(&fin, lang_cost.clone(), lang_gain.clone());
-  let best = extractor.best(root);
-  lift_libs(&best)
+  extractor.best(root)
 }
 
 /// Given an `egraph` that contains the original expression at `roots`,
