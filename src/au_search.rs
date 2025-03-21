@@ -121,8 +121,8 @@ pub fn get_random_aus<Op>(
 where
   Op: Clone + Debug + Hash + Ord + Display + Arity + Teachable + Sync + Send + 'static,
 {
-    // 如果aus是空的，直接返回空
-    if aus.is_empty() {
+    // 如果aus是空的或者aus中的元素是空的，直接返回空
+    if aus.is_empty() || aus.iter().any(|x| x.is_empty()) {
         return vec![];
     }
 
@@ -348,8 +348,8 @@ pub fn kd_random_aus<Op>(
   where
     Op: Clone + Debug + Hash + Ord + Display + Arity + Teachable + Sync + Send + 'static,
   {
-    // 如果aus是空的，或者aus中的元素是空的，直接返回空
-    if aus.is_empty() || aus.iter().all(|x| x.is_empty()) {
+    // 如果aus是空的或者aus中的元素是空的，直接返回空
+    if aus.is_empty() || aus.iter().any(|x| x.is_empty()) {
         return vec![];
     }
 
@@ -505,7 +505,7 @@ where
     Op: Clone + Debug + Hash + Ord + Display + Arity + Teachable + Sync + Send + 'static,
 {
     // 如果aus是空的或者aus中的元素是空的，直接返回空
-    if aus.is_empty() || aus.iter().all(|x| x.is_empty()) {
+    if aus.is_empty() || aus.iter().any(|x| x.is_empty()) {
         return vec![];
     }
     // 将aus中的每个Vec的第一个和最后一个元素取出

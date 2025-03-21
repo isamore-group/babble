@@ -195,6 +195,7 @@ where
       roots: vec![],
       co_occurences: None,
       dfta: true,
+      last_lib_id: 0,
     }
   }
 }
@@ -212,6 +213,7 @@ where
     roots: Vec<Id>,
     co_occurences: Option<CoOccurrences>,
     dfta: bool,
+    last_lib_id: usize,
 }
 
 // impl<Op: Ord+ Debug + Clone + Hash, A: egg::Analysis<AstNode<Op>>> Default for LearnedLibraryBuilder<Op, A> {
@@ -256,6 +258,7 @@ where
       roots: vec![],
       co_occurences: None,
       dfta: true,
+      last_lib_id: 0,
     }
   }
 }
@@ -325,6 +328,12 @@ where
     self
   }
 
+  #[must_use]
+  pub fn with_last_lib_id(mut self, last_lib_id: usize) -> Self {
+    self.last_lib_id = last_lib_id;
+    self
+  }
+
   pub fn build<A>(
     self,
     egraph: &EGraph<AstNode<Op>, A>,
@@ -352,6 +361,7 @@ where
       self.banned_ops,
       co_occurs,
       self.dfta,
+      self.last_lib_id,
     )
   }
 }
@@ -387,6 +397,7 @@ pub struct LearnedLibrary<Op, T, LD> where
   co_occurrences: CoOccurrences,
   // /// 存储deduplicate_from_candidates中cache已经存储过的值
   // pattern_cache: HashMap<PartialExpr<Op, (Id, Id)>, Vec<Match>>,
+  last_lib_id: usize,
 
 }
 
@@ -432,6 +443,7 @@ where
     banned_ops: Vec<Op>,
     co_occurrences: CoOccurrences,
     dfta: bool,
+    last_lib_id: usize,
   ) -> Self {
     let mut learned_lib = Self {
       egraph: my_egraph,
@@ -443,6 +455,7 @@ where
       max_arity,
       banned_ops,
       co_occurrences,
+      last_lib_id,
       // pattern_cache: HashMap::new(),
     };
 
@@ -545,8 +558,9 @@ where
     &self,
   ) -> impl Iterator<Item = Rewrite<AstNode<Op>, A>> + '_ {
     self.aus.iter().enumerate().map(|(i, au)| {
+      let new_i = i + self.last_lib_id;
       let searcher: Pattern<_> = au.expr.clone().into();
-      let applier: Pattern<_> = reify(LibId(i), au.expr.clone()).into();
+      let applier: Pattern<_> = reify(LibId(new_i), au.expr.clone()).into();
       let name = format!("anti-unify {i}");
       debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
 
@@ -558,7 +572,8 @@ where
   /// Right-hand sides of library rewrites.
   pub fn libs(&self) -> impl Iterator<Item = Pattern<AstNode<Op>>> + '_ {
     self.aus.iter().enumerate().map(|(i, au)| {
-      let applier: Pattern<_> = reify(LibId(i), au.expr.clone()).into();
+      let new_i = i + self.last_lib_id;
+      let applier: Pattern<_> = reify(LibId(new_i), au.expr.clone()).into();
       applier
     })
   }
@@ -611,10 +626,10 @@ where
     &mut self,
     egraph: &EGraph<AstNode<Op>, A>,
   ) {
-    println!("before deduplicating: ");
-    for lib in self.libs().collect::<Vec<_>>() {
-      println!("{}", lib);
-    }
+    // println!("before deduplicating: ");
+    // for lib in self.libs().collect::<Vec<_>>() {
+    //   println!("{}", lib);
+    // }
     // The algorithm is simply to iterate over all patterns,
     // and save their matches in a dictionary indexed by the match set.
     let mut cache: BTreeMap<Vec<Match>, PartialExpr<Op, Var>> = BTreeMap::new();
@@ -686,11 +701,19 @@ where
 
         // 如果缓存中已经有相同的匹配集合，则只保留较小的那个
         match cache.get(&key) {
-            Some((cached, _delay)) if cached.size() >= au.size() => {
+            Some((cached, _delay)) => {
+              // 计算cached和au的delay
+              let cached_delay = cached.get_delay(lang_gain.clone());
+            //   if cached.size() <= au.size(){
+            // }
+            if cached.size() >= au.size() || cached_delay >= delay{
+              cache.insert(key, (au.clone(), delay));
             }
-            _ => {
-                cache.insert(key, (au, delay));
             }
+            None => {
+                cache.insert(key, (au.clone(), delay));
+            }
+          
         }
     }
     // 将cache中的模式转换为AU
@@ -881,6 +904,7 @@ where
                 let aus = self.aus_by_state[input].iter().cloned().collect::<Vec<_>>();
                 aus
           });
+            info!("get_range_aus");
             let au_range = new_aus.collect::<Vec<_>>();
             let new_aus = match MOD {
               "random" => get_random_aus(au_range, 1000),
@@ -888,6 +912,7 @@ where
               "greedy" => greedy_aus(au_range),
               _ => get_random_aus(au_range, 1000),
             };
+            info!("filtering according to arity");
             let new_aus = new_aus.into_iter()//kd_random_aus(au_range, 1000).into_iter() 
               .map(|inputs| {
                 PartialExpr::from(AstNode::new(op1.clone(), inputs))
@@ -906,6 +931,7 @@ where
               let start_total = Instant::now(); // 总的执行时间
               // 为每一个新的模式生成一个AU
               // aus.extend(new_aus.map(|au| AU::new_cal_matches(au, &self.egraph)));
+              info!("aus_size: {}", aus.len());
               aus.extend(new_aus_dedu);
               info!("Total processing time: {:?}, lenth of new_aus and aus is {}", start_total.elapsed(), aus.len()); // 总的处理时间
           }

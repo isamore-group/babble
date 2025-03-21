@@ -17,11 +17,11 @@
 
 // use for simple test
 /// type of cost : "delay", "Match", "size"
-pub const COST: &str = "Match";
+pub const COST: &str = "delay";
 /// whether to use rules
 pub const USE_RULES: bool = true ;
 /// type of optimization : "random", "kd", "greedy"
-pub const MOD: &str = "kd";
+pub const MOD: &str = "greedy";
 
 pub mod ast_node;
 mod co_occurrence;

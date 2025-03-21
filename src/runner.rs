@@ -4,7 +4,7 @@
 //! using either regular beam search or Pareto-optimal beam search.
 
 use std::{
-  fmt::{self, Debug, Display, Formatter}, hash::Hash, marker::PhantomData, sync::Arc, time::{Duration, Instant}
+  fmt::{self, Debug, Display, Formatter}, hash::Hash, marker::PhantomData, sync::Arc, time::{Duration, Instant}, collections::HashMap,
 };
 
 use egg::{
@@ -19,7 +19,16 @@ use crate::{
 };
 
 use crate::USE_RULES;
+
+/// 定义一个trait名为LibOperation,其中有两个函数，分别为get_libid和change_libid
+pub trait LibOperation {
+  fn is_lib(&self) -> bool;
+  /// Get the library ID of the operation
+  fn get_libid(&self) -> usize;
+}
+
 /// Result of running a BabbleRunner experiment
+
 #[derive(Clone)]
 pub struct BabbleResult<Op>
 where
@@ -267,10 +276,10 @@ where
     info!("Number of nodes: {}", egraph.total_size());
 
     println!("learned libs");
-    let all_libs: Vec<_> = learned_lib.libs().collect();
+    // let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut chosen_rewrites = Vec::new();
     for lib in &cs.set[0].libs {
-      println!("{}: {}", lib.0, &all_libs[lib.0.0]);
+      // println!("{}: {}", lib.0, &all_libs[lib.0.0]);
       chosen_rewrites.push(lib_rewrites[lib.0.0].clone());
     }
 
@@ -782,8 +791,7 @@ where
   /// The number of libraries learned
   pub num_libs: usize,
   /// The rewrites representing the learned libraries
-  pub rewrites:
-    Vec<Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
+  pub rewrites: HashMap<usize, Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
   /// The initial cost of the expression(s)
   pub initial_cost: usize,
   /// The final cost of the expression
@@ -876,6 +884,8 @@ where
 {
   /// The domain-specific rewrites to apply
   dsrs: Vec<Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
+  /// lib rewrites
+  lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
   /// Configuration for the beam search
   config: KnapsackConfig,
   lang_cost: LA,
@@ -885,6 +895,7 @@ where
 impl<Op, LA, LD> KnapsackRunner<Op, LA, LD>
 where
     Op: Arity
+        + LibOperation
         + Teachable
         + Printable
         + Debug
@@ -897,12 +908,13 @@ where
         + Send
         + DiscriminantEq
         + 'static,
-    LA: LangCost<Op> + Clone + Default,
-    LD: LangGain<Op> + Clone + Default,
+        LA: LangCost<Op> + Clone + Default + 'static,
+        LD: LangGain<Op> + Clone + Default + 'static,
 {
     /// Create a new BeamRunner with the given domain-specific rewrites and configuration
     pub fn new<I>(
         dsrs: I,
+        lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
         config: KnapsackConfig,
         lang_cost: LA,
         lang_gain: LD,
@@ -919,6 +931,7 @@ where
         };
         Self {
             dsrs,
+            lib_rewrites,
             config,
             lang_cost,
             lang_gain,
@@ -950,8 +963,8 @@ where
       init_cost += selected_cost;
     }
 
-    info!("Initial egraph size: {}", egraph.total_size());
-    info!("Running {} DSRs... ", self.dsrs.len());
+    println!("Initial egraph size: {}, eclasses: {}", egraph.total_size(), egraph.classes().len());
+    println!("Running {} DSRs... ", self.dsrs.len());
 
     let runner =
       EggRunner::<_, _, ()>::new(beam_knapsack::PartialLibCost::empty())
@@ -961,6 +974,8 @@ where
         .run(&self.dsrs);
 
     let aeg = runner.egraph;
+
+    println!("Final egraph size: {}, eclasses: {}", aeg.total_size(), aeg.classes().len());
 
     info!(
       "Finished in {}ms; final egraph size: {}",
@@ -974,18 +989,30 @@ where
     let co_occurs = co_ext.run();
     info!("Finished in {}ms", co_time.elapsed().as_millis());
 
-        info!("Running anti-unification... ");
-        let au_time = Instant::now();
-        let mut learned_lib = LearnedLibraryBuilder::default()
-            .learn_constants(self.config.learn_constants)
-            .max_arity(self.config.max_arity)
-            .with_co_occurs(co_occurs)
-            .build(&aeg, self.lang_gain.clone());
-        info!(
-            "Found {} patterns in {}ms",
-            learned_lib.size(),
-            au_time.elapsed().as_millis()
-        );
+      info!("Running anti-unification... ");
+      let au_time = Instant::now();
+      // 在进行learn之前，先提取出LibId最大的Lib
+      let mut max_lib_id = 0;
+      for eclass in aeg.classes() {
+          for node in eclass.iter() {
+              let op = node.operation();
+              if op.is_lib() {
+                  max_lib_id = std::cmp::max(max_lib_id, op.get_libid());
+              }
+          }
+      }
+      max_lib_id += 1;
+      let mut learned_lib = LearnedLibraryBuilder::default()
+          .learn_constants(self.config.learn_constants)
+          .max_arity(self.config.max_arity)
+          .with_co_occurs(co_occurs)
+          .with_last_lib_id(max_lib_id)
+          .build(&aeg, self.lang_gain.clone());
+      info!(
+          "Found {} patterns in {}ms",
+          learned_lib.size(),
+          au_time.elapsed().as_millis()
+      );
 
     info!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
@@ -997,10 +1024,10 @@ where
       dedup_time.elapsed().as_millis()
     );
 
-    println!("learned {} libs", learned_lib.size());
-    for lib in &learned_lib.libs().collect::<Vec<_>>() {
-      println!("{}", lib);
-    }
+    // println!("learned {} libs", learned_lib.size());
+    // for lib in &learned_lib.libs().collect::<Vec<_>>() {
+    //   println!("{}", lib);
+    // }
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
@@ -1029,16 +1056,27 @@ where
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
     info!("Number of nodes: {}", egraph.total_size());
 
-    egraph.dot().to_png("target/foo.png").unwrap();
+    // egraph.dot().to_png("target/foo.png").unwrap();
 
     // println!("egraph: {:#?}", egraph);
 
     println!("learned libs");
-    let all_libs: Vec<_> = learned_lib.libs().collect();
+    // let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut chosen_rewrites = Vec::new();
+    let mut rewrites_map = HashMap::new();
     for lib in &cs.set[0].libs {
-      println!("{}: {}", lib.0, &all_libs[lib.0.0]);
-      chosen_rewrites.push(lib_rewrites[lib.0.0].clone());
+      if lib.0.0 < max_lib_id{
+        // 从self.lib_rewrites中取出
+        // 打印self.lib_rewrites
+        // println!("{}: {:?}", lib.0.0, self.lib_rewrites);
+        chosen_rewrites.push(self.lib_rewrites.get(&lib.0.0).unwrap().clone());
+        rewrites_map.insert(lib.0.0, self.lib_rewrites.get(&lib.0.0).unwrap().clone());
+      }
+      else {
+          let new_lib = lib.0.0 - max_lib_id;
+          chosen_rewrites.push(lib_rewrites[new_lib].clone());
+          rewrites_map.insert(lib.0.0, lib_rewrites[new_lib].clone());
+      }
     }
 
     debug!("upper bound ('full') cost: {}", cs.set[0].expr_delay);
@@ -1068,7 +1106,7 @@ where
     KnapsackResult {
       final_expr: lifted.into(),
       num_libs: chosen_rewrites.len(),
-      rewrites: chosen_rewrites,
+      rewrites: rewrites_map,
       initial_cost: init_cost,
       final_cost: selected_final_cost,
       run_time: start_time.elapsed(),
@@ -1079,6 +1117,7 @@ where
 impl<Op, LA, LD> BabbleKnapsackRunner<Op, LA, LD> for KnapsackRunner<Op, LA, LD>
 where
     Op: Arity
+        + LibOperation
         + Teachable
         + Printable
         + Debug
@@ -1091,8 +1130,8 @@ where
         + Send
         + DiscriminantEq
         + 'static,
-    LA: LangCost<Op> + Clone + Default,
-    LD: LangGain<Op> + Clone + Default,
+        LA: LangCost<Op> + Clone + Default + 'static,
+        LD: LangGain<Op> + Clone + Default + 'static,
 {
   fn run(&self, expr: Expr<Op>) -> KnapsackResult<Op, LA, LD> {
     self.run_multi(vec![expr])
