@@ -10,18 +10,18 @@ use std::{
 
 use crate::{
   ast_node::{Arity, AstNode},
+  extract::cost::{AreaCost, DelayCost, LangCost, LangGain},
   learn::LibId,
   teachable::{BindingExpr, Teachable},
-	extract::cost::{LangCost, LangGain, AreaCost, DelayCost},
 };
 
 #[derive(Debug, Clone, Default)]
 struct EmptyAreaCost;
 
 impl<Op> LangCost<Op> for EmptyAreaCost {
-    fn op_cost(&self, _op: &Op, _args: &[usize]) -> usize {
-        0
-    }
+  fn op_cost(&self, _op: &Op, _args: &[usize]) -> usize {
+    0
+  }
 }
 
 // Simple delay cost model for RdgEgg
@@ -29,9 +29,9 @@ impl<Op> LangCost<Op> for EmptyAreaCost {
 struct EmptyDelayCost;
 
 impl<Op> LangGain<Op> for EmptyDelayCost {
-    fn op_gain(&self, _op: &Op, _args: &[usize]) -> usize {
-        0
-    }
+  fn op_gain(&self, _op: &Op, _args: &[usize]) -> usize {
+    0
+  }
 }
 
 /// A `CostSet` is a set of pairs; each pair contains a set of library
@@ -94,8 +94,9 @@ impl CostSet {
     }
   }
 
-  /// Performs trivial partial order reduction: if `CostSet` A contains a superset
-  /// of the libs of another `CostSet` B, and A has a higher `expr_cost` than B, remove A.
+  /// Performs trivial partial order reduction: if `CostSet` A contains a
+  /// superset of the libs of another `CostSet` B, and A has a higher
+  /// `expr_cost` than B, remove A.
   pub fn unify(&mut self) {
     // println!("unify");
     let mut i = 0;
@@ -157,10 +158,9 @@ impl CostSet {
   /// prune takes care of two different tasks to reduce the number
   /// of functions in a `LibSel`:
   ///
-  /// - If we have an lps limit, we remove anything that has more fns
-  ///   than we allow in a `LibSel`
-  /// - Then, if we still have too many `LibSel`s, we prune based on
-  ///   beam size.
+  /// - If we have an lps limit, we remove anything that has more fns than we
+  ///   allow in a `LibSel`
+  /// - Then, if we still have too many `LibSel`s, we prune based on beam size.
   ///
   /// Our pruning strategy preserves n `LibSel`s per # of libs, where
   /// n is the beam size. In other words, we preserve n `LibSel`s with
@@ -181,8 +181,8 @@ impl CostSet {
       // We don't need to do this anymore, because this is happening in cross:
       // If lps is set, if num_libs > lps, give up immediately
       // if num_libs > lps {
-      //     panic!("LibSels that are too large should have been filtered out by cross!");
-      // }
+      //     panic!("LibSels that are too large should have been filtered out by
+      // cross!"); }
 
       let h = table.entry(num_libs).or_default();
 
@@ -198,7 +198,7 @@ impl CostSet {
       let mut i = 0;
       while i < beams_per_size {
         if let Some(ls) = h.pop() {
-          let ls = ls.0 .0;
+          let ls = ls.0.0;
 
           if let Err(pos) = set.binary_search(&ls) {
             set.insert(pos, ls);
@@ -249,7 +249,10 @@ pub struct LibSel {
 impl LibSel {
   #[must_use]
   pub fn intro_op(op_delay: usize) -> LibSel {
-    LibSel { libs: Vec::new(), expr_delay: op_delay }
+    LibSel {
+      libs: Vec::new(),
+      expr_delay: op_delay,
+    }
   }
 
   /// Combines two `LibSel`s. Unions the lib sets, adds
@@ -350,12 +353,14 @@ impl LibSel {
             oix += 1;
           }
           Ordering::Equal => {
-            // If other[oix] is equal to lib, continue in the outer loop and increment oix
+            // If other[oix] is equal to lib, continue in the outer loop and
+            // increment oix
             oix += 1;
             continue 'outer;
           }
           Ordering::Greater => {
-            // Otherwise if it's larger, there was no element equal. Not subset, ret false.
+            // Otherwise if it's larger, there was no element equal. Not subset,
+            // ret false.
             return false;
           }
         }
@@ -395,8 +400,8 @@ impl Ord for LibSelFC {
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
-pub struct PartialLibCost<Op, LA, LD> 
-where 
+pub struct PartialLibCost<Op, LA, LD>
+where
   Op: Clone + Debug + Ord + std::hash::Hash + Teachable + Arity,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
@@ -404,8 +409,8 @@ where
   /// The number of `LibSel`s to keep per `EClass`.
   beam_size: usize,
   inter_beam: usize,
-  /// The maximum number of libs per lib selection. Any lib selections with a larger amount will
-  /// be pruned.
+  /// The maximum number of libs per lib selection. Any lib selections with a
+  /// larger amount will be pruned.
   lps: usize,
   lang_cost: LA,
   lang_gain: LD,
@@ -427,17 +432,31 @@ where
     lang_cost: LA,
     lang_gain: LD,
   ) -> PartialLibCost<Op, LA, LD> {
-    PartialLibCost { beam_size, inter_beam, lps, lang_cost, lang_gain, phantom: PhantomData }
+    PartialLibCost {
+      beam_size,
+      inter_beam,
+      lps,
+      lang_cost,
+      lang_gain,
+      phantom: PhantomData,
+    }
   }
 
   #[must_use]
   pub fn empty() -> PartialLibCost<Op, LA, LD> {
-    PartialLibCost { beam_size: 0, inter_beam: 0, lps: 1, lang_cost: LA::default(), lang_gain: LD::default(), phantom: PhantomData }
+    PartialLibCost {
+      beam_size: 0,
+      inter_beam: 0,
+      lps: 1,
+      lang_cost: LA::default(),
+      lang_gain: LD::default(),
+      phantom: PhantomData,
+    }
   }
 }
 
-impl<Op, LA, LD> Default for PartialLibCost<Op, LA, LD> 
-where 
+impl<Op, LA, LD> Default for PartialLibCost<Op, LA, LD>
+where
   Op: Clone + Debug + Ord + std::hash::Hash + Teachable + Arity,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
@@ -510,7 +529,7 @@ where
         // println!("number of args: {:#?}", enode.args().len());
         if enode.is_empty() {
           // 0 args. Return intro.
-          
+
           CostSet::intro_op(op_delay)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
@@ -585,14 +604,15 @@ fn display_maybe_expr<
   }
 }
 
-/// Extractor that minimizes AST size but ignores the cost of library definitions
-/// (which will be later lifted to the top).
+/// Extractor that minimizes AST size but ignores the cost of library
+/// definitions (which will be later lifted to the top).
 /// The main difference between this and a standard extractor is that
 /// instead of finding the best expression *per eclass*,
 /// we need to find the best expression *per eclass and lib context*.
 /// This is because when extracting inside library definitions,
 /// we are not allowed to use those libraries;
-/// so the best expression is different depending on which library defs we are currently inside.
+/// so the best expression is different depending on which library defs we are
+/// currently inside.
 #[derive(Debug)]
 pub struct LibExtractor<
   'a,
@@ -603,23 +623,25 @@ pub struct LibExtractor<
     + Teachable
     + std::fmt::Display,
   N: Analysis<AstNode<Op>>,
-	LA: LangCost<Op> + Clone + Default,
-	LD: LangGain<Op> + Clone + Default,
+  LA: LangCost<Op> + Clone + Default,
+  LD: LangGain<Op> + Clone + Default,
 > {
-  /// Remembers the best expression so far for each pair of class id and lib context;
-  /// if an entry is absent, we haven't visited this class in this context yet;
-  /// if an entry is `None`, it's currently under processing, but we have no results for it yet;
-  /// if an entry is `Some(_)`, we have found an expression for it (but it might still be improved).
+  /// Remembers the best expression so far for each pair of class id and lib
+  /// context; if an entry is absent, we haven't visited this class in this
+  /// context yet; if an entry is `None`, it's currently under processing,
+  /// but we have no results for it yet; if an entry is `Some(_)`, we have
+  /// found an expression for it (but it might still be improved).
   memo: HashMap<Id, HashMap<LibContext, MaybeExpr<Op>>>,
   /// Current lib context:
-  /// contains all lib ids inside whose definitions we are currently extracting.
+  /// contains all lib ids inside whose definitions we are currently
+  /// extracting.
   lib_context: LibContext,
   /// The egraph to extract from.
   egraph: &'a EGraph<AstNode<Op>, N>,
   /// This is here for pretty debug messages.
   indent: usize,
-	lang_cost: LA,
-	lang_gain: LD,
+  lang_cost: LA,
+  lang_gain: LD,
 }
 
 impl<'a, Op, N, LA, LD> LibExtractor<'a, Op, N, LA, LD>
@@ -632,18 +654,22 @@ where
     + std::fmt::Display
     + Arity,
   N: Analysis<AstNode<Op>> + Clone,
-	LA: LangCost<Op> + Clone + Default,
-	LD: LangGain<Op> + Clone + Default,
+  LA: LangCost<Op> + Clone + Default,
+  LD: LangGain<Op> + Clone + Default,
 {
   /// Create a lib extractor for the given egraph
-  pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, lang_cost: LA, lang_gain: LD) -> Self {
+  pub fn new(
+    egraph: &'a EGraph<AstNode<Op>, N>,
+    lang_cost: LA,
+    lang_gain: LD,
+  ) -> Self {
     Self {
       memo: HashMap::new(),
       lib_context: LibContext::new(),
       egraph,
       indent: 0,
-			lang_cost,
-			lang_gain,
+      lang_cost,
+      lang_gain,
     }
   }
 
@@ -654,16 +680,18 @@ where
 
   /// Set best best expression for `id` in the current lib context.
   fn insert_into_memo(&mut self, id: Id, val: MaybeExpr<Op>) {
-    self.memo
-    .entry(id)
-    .or_default()
-    .insert(self.lib_context.clone(), val);
+    self
+      .memo
+      .entry(id)
+      .or_default()
+      .insert(self.lib_context.clone(), val);
   }
 
   /// Extract the smallest expression for the eclass `id`.
   /// # Panics
   /// Panics if extraction fails
-  /// (this should never happen because the e-graph must contain a non-cyclic expression)
+  /// (this should never happen because the e-graph must contain a non-cyclic
+  /// expression)
   pub fn best(&mut self, id: Id) -> RecExpr<AstNode<Op>> {
     // Populate the memo:
     self.extract(id);
@@ -682,18 +710,20 @@ where
     }
   }
 
-  /// Extract the expression with the largest gain from the eclass id and its 
-	/// descendants in the current context, storing results in the memo
+  /// Extract the expression with the largest gain from the eclass id and its
+  /// descendants in the current context, storing results in the memo
   fn extract(&mut self, id: Id) {
     self.debug_indented(&format!("extracting eclass {id}"));
     if let Some(res) = self.get_from_memo(id) {
-      // This node has already been visited in this context (either done or under processing)
+      // This node has already been visited in this context (either done or
+      // under processing)
       self.debug_indented(&format!(
         "visited, memoized value: {}",
         display_maybe_expr(res)
       ));
     } else {
-      // Initialize memo with None to prevent infinite recursion in case of cycles in the egraph
+      // Initialize memo with None to prevent infinite recursion in case of
+      // cycles in the egraph
       self.insert_into_memo(id, None);
       // Extract a candidate expression from each node
       // println!("Extracting eclass {:#?}", self.egraph[id]);
@@ -701,18 +731,24 @@ where
         match self.extract_node(node) {
           None => (), // Extraction for this node failed (must be a cycle)
           Some(cand) => {
-            // Extraction succeeded: check if cand is better than what we have so far
-            // print!("eclss: {}, ", id);
+            // Extraction succeeded: check if cand is better than what we have
+            // so far print!("eclss: {}, ", id);
             // print!("node: {}, ", node.operation());
             // print!("cand: {}, ", cand.pretty(100));
             // println!("cand gain: {}", Self::gain(&self, &cand));
             match self.get_from_memo(id).unwrap() {
               // If we already had an expression and it was better, do nothing
-              Some(prev) if Self::gain(&self, prev) <= Self::gain(&self, &cand) => (),
+              Some(prev)
+                if Self::gain(&self, prev) <= Self::gain(&self, &cand) =>
+              {
+                ()
+              }
               // Otherwise, update the memo;
-              // note that updating the memo after each better candidate is found instead of at the end
-              // is slightly suboptimal (because it might cause us to go around some cycles once),
-              // but the code is simpler and it doesn't matter too much.
+              // note that updating the memo after each better candidate is
+              // found instead of at the end is slightly
+              // suboptimal (because it might cause us to go around some cycles
+              // once), but the code is simpler and it doesn't
+              // matter too much.
               _ => {
                 self.debug_indented(&format!(
                   "new best for {id}: {} (gain {})",
@@ -733,8 +769,9 @@ where
     self.debug_indented(&format!("extracting node {node:?}"));
     if let Some(BindingExpr::Lib(lid, _, _)) = node.as_binding_expr() {
       if self.lib_context.contains(lid) {
-        // This node is a definition of one of the libs, whose definition we are currently extracting:
-        // do not go down this road since it leads to lib definitions using themselves
+        // This node is a definition of one of the libs, whose definition we are
+        // currently extracting: do not go down this road since it leads
+        // to lib definitions using themselves
         self.debug_indented(&format!("encountered banned lib: {lid}"));
         return None;
       }
@@ -746,8 +783,8 @@ where
 
   /// Process the children of `node` starting from index `current`
   /// and accumulate results in `partial expr`;
-  /// `child_indexes` stores the indexes of already processed children within `partial_expr`,
-  /// so that we can use them in the `AstNode` at the end.
+  /// `child_indexes` stores the indexes of already processed children within
+  /// `partial_expr`, so that we can use them in the `AstNode` at the end.
   fn extract_children(
     &mut self,
     node: &AstNode<Op>,
@@ -763,7 +800,8 @@ where
       partial_expr.push(root);
       Some(partial_expr.into())
     } else {
-      // If this is the first child of a lib node (i.e. lib definition) add this lib to the context:
+      // If this is the first child of a lib node (i.e. lib definition) add this
+      // lib to the context:
       let old_lib_context = self.lib_context.clone();
       if let Some(BindingExpr::Lib(lid, _, _)) = node.as_binding_expr() {
         if current == 0 {
@@ -785,14 +823,17 @@ where
       self.lib_context = old_lib_context;
 
       match child_res {
-        None => None, // Failed to extract a child, so the extraction of this node fails
+        None => None, /* Failed to extract a child, so the extraction of
+                        * this node fails */
         Some(expr) => {
-          // We need to clone the expr because we're going to mutate it (offset child indexes),
-          // and we don't want it to affect the memo result for child.
+          // We need to clone the expr because we're going to mutate it (offset
+          // child indexes), and we don't want it to affect the memo
+          // result for child.
           let mut new_expr = expr.as_ref().to_vec();
           for n in &mut new_expr {
-            // Increment all indexes inside `n` by the current expression length;
-            // this is needed to make a well-formed `RecExpr`
+            // Increment all indexes inside `n` by the current expression
+            // length; this is needed to make a well-formed
+            // `RecExpr`
             Self::offset_children(n, partial_expr.len());
           }
           partial_expr.extend(new_expr);
