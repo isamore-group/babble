@@ -555,17 +555,6 @@ fn display_maybe_expr<
   }
 }
 
-/// Optimization strategy for the extractor
-#[derive(Debug, Clone, Copy)]
-pub enum OptimizationStrategy {
-    /// Minimize area
-    MinArea,
-    /// Minimize delay
-    MinDelay,
-    /// Balance area and delay with a weight
-    Balanced(f64), // weight between 0.0 (all area) and 1.0 (all delay)
-}
-
 /// Extractor that minimizes AST size but ignores the cost of library definitions
 /// (which will be later lifted to the top).
 /// The main difference between this and a standard extractor is that
@@ -597,8 +586,6 @@ pub struct LibExtractor<
   egraph: &'a EGraph<AstNode<Op>, N>,
   /// This is here for pretty debug messages.
   indent: usize,
-  /// Optimization strategy
-  strategy: Option<OptimizationStrategy>,
 }
 
 impl<'a, Op, N> LibExtractor<'a, Op, N>
@@ -619,7 +606,6 @@ where
       lib_context: LibContext::new(),
       egraph,
       indent: 0,
-      strategy: None,
     }
   }
 
@@ -782,14 +768,12 @@ where
   /// Add with_strategy method
   pub fn with_strategy(
     egraph: &'a EGraph<AstNode<Op>, N>, 
-    strategy: OptimizationStrategy
   ) -> Self {
     Self {
       memo: HashMap::new(),
       lib_context: LibContext::new(),
       egraph,
       indent: 0,
-      strategy: Some(strategy),
     }
   }
 }

@@ -2,7 +2,6 @@
 
 pub mod beam;
 pub mod beam_pareto;
-pub mod beam_knapsack;
 pub mod cost;
 
 use std::collections::HashMap;
@@ -16,7 +15,8 @@ use crate::{
 };
 
 /// Given an `egraph` that contains the original expression at `roots`,
-/// and a set of library `rewrites`, extract the programs rewritten using the library.
+/// and a set of library `rewrites`, extract the programs rewritten using the
+/// library.
 pub fn apply_libs<Op, A>(
   egraph: EGraph<AstNode<Op>, A>,
   roots: &[Id],
@@ -46,14 +46,15 @@ where
 }
 
 /// Given an `egraph` that contains the original expression at `roots`,
-/// and a set of library `rewrites`, extract the programs rewritten using the library
-/// with knapsack optimization for area and delay.
-pub fn apply_libs_knapsack<Op, A, LA, LD>(
+/// and a set of library `rewrites`, extract the programs rewritten using the
+/// library with pareto optimization for area and delay.
+pub fn apply_libs_pareto<Op, A, LA, LD>(
   egraph: EGraph<AstNode<Op>, A>,
   roots: &[Id],
   rewrites: &[Rewrite<AstNode<Op>, A>],
   lang_cost: LA,
   lang_gain: LD,
+  strategy: f32,
 ) -> RecExpr<AstNode<Op>>
 where
   Op: Clone
@@ -75,133 +76,13 @@ where
     .egraph;
   let root = fin.add(AstNode::new(Op::list(), roots.iter().copied()));
 
-  let mut extractor = beam_knapsack::LibExtractor::new(&fin, lang_cost.clone(), lang_gain.clone());
-  extractor.best(root)
-}
-
-/// Given an `egraph` that contains the original expression at `roots`,
-/// and a set of library `rewrites`, extract the programs rewritten using the library
-/// with Pareto optimization for area and delay.
-pub fn apply_libs_pareto<Op, A>(
-  egraph: EGraph<AstNode<Op>, A>,
-  roots: &[Id],
-  rewrites: &[Rewrite<AstNode<Op>, A>],
-  strategy: beam::OptimizationStrategy,
-) -> RecExpr<AstNode<Op>>
-where
-  Op: Clone
-    + Teachable
-    + Ord
-    + std::fmt::Debug
-    + std::fmt::Display
-    + std::hash::Hash
-    + Arity
-    + Send
-    + Sync,
-  A: Analysis<AstNode<Op>> + Default + Clone,
-{
-  let mut fin = Runner::<_, _, ()>::new(Default::default())
-    .with_egraph(egraph)
-    .run(rewrites.iter())
-    .egraph;
-  let root = fin.add(AstNode::new(Op::list(), roots.iter().copied()));
-
-  let mut extractor = beam::LibExtractor::with_strategy(&fin, strategy);
-  let best = extractor.best(root);
-  lift_libs(&best)
-}
-
-/// Given an `egraph` that contains the original expression at `roots`,
-/// and a set of library `rewrites`, extract the programs rewritten using the library
-/// with Pareto optimization for area and delay.
-pub fn apply_libs_area_delay<Op, A, LA, LD>(
-  egraph: EGraph<AstNode<Op>, A>,
-  roots: &[Id],
-  rewrites: &[Rewrite<AstNode<Op>, A>],
-  area_cost: LA,
-  delay_cost: LD,
-  strategy: beam::OptimizationStrategy,
-) -> RecExpr<AstNode<Op>>
-where
-  Op: Clone
-    + Teachable
-    + Ord
-    + std::fmt::Debug
-    + std::fmt::Display
-    + std::hash::Hash
-    + Arity
-    + Send
-    + Sync,
-  A: Analysis<AstNode<Op>> + Default + Clone,
-  LA: cost::LangCost<Op> + Clone + Send + Sync + 'static,
-  LD: cost::LangGain<Op> + Clone + Send + Sync + 'static,
-{
-  // First, run the rewrites on the original egraph
-  let mut fin = Runner::<_, _, ()>::new(Default::default())
-    .with_egraph(egraph)
-    .run(rewrites.iter())
-    .egraph;
-  
-  // Add a root node that combines all roots
-  let root = fin.add(AstNode::new(Op::list(), roots.iter().copied()));
-  
-  // Create a LibExtractor with the strategy
-  let mut extractor = beam::LibExtractor::with_strategy(&fin, strategy);
-  let best = extractor.best(root);
-  
-  // Lift the libraries to the top
-  lift_libs(&best)
-}
-
-/// Given an expression and a set of library rewrites, extract the programs
-/// rewritten using the library with Pareto-optimal beam search for area and delay.
-/// This function creates a new egraph with BeamAreaDelay analysis.
-pub fn extract_with_beam_area_delay<Op, LA, LD>(
-  expr: &RecExpr<AstNode<Op>>,
-  rewrites: &[Rewrite<AstNode<Op>, beam_pareto::BeamAreaDelay>],
-  area_cost: LA,
-  delay_cost: LD,
-  strategy: beam::OptimizationStrategy,
-  beam_size: usize,
-  inter_beam: usize,
-  lps: usize,
-) -> RecExpr<AstNode<Op>>
-where
-  Op: Clone
-    + Teachable
-    + Ord
-    + std::fmt::Debug
-    + std::fmt::Display
-    + std::hash::Hash
-    + Arity
-    + Send
-    + Sync
-    + 'static,
-  LA: cost::LangCost<Op> + Clone + Send + Sync + 'static,
-  LD: cost::LangGain<Op> + Clone + Send + Sync + 'static,
-{
-  // Create a new egraph with BeamAreaDelay analysis
-  let mut egraph = EGraph::new(beam_pareto::BeamAreaDelay::new(
-    beam_size,
-    inter_beam,
-    lps,
+  let mut extractor = beam_pareto::LibExtractor::new(
+    &fin,
+    lang_cost.clone(),
+    lang_gain.clone(),
     strategy,
-  ));
-  
-  // Add the expression to the egraph
-  let root = egraph.add_expr(expr);
-  
-  // Run the rewrites
-  let runner = Runner::<_, _, ()>::new(Default::default())
-    .with_egraph(egraph)
-    .run(rewrites);
-  
-  // Use the LibExtractor to get the best expression
-  let mut extractor = beam::LibExtractor::with_strategy(&runner.egraph, strategy);
-  let best = extractor.best(root);
-  
-  // Lift the libraries to the top
-  lift_libs(&best)
+  );
+  extractor.best(root)
 }
 
 fn build<Op: Clone + Teachable + std::fmt::Debug>(
