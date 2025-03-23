@@ -19,9 +19,8 @@ use log::{debug, info};
 
 use crate::{
   extract::{
-    self, apply_libs,
-    apply_libs_pareto,
-    beam::{PartialLibCost},
+    self, apply_libs, apply_libs_pareto,
+    beam::PartialLibCost,
     beam_pareto,
     cost::{AreaCost, DelayCost, LangCost, LangGain},
   },
@@ -732,19 +731,18 @@ where
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
-    let runner =
-      EggRunner::<_, _, ()>::new(beam_pareto::PartialLibCost::new(
-        self.config.final_beams,
-        self.config.inter_beams,
-        self.config.lps,
-        self.lang_cost.clone(),
-        self.lang_gain.clone(),
-      ))
-      .with_egraph(aeg.clone())
-      .with_iter_limit(self.config.lib_iter_limit)
-      .with_time_limit(timeout)
-      .with_node_limit(1_000_000)
-      .run(lib_rewrites.iter());
+    let runner = EggRunner::<_, _, ()>::new(beam_pareto::PartialLibCost::new(
+      self.config.final_beams,
+      self.config.inter_beams,
+      self.config.lps,
+      self.lang_cost.clone(),
+      self.lang_gain.clone(),
+    ))
+    .with_egraph(aeg.clone())
+    .with_iter_limit(self.config.lib_iter_limit)
+    .with_time_limit(timeout)
+    .with_node_limit(1_000_000)
+    .run(lib_rewrites.iter());
 
     let mut egraph = runner.egraph;
     let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
