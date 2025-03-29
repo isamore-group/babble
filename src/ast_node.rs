@@ -97,6 +97,11 @@ impl<Op, T> AstNode<Op, T> {
     &mut self.args
   }
 
+  #[must_use]
+  pub fn operation_mut(&mut self) -> &mut Op {
+    &mut self.operation
+  }
+
   /// Returns `true` if the operation has no arguments.
   #[must_use]
   pub fn is_empty(&self) -> bool {

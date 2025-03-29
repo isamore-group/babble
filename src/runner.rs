@@ -14,7 +14,7 @@ use log::{debug, info};
 
 use crate::{
   extract::{
-    self, apply_libs, apply_libs_area_delay, apply_libs_knapsack, apply_libs_pareto, beam::{OptimizationStrategy, PartialLibCost}, beam_knapsack, beam_pareto::{BeamAreaDelay, CostSetAreaDelay, LibSelAreaDelay}, cost::{DelayCost, LangCost, LangGain}
+    self, apply_libs, apply_libs_area_delay, apply_libs_knapsack, apply_libs_pareto, beam::{OptimizationStrategy, PartialLibCost}, beam_knapsack, beam_knapsack::{ISAXAnalysis, TypeInfo}, beam_pareto::{BeamAreaDelay, CostSetAreaDelay, LibSelAreaDelay}, cost::{DelayCost, LangCost, LangGain}
   }, Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty, Printable, Teachable
 };
 
@@ -748,7 +748,7 @@ where
 }
 
 /// A trait for running library learning experiments with knapsack optimization
-pub trait BabbleKnapsackRunner<Op, LA, LD>
+pub trait BabbleKnapsackRunner<Op, T, LA, LD>
 where
   Op: Arity
     + Teachable
@@ -764,34 +764,38 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// Run the experiment on a single expression
-  fn run(&self, expr: Expr<Op>) -> KnapsackResult<Op, LA, LD>;
+  fn run(&self, expr: Expr<Op>) -> KnapsackResult<Op, T, LA, LD>;
 
   /// Run the experiment on multiple expressions
-  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> KnapsackResult<Op, LA, LD>;
+  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> KnapsackResult<Op, T, LA, LD>;
 
   /// Run the experiment on groups of equivalent expressions
   fn run_equiv_groups(
     &self,
     expr_groups: Vec<Vec<Expr<Op>>>,
-  ) -> KnapsackResult<Op, LA, LD>;
+  ) -> KnapsackResult<Op, T, LA, LD>;
 }
 
 /// Result of running a BabbleRunner experiment
 #[derive(Clone)]
-pub struct KnapsackResult<Op, LA, LD>
+pub struct KnapsackResult<Op, T, LA, LD>
 where
   Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// The final expression after library learning and application
   pub final_expr: Expr<Op>,
   /// The number of libraries learned
   pub num_libs: usize,
   /// The rewrites representing the learned libraries
-  pub rewrites: HashMap<usize, Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
+  pub rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   /// The initial cost of the expression(s)
   pub initial_cost: usize,
   /// The final cost of the expression
@@ -800,11 +804,13 @@ where
   pub run_time: Duration,
 }
 
-impl<Op, LA, LD> KnapsackResult<Op, LA, LD>
+impl<Op, T, LA, LD> KnapsackResult<Op, T, LA, LD>
 where
   Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// Calculate the compression ratio achieved
   pub fn compression_ratio(&self) -> f64 {
@@ -816,11 +822,13 @@ where
   }
 }
 
-impl<Op, LA, LD> std::fmt::Debug for KnapsackResult<Op, LA, LD>
+impl<Op, T, LA, LD> std::fmt::Debug for KnapsackResult<Op, T, LA, LD>
 where
   Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("BabbleResult")
@@ -867,7 +875,7 @@ impl Default for KnapsackConfig {
 }
 
 /// A BabbleRunner that uses regular beam search
-pub struct KnapsackRunner<Op, LA, LD>
+pub struct KnapsackRunner<Op, T, LA, LD>
 where
   Op: Display
     + Hash
@@ -881,18 +889,20 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// The domain-specific rewrites to apply
-  dsrs: Vec<Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
+  dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   /// lib rewrites
-  lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
+  lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   /// Configuration for the beam search
   config: KnapsackConfig,
   lang_cost: LA,
   lang_gain: LD,
 }
 
-impl<Op, LA, LD> KnapsackRunner<Op, LA, LD>
+impl<Op, T, LA, LD> KnapsackRunner<Op,T, LA, LD>
 where
     Op: Arity
         + LibOperation
@@ -910,17 +920,19 @@ where
         + 'static,
         LA: LangCost<Op> + Clone + Default + 'static,
         LD: LangGain<Op> + Clone + Default + 'static,
+        T: Debug + Default + Clone + PartialEq + Ord + Hash,
+        AstNode<Op>: TypeInfo<T>,
 {
     /// Create a new BeamRunner with the given domain-specific rewrites and configuration
     pub fn new<I>(
         dsrs: I,
-        lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>>,
+        lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
         config: KnapsackConfig,
         lang_cost: LA,
         lang_gain: LD,
     ) -> Self
     where
-        I: IntoIterator<Item = Rewrite<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>,>,
+        I: IntoIterator<Item = Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
     {
 
         // 如果USE_RULES为false，将dsrs清空
@@ -942,8 +954,8 @@ where
   fn run_egraph(
     &self,
     roots: &[Id],
-    egraph: EGraph<AstNode<Op>, beam_knapsack::PartialLibCost<Op, LA, LD>>,
-  ) -> KnapsackResult<Op, LA, LD> {
+    egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
+  ) -> KnapsackResult<Op, T, LA, LD> {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(60 * 100_000);
 
@@ -967,7 +979,7 @@ where
     println!("Running {} DSRs... ", self.dsrs.len());
 
     let runner =
-      EggRunner::<_, _, ()>::new(beam_knapsack::PartialLibCost::empty())
+      EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
         .with_egraph(egraph)
         .with_time_limit(timeout)
         .with_iter_limit(3)
@@ -1031,14 +1043,15 @@ where
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
+    let patial_lib_cost = beam_knapsack::PartialLibCost::new(
+      self.config.final_beams,
+      self.config.inter_beams,
+      self.config.lps,
+      self.lang_cost.clone(),
+      self.lang_gain.clone(),
+    );
     let runner =
-      EggRunner::<_, _, ()>::new(beam_knapsack::PartialLibCost::new(
-        self.config.final_beams,
-        self.config.inter_beams,
-        self.config.lps,
-        self.lang_cost.clone(),
-        self.lang_gain.clone(),
-      ))
+      EggRunner::<_, _, ()>::new(ISAXAnalysis::new(patial_lib_cost))
       .with_egraph(aeg.clone())
       .with_iter_limit(self.config.lib_iter_limit)
       .with_time_limit(timeout)
@@ -1047,7 +1060,7 @@ where
 
     let mut egraph = runner.egraph;
     let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
-    let mut cs = egraph[egraph.find(root)].data.clone();
+    let mut cs = egraph[egraph.find(root)].data.cs.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
     cs.set.sort_unstable_by_key(|elem| elem.expr_delay);
@@ -1114,7 +1127,7 @@ where
   }
 }
 
-impl<Op, LA, LD> BabbleKnapsackRunner<Op, LA, LD> for KnapsackRunner<Op, LA, LD>
+impl<Op, T, LA, LD> BabbleKnapsackRunner<Op, T, LA, LD> for KnapsackRunner<Op, T, LA, LD>
 where
     Op: Arity
         + LibOperation
@@ -1132,23 +1145,25 @@ where
         + 'static,
         LA: LangCost<Op> + Clone + Default + 'static,
         LD: LangGain<Op> + Clone + Default + 'static,
+        T: Debug + Default + Clone + PartialEq + Ord + Hash,
+        AstNode<Op>: TypeInfo<T>,
 {
-  fn run(&self, expr: Expr<Op>) -> KnapsackResult<Op, LA, LD> {
+  fn run(&self, expr: Expr<Op>) -> KnapsackResult<Op, T, LA, LD> {
     self.run_multi(vec![expr])
   }
 
-  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> KnapsackResult<Op, LA, LD> {
+  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> KnapsackResult<Op, T, LA, LD> {
     // First, let's turn our list of exprs into a list of recexprs
     let recexprs: Vec<RecExpr<AstNode<Op>>> =
       exprs.into_iter().map(RecExpr::from).collect();
-
-    let mut egraph = EGraph::new(beam_knapsack::PartialLibCost::new(
+    let partial_lib_cost = beam_knapsack::PartialLibCost::new(
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
       self.lang_cost.clone(),
       self.lang_gain.clone(),
-    ));
+    );
+    let mut egraph = EGraph::new(ISAXAnalysis::new(partial_lib_cost));
     let roots = recexprs
       .iter()
       .map(|x| egraph.add_expr(x))
@@ -1161,20 +1176,20 @@ where
   fn run_equiv_groups(
     &self,
     expr_groups: Vec<Vec<Expr<Op>>>,
-  ) -> KnapsackResult<Op, LA, LD> {
+  ) -> KnapsackResult<Op, T, LA, LD> {
     // First, let's turn our list of exprs into a list of recexprs
     let recexpr_groups: Vec<Vec<_>> = expr_groups
       .into_iter()
       .map(|group| group.into_iter().map(RecExpr::from).collect())
       .collect();
-
-    let mut egraph = EGraph::new(beam_knapsack::PartialLibCost::new(
+    let partial_lib_cost = beam_knapsack::PartialLibCost::new(
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
       self.lang_cost.clone(),
       self.lang_gain.clone(),
-    ));
+    );
+    let mut egraph = EGraph::new(ISAXAnalysis::new(partial_lib_cost));
 
     let roots: Vec<_> = recexpr_groups
       .into_iter()
@@ -1196,7 +1211,7 @@ where
 }
 
 // Implement Debug that doesn't depend on Op being Debug
-impl<Op, LA, LD> std::fmt::Debug for KnapsackRunner<Op, LA, LD>
+impl<Op,T, LA, LD> std::fmt::Debug for KnapsackRunner<Op, T, LA, LD>
 where
   Op: Display
     + Hash
@@ -1210,6 +1225,8 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("BeamRunner")
