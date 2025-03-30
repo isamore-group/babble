@@ -22,7 +22,7 @@ use crate::{
     self, apply_libs, apply_libs_pareto,
     beam::PartialLibCost,
     beam_pareto,
-    beam_pareto::ISAXAnalysis,
+    beam_pareto::{ISAXAnalysis, TypeInfo},
     cost::{AreaCost, DelayCost, LangCost, LangGain},
   },
   Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder,
@@ -419,7 +419,7 @@ where
 }
 
 /// A trait for running library learning experiments with Pareto optimization
-pub trait BabbleParetoRunner<Op, LA, LD>
+pub trait BabbleParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + Teachable
@@ -435,27 +435,30 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// Run the experiment on a single expression
-  fn run(&self, expr: Expr<Op>) -> ParetoResult<Op, LA, LD>;
+  fn run(&self, expr: Expr<Op>) -> ParetoResult<Op, T, LA, LD>;
 
   /// Run the experiment on multiple expressions
-  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> ParetoResult<Op, LA, LD>;
+  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> ParetoResult<Op, T, LA, LD>;
 
   /// Run the experiment on groups of equivalent expressions
   fn run_equiv_groups(
     &self,
     expr_groups: Vec<Vec<Expr<Op>>>,
-  ) -> ParetoResult<Op, LA, LD>;
+  ) -> ParetoResult<Op, T, LA, LD>;
 }
 
 /// Result of running a BabbleRunner experiment
 #[derive(Clone)]
-pub struct ParetoResult<Op, LA, LD>
+pub struct ParetoResult<Op, T, LA, LD>
 where
   Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug,
 {
   /// The final expression after library learning and application
   pub final_expr: Expr<Op>,
@@ -464,7 +467,7 @@ where
   /// The rewrites representing the learned libraries
   pub rewrites: HashMap<
     usize,
-    Rewrite<AstNode<Op>, beam_pareto::PartialLibCost<Op, LA, LD>>,
+    Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
   >,
   /// The initial cost of the expression
   pub initial_cost: (usize, usize, f32),
@@ -474,11 +477,13 @@ where
   pub run_time: Duration,
 }
 
-impl<Op, LA, LD> ParetoResult<Op, LA, LD>
+impl<Op, T, LA, LD> ParetoResult<Op, T, LA, LD>
 where
   Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// Calculate the compression ratio achieved
   pub fn compression_ratio(&self) -> f32 {
@@ -490,11 +495,13 @@ where
   }
 }
 
-impl<Op, LA, LD> std::fmt::Debug for ParetoResult<Op, LA, LD>
+impl<Op, T, LA, LD> std::fmt::Debug for ParetoResult<Op, T, LA, LD>
 where
   Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("BabbleResult")
@@ -541,7 +548,7 @@ impl Default for ParetoConfig {
 }
 
 /// A BabbleRunner that uses regular beam search
-pub struct ParetoRunner<Op, LA, LD>
+pub struct ParetoRunner<Op, T, LA, LD>
 where
   Op: Display
     + Hash
@@ -555,13 +562,15 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// The domain-specific rewrites to apply
-  dsrs: Vec<Rewrite<AstNode<Op>, beam_pareto::PartialLibCost<Op, LA, LD>>>,
+  dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   /// lib rewrites
   lib_rewrites: HashMap<
     usize,
-    Rewrite<AstNode<Op>, beam_pareto::PartialLibCost<Op, LA, LD>>,
+    Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
   >,
   /// Configuration for the beam search
   config: ParetoConfig,
@@ -569,7 +578,7 @@ where
   lang_gain: LD,
 }
 
-impl<Op, LA, LD> ParetoRunner<Op, LA, LD>
+impl<Op, T, LA, LD> ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + LibOperation
@@ -587,6 +596,9 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default + 'static,
   LD: LangGain<Op> + Clone + Default + 'static,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
+
 {
   /// Create a new BeamRunner with the given domain-specific rewrites and
   /// configuration
@@ -594,7 +606,7 @@ where
     dsrs: I,
     lib_rewrites: HashMap<
       usize,
-      Rewrite<AstNode<Op>, beam_pareto::PartialLibCost<Op, LA, LD>>,
+      Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
     >,
     config: ParetoConfig,
     lang_cost: LA,
@@ -602,7 +614,7 @@ where
   ) -> Self
   where
     I: IntoIterator<
-      Item = Rewrite<AstNode<Op>, beam_pareto::PartialLibCost<Op, LA, LD>>,
+      Item = Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
     >,
   {
     // 如果USE_RULES为false，将dsrs清空
@@ -624,8 +636,8 @@ where
   fn run_egraph(
     &self,
     roots: &[Id],
-    egraph: EGraph<AstNode<Op>, beam_pareto::PartialLibCost<Op, LA, LD>>,
-  ) -> ParetoResult<Op, LA, LD> {
+    egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
+  ) -> ParetoResult<Op, T, LA, LD> {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(60 * 100_000);
 
@@ -665,8 +677,9 @@ where
     );
     println!("Running {} DSRs... ", self.dsrs.len());
 
+
     let runner =
-      EggRunner::<_, _, ()>::new(beam_pareto::PartialLibCost::empty())
+      EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
         .with_egraph(egraph)
         .with_time_limit(timeout)
         .with_iter_limit(3)
@@ -734,13 +747,15 @@ where
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
-    let runner = EggRunner::<_, _, ()>::new(beam_pareto::PartialLibCost::new(
-      self.config.final_beams,
-      self.config.inter_beams,
-      self.config.lps,
-      self.lang_cost.clone(),
-      self.lang_gain.clone(),
-    ))
+    let partial_cost =
+      beam_pareto::PartialLibCost::new(
+        self.config.final_beams,
+        self.config.inter_beams,
+        self.config.lps,
+        self.lang_cost.clone(),
+        self.lang_gain.clone(),
+      );
+    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(partial_cost))
     .with_egraph(aeg.clone())
     .with_iter_limit(self.config.lib_iter_limit)
     .with_time_limit(timeout)
@@ -752,7 +767,7 @@ where
     let mut cs = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
-    cs.set.sort_unstable_by_key(|elem| elem.expr_delay);
+    cs.cs.set.sort_unstable_by_key(|elem| elem.expr_delay);
 
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
@@ -766,7 +781,7 @@ where
     // let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut chosen_rewrites = Vec::new();
     let mut rewrites_map = HashMap::new();
-    for lib in &cs.set[0].libs {
+    for lib in &cs.cs.set[0].libs {
       if lib.0 .0 < max_lib_id {
         // 从self.lib_rewrites中取出
         // 打印self.lib_rewrites
@@ -781,7 +796,7 @@ where
       }
     }
 
-    debug!("upper bound ('full') cost: {}", cs.set[0].expr_delay);
+    debug!("upper bound ('full') cost: {}", cs.cs.set[0].expr_delay);
 
     let ex_time = Instant::now();
     info!("Extracting... ");
@@ -827,7 +842,7 @@ where
   }
 }
 
-impl<Op, LA, LD> BabbleParetoRunner<Op, LA, LD> for ParetoRunner<Op, LA, LD>
+impl<Op, T, LA, LD> BabbleParetoRunner<Op, T, LA, LD> for ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + LibOperation
@@ -845,23 +860,26 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default + 'static,
   LD: LangGain<Op> + Clone + Default + 'static,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
-  fn run(&self, expr: Expr<Op>) -> ParetoResult<Op, LA, LD> {
+  fn run(&self, expr: Expr<Op>) -> ParetoResult<Op, T, LA, LD> {
     self.run_multi(vec![expr])
   }
 
-  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> ParetoResult<Op, LA, LD> {
+  fn run_multi(&self, exprs: Vec<Expr<Op>>) -> ParetoResult<Op, T, LA, LD> {
     // First, let's turn our list of exprs into a list of recexprs
     let recexprs: Vec<RecExpr<AstNode<Op>>> =
       exprs.into_iter().map(RecExpr::from).collect();
-
-    let mut egraph = EGraph::new(beam_pareto::PartialLibCost::new(
-      self.config.final_beams,
-      self.config.inter_beams,
-      self.config.lps,
-      self.lang_cost.clone(),
-      self.lang_gain.clone(),
-    ));
+    let partial_cost =
+      beam_pareto::PartialLibCost::new(
+        self.config.final_beams,
+        self.config.inter_beams,
+        self.config.lps,
+        self.lang_cost.clone(),
+        self.lang_gain.clone(),
+      );
+    let mut egraph = EGraph::new(ISAXAnalysis::new(partial_cost));
     let roots = recexprs
       .iter()
       .map(|x| egraph.add_expr(x))
@@ -874,20 +892,22 @@ where
   fn run_equiv_groups(
     &self,
     expr_groups: Vec<Vec<Expr<Op>>>,
-  ) -> ParetoResult<Op, LA, LD> {
+  ) -> ParetoResult<Op, T, LA, LD> {
     // First, let's turn our list of exprs into a list of recexprs
     let recexpr_groups: Vec<Vec<_>> = expr_groups
       .into_iter()
       .map(|group| group.into_iter().map(RecExpr::from).collect())
       .collect();
 
-    let mut egraph = EGraph::new(beam_pareto::PartialLibCost::new(
+    let partial_cost =
+    beam_pareto::PartialLibCost::new(
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
       self.lang_cost.clone(),
       self.lang_gain.clone(),
-    ));
+    );
+    let mut egraph = EGraph::new(ISAXAnalysis::new(partial_cost));
 
     let roots: Vec<_> = recexpr_groups
       .into_iter()
@@ -909,7 +929,7 @@ where
 }
 
 // Implement Debug that doesn't depend on Op being Debug
-impl<Op, LA, LD> std::fmt::Debug for ParetoRunner<Op, LA, LD>
+impl<Op, T, LA, LD> std::fmt::Debug for ParetoRunner<Op, T, LA, LD>
 where
   Op: Display
     + Hash
@@ -923,6 +943,8 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("BeamRunner")
