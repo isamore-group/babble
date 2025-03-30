@@ -5,7 +5,7 @@
 
 use std::{
   collections::HashMap,
-  fmt::{self, Debug, Display, Formatter},
+  fmt::{Debug, Display},
   hash::Hash,
   marker::PhantomData,
   sync::Arc,
@@ -18,18 +18,15 @@ use egg::{
 use log::{debug, info};
 
 use crate::{
+  Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder,
+  Pretty, Printable, Teachable,
   extract::{
-    self, apply_libs, apply_libs_pareto,
+    apply_libs, apply_libs_pareto,
     beam::PartialLibCost,
-    beam_pareto,
     beam_pareto::{ISAXAnalysis, TypeInfo},
     cost::{AreaCost, DelayCost, LangCost, LangGain},
   },
-  Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder,
-  Pretty, Printable, Teachable,
 };
-
-
 
 use crate::USE_RULES;
 
@@ -288,7 +285,7 @@ where
     let mut chosen_rewrites = Vec::new();
     for lib in &cs.set[0].libs {
       // println!("{}: {}", lib.0, &all_libs[lib.0.0]);
-      chosen_rewrites.push(lib_rewrites[lib.0 .0].clone());
+      chosen_rewrites.push(lib_rewrites[lib.0.0].clone());
     }
 
     debug!("upper bound ('full') cost: {}", cs.set[0].full_cost);
@@ -465,10 +462,8 @@ where
   /// The number of libraries learned
   pub num_libs: usize,
   /// The rewrites representing the learned libraries
-  pub rewrites: HashMap<
-    usize,
-    Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
-  >,
+  pub rewrites:
+    HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   /// The initial cost of the expression
   pub initial_cost: (usize, usize, f32),
   /// The final cost of the expression (area_cost, delay_cost, balanced_cost)
@@ -568,10 +563,8 @@ where
   /// The domain-specific rewrites to apply
   dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   /// lib rewrites
-  lib_rewrites: HashMap<
-    usize,
-    Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
-  >,
+  lib_rewrites:
+    HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   /// Configuration for the beam search
   config: ParetoConfig,
   lang_cost: LA,
@@ -598,7 +591,6 @@ where
   LD: LangGain<Op> + Clone + Default + 'static,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
-
 {
   /// Create a new BeamRunner with the given domain-specific rewrites and
   /// configuration
@@ -613,9 +605,7 @@ where
     lang_gain: LD,
   ) -> Self
   where
-    I: IntoIterator<
-      Item = Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>,
-    >,
+    I: IntoIterator<Item = Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   {
     // 如果USE_RULES为false，将dsrs清空
     let dsrs = if !USE_RULES {
@@ -677,13 +667,11 @@ where
     );
     println!("Running {} DSRs... ", self.dsrs.len());
 
-
-    let runner =
-      EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
-        .with_egraph(egraph)
-        .with_time_limit(timeout)
-        .with_iter_limit(3)
-        .run(&self.dsrs);
+    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
+      .with_egraph(egraph)
+      .with_time_limit(timeout)
+      .with_iter_limit(3)
+      .run(&self.dsrs);
 
     let aeg = runner.egraph;
 
@@ -747,15 +735,14 @@ where
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
-    let partial_cost =
-      beam_pareto::PartialLibCost::new(
-        self.config.final_beams,
-        self.config.inter_beams,
-        self.config.lps,
-        self.lang_cost.clone(),
-        self.lang_gain.clone(),
-      );
-    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(partial_cost))
+    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
+      self.config.final_beams,
+      self.config.inter_beams,
+      self.config.lps,
+      self.lang_cost.clone(),
+      self.lang_gain.clone(),
+      self.config.strategy,
+    ))
     .with_egraph(aeg.clone())
     .with_iter_limit(self.config.lib_iter_limit)
     .with_time_limit(timeout)
@@ -767,7 +754,9 @@ where
     let mut cs = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
-    cs.cs.set.sort_unstable_by_key(|elem| elem.expr_delay);
+    cs.cs
+      .set
+      .sort_unstable_by_key(|elem| elem.full_cost as usize);
 
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
@@ -782,21 +771,21 @@ where
     let mut chosen_rewrites = Vec::new();
     let mut rewrites_map = HashMap::new();
     for lib in &cs.cs.set[0].libs {
-      if lib.0 .0 < max_lib_id {
+      if lib.0.0 < max_lib_id {
         // 从self.lib_rewrites中取出
         // 打印self.lib_rewrites
         // println!("{}: {:?}", lib.0.0, self.lib_rewrites);
-        chosen_rewrites.push(self.lib_rewrites.get(&lib.0 .0).unwrap().clone());
+        chosen_rewrites.push(self.lib_rewrites.get(&lib.0.0).unwrap().clone());
         rewrites_map
-          .insert(lib.0 .0, self.lib_rewrites.get(&lib.0 .0).unwrap().clone());
+          .insert(lib.0.0, self.lib_rewrites.get(&lib.0.0).unwrap().clone());
       } else {
-        let new_lib = lib.0 .0 - max_lib_id;
+        let new_lib = lib.0.0 - max_lib_id;
         chosen_rewrites.push(lib_rewrites[new_lib].clone());
-        rewrites_map.insert(lib.0 .0, lib_rewrites[new_lib].clone());
+        rewrites_map.insert(lib.0.0, lib_rewrites[new_lib].clone());
       }
     }
 
-    debug!("upper bound ('full') cost: {}", cs.cs.set[0].expr_delay);
+    debug!("upper bound ('full') cost: {}", cs.cs.set[0].full_cost);
 
     let ex_time = Instant::now();
     info!("Extracting... ");
@@ -842,7 +831,8 @@ where
   }
 }
 
-impl<Op, T, LA, LD> BabbleParetoRunner<Op, T, LA, LD> for ParetoRunner<Op, T, LA, LD>
+impl<Op, T, LA, LD> BabbleParetoRunner<Op, T, LA, LD>
+  for ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + LibOperation
@@ -871,15 +861,14 @@ where
     // First, let's turn our list of exprs into a list of recexprs
     let recexprs: Vec<RecExpr<AstNode<Op>>> =
       exprs.into_iter().map(RecExpr::from).collect();
-    let partial_cost =
-      beam_pareto::PartialLibCost::new(
-        self.config.final_beams,
-        self.config.inter_beams,
-        self.config.lps,
-        self.lang_cost.clone(),
-        self.lang_gain.clone(),
-      );
-    let mut egraph = EGraph::new(ISAXAnalysis::new(partial_cost));
+    let mut egraph = EGraph::new(ISAXAnalysis::new(
+      self.config.final_beams,
+      self.config.inter_beams,
+      self.config.lps,
+      self.lang_cost.clone(),
+      self.lang_gain.clone(),
+      self.config.strategy,
+    ));
     let roots = recexprs
       .iter()
       .map(|x| egraph.add_expr(x))
@@ -899,15 +888,14 @@ where
       .map(|group| group.into_iter().map(RecExpr::from).collect())
       .collect();
 
-    let partial_cost =
-    beam_pareto::PartialLibCost::new(
+    let mut egraph = EGraph::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
       self.lang_cost.clone(),
       self.lang_gain.clone(),
-    );
-    let mut egraph = EGraph::new(ISAXAnalysis::new(partial_cost));
+      self.config.strategy,
+    ));
 
     let roots: Vec<_> = recexpr_groups
       .into_iter()
