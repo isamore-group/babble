@@ -22,11 +22,14 @@ use crate::{
     self, apply_libs, apply_libs_pareto,
     beam::PartialLibCost,
     beam_pareto,
+    beam_pareto::ISAXAnalysis,
     cost::{AreaCost, DelayCost, LangCost, LangGain},
   },
   Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder,
   Pretty, Printable, Teachable,
 };
+
+
 
 use crate::USE_RULES;
 

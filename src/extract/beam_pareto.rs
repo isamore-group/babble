@@ -6,6 +6,7 @@ use std::{
   cmp::Ordering,
   collections::{BinaryHeap, HashMap},
   fmt::Debug,
+  hash::Hash,
 };
 
 use crate::{
@@ -466,7 +467,61 @@ where
   }
 }
 
-impl<Op, LA, LD> Analysis<AstNode<Op>> for PartialLibCost<Op, LA, LD>
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ISAXCost<T>
+where T: Debug + Default + Clone + PartialEq + Ord + Hash,
+{
+  pub cs: CostSet,
+  pub ty: T,
+}
+
+impl <T: PartialEq> PartialEq<T> for ISAXCost<T> 
+where T: Debug + Default + Clone + PartialEq + Ord + Hash,
+{
+  fn eq(&self, other: &T) -> bool {
+    self.ty == *other
+  }
+}
+
+impl <T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
+  #[must_use]
+  pub fn new(cs: CostSet, ty: T) -> Self {
+    ISAXCost { cs, ty }
+  }
+    
+}
+
+/// 定义ISAXAnalysis，用于存储ISAX算法的分析
+#[derive(Debug, Clone, Default)]
+pub struct ISAXAnalysis<Op, T, LA, LD>
+where
+  Op: Clone + Debug + Ord + std::hash::Hash + Teachable + Arity,
+  LA: LangCost<Op> + Clone + Default,
+  LD: LangGain<Op> + Clone + Default,
+  T: Debug,
+{
+  pub partial_lib_cost: PartialLibCost<Op, LA, LD>,
+  _type: PhantomData<T>,
+  _language: PhantomData<AstNode<Op>>,
+}
+impl<Op, T, LA, LD> ISAXAnalysis<Op, T, LA, LD>
+where
+  Op: Clone + Debug + Ord + std::hash::Hash + Teachable + Arity,
+  LA: LangCost<Op> + Clone + Default,
+  LD: LangGain<Op> + Clone + Default,
+  T: Debug,
+{
+  #[must_use]
+  pub fn new(partial_lib_cost: PartialLibCost<Op, LA, LD>) -> Self {
+    ISAXAnalysis { partial_lib_cost, _type: PhantomData, _language: PhantomData }
+  }
+  #[must_use]
+  pub fn empty() -> Self {
+    ISAXAnalysis { partial_lib_cost: PartialLibCost::empty(), _type: PhantomData, _language: PhantomData }
+  }
+}
+
+impl<Op, T, LA, LD> Analysis<AstNode<Op>> for ISAXAnalysis<Op, T,  LA, LD>
 where
   Op: Ord
     + std::hash::Hash
@@ -480,8 +535,10 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default,
   LD: LangGain<Op> + Clone + Default,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
-  type Data = CostSet;
+  type Data = ISAXCost<T>;
 
   fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
     // println!("merge");
@@ -491,14 +548,15 @@ where
 
     // Merging consists of combination, followed by unification and beam
     // pruning.
-    to.combine(from.clone());
-    to.unify();
-    to.prune(self.beam_size, self.lps);
-
+    to.cs.combine(from.cs.clone());
+    to.cs.unify();
+    to.cs.prune(self.partial_lib_cost.beam_size, self.partial_lib_cost.lps);
+    // we also need to merge the type information
+    (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
     // println!("{:?}", to);
     // println!("{} {}", &a0 != to, to != &from);
     // TODO: be more efficient with how we do this
-    DidMerge(&a0 != to, to != &from)
+    DidMerge(&a0 != to , to != &from)
     // DidMerge(false, false)
   }
 
@@ -506,8 +564,13 @@ where
     egraph: &mut EGraph<AstNode<Op>, Self>,
     enode: &AstNode<Op>,
   ) -> Self::Data {
+    // calculate the type
+    let child_types: Vec<T> = enode.children().iter()
+            .map(|&child| egraph[child].data.ty.clone())
+            .collect();
+    let ty = enode.get_rtype(&child_types);
     // println!("make");
-    let x = |i: &Id| &egraph[*i].data;
+    let x = |i: &Id| &egraph[*i].data.cs;
 
     let self_ref = &egraph.analysis;
 
@@ -515,52 +578,46 @@ where
       Some(BindingExpr::Lib(id, f, b)) => {
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
-        let mut e = x(b).add_lib(id, x(f), self_ref.lps);
+        let mut e = x(b).add_lib(id, x(f), self_ref.partial_lib_cost.lps);
         e.unify();
-        e.prune(self_ref.beam_size, self_ref.lps);
-        e
+        e.prune(self_ref.partial_lib_cost.beam_size, self_ref.partial_lib_cost.lps);
+        ISAXCost::new(e, ty)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
         // We test the arity of the function
-        let op_delay = self_ref.lang_gain.op_gain(enode.operation(), &[]);
+        let op_delay = self_ref.partial_lib_cost.lang_gain.op_gain(enode.operation(), &[]);
         // println!("op: {:#?}", enode.operation());
         // println!("op_delay: {:#?}", op_delay);
         // println!("number of args: {:#?}", enode.args().len());
         if enode.is_empty() {
           // 0 args. Return intro.
-
-          CostSet::intro_op(op_delay)
+          
+          ISAXCost::new(CostSet::intro_op(op_delay), ty)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
           let mut e = x(&enode.args()[0]).clone();
           e.inc_delay(op_delay);
-          e
+          ISAXCost::new(e, ty)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
 
           for cs in &enode.args()[1..] {
-            e = e.cross(x(cs), self_ref.lps);
+            e = e.cross(x(cs), self_ref.partial_lib_cost.lps);
             // Intermediate prune.
             e.unify();
-            e.prune(self_ref.inter_beam, self_ref.lps);
+            e.prune(self_ref.partial_lib_cost.inter_beam, self_ref.partial_lib_cost.lps);
           }
 
           e.unify();
-          e.prune(self_ref.beam_size, self_ref.lps);
+          e.prune(self_ref.partial_lib_cost.beam_size, self_ref.partial_lib_cost.lps);
           e.inc_delay(op_delay);
-          e
+          ISAXCost::new(e, ty)
         }
       }
     }
   }
-
-  // For debugging
-  // fn modify(egraph: &mut EGraph<AstNode<Op>, id: Id) {
-  //     println!("merge {}", id);
-  //     println!("{:?}", &egraph[id].data)
-  // }
 }
 
 /// Library context is a set of library function names.
@@ -869,4 +926,10 @@ where
   fn debug_indented(&self, msg: &str) {
     debug!("{:indent$}{msg}", "", indent = 2 * self.indent);
   }
+}
+
+// 定义trait TypeInfo
+pub trait TypeInfo<T> {
+  fn get_rtype(&self, child_types: &Vec<T>) -> T;
+  fn merge_types(a: &T, b: &T) -> T;
 }
