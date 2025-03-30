@@ -85,6 +85,11 @@ impl<Op, T> AstNode<Op, T> {
     &self.operation
   }
 
+  #[must_use]
+  pub fn operation_mut(&mut self) -> &mut Op {
+    &mut self.operation
+  }
+
   /// Returns a slice containing the operation's arguments.
   #[must_use]
   pub fn args(&self) -> &[T] {
