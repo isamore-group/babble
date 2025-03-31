@@ -93,6 +93,7 @@ dependencies = [
  "memory-stats",
  "nom",
  "rand",
+ "rustc-hash 1.1.0",
  "serde",
  "serde_json",
  "smallvec",
@@ -205,7 +206,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "quanta",
- "rustc-hash",
+ "rustc-hash 2.1.1",
  "saturating",
  "serde",
  "smallvec",
@@ -571,6 +572,12 @@ name = "regex-syntax"
 version = "0.6.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49b3de9ec5dc0a3417da371aab17d729997c15010e7fd24ff707773a33bddb64"
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"

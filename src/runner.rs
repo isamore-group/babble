@@ -292,10 +292,9 @@ where
     }
 
     debug!("upper bound ('full') cost: {}", cs.set[0].full_cost);
-    println!("Size of cs.set: {}", cs.set.len());
 
     let ex_time = Instant::now();
-    info!("Extracting... ");
+    println!("Extracting... ");
     let lifted = apply_libs(aeg.clone(), roots, &chosen_rewrites);
     let final_cost = AstSize.cost_rec(&lifted);
 
@@ -799,7 +798,8 @@ where
     debug!("upper bound ('full') cost: {}", cs.cs.set[0].expr_delay);
 
     let ex_time = Instant::now();
-    info!("Extracting... ");
+    println!("chosen rewrites: {}", chosen_rewrites.len());
+    println!("Extracting... ");
     let best = apply_libs_pareto(
       aeg.clone(),
       roots,
@@ -808,7 +808,7 @@ where
       self.lang_gain.clone(),
       self.config.strategy,
     );
-
+    println!("Extracting finished");
     let delay_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(&best);
     let selected_delay_cost = match delay_cost.2 {
       true => delay_cost.0,

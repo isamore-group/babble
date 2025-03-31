@@ -82,6 +82,7 @@ where
     lang_gain.clone(),
     strategy,
   );
+  println!("begin extracting");
   extractor.best(root)
 }
 
