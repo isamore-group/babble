@@ -751,10 +751,11 @@ where
 
     let mut egraph = runner.egraph;
     let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
-    let mut cs = egraph[egraph.find(root)].data.clone();
+    let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
-    cs.cs
+    isax_cost
+      .cs
       .set
       .sort_unstable_by_key(|elem| elem.full_cost as usize);
 
@@ -770,7 +771,7 @@ where
     // let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut chosen_rewrites = Vec::new();
     let mut rewrites_map = HashMap::new();
-    for lib in &cs.cs.set[0].libs {
+    for lib in &isax_cost.cs.set[0].libs {
       if lib.0.0 < max_lib_id {
         // 从self.lib_rewrites中取出
         // 打印self.lib_rewrites
@@ -785,7 +786,10 @@ where
       }
     }
 
-    debug!("upper bound ('full') cost: {}", cs.cs.set[0].full_cost);
+    debug!(
+      "upper bound ('full') cost: {}",
+      isax_cost.cs.set[0].full_cost
+    );
 
     let ex_time = Instant::now();
     info!("Extracting... ");
