@@ -2,11 +2,16 @@
 //! orderings of learned library sets.
 use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language, RecExpr};
 use log::debug;
+use rand::{Rng, seq::index, thread_rng};
+use rustc_hash::FxHashMap;
+use std::time::Instant;
 use std::{
+  borrow::Cow,
   cmp::Ordering,
   collections::{BinaryHeap, HashMap},
   fmt::Debug,
-  hash::Hash,
+  hash::{DefaultHasher, Hash, Hasher},
+  sync::Arc,
 };
 
 use crate::{
@@ -627,14 +632,20 @@ where
 /// Library context is a set of library function names.
 /// It is used in the extractor to represent the fact that we are extracting
 /// inside (nested) library definitions.
-#[derive(Debug, Clone, PartialEq, Eq, std::hash::Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LibContext {
   set: Vec<LibId>,
+  hash: u32,
 }
 
 impl LibContext {
   fn new() -> Self {
-    Self { set: Vec::new() }
+    let mut ctx = Self {
+      set: Vec::new(),
+      hash: 0,
+    };
+    ctx.cal_hash();
+    ctx
   }
 
   /// Add a new lib to the context if not yet present,
@@ -642,12 +653,29 @@ impl LibContext {
   fn add(&mut self, lib_id: LibId) {
     if let Err(pos) = self.set.binary_search(&lib_id) {
       self.set.insert(pos, lib_id);
+      self.cal_hash();
     }
   }
 
   /// Does the context contain the given lib?
   fn contains(&self, lib_id: LibId) -> bool {
     self.set.binary_search(&lib_id).is_ok()
+  }
+
+  /// Calculate hash
+  fn cal_hash(&mut self) {
+    let mut hasher = DefaultHasher::new();
+    self.set.hash(&mut hasher);
+    let full_hash = hasher.finish();
+    self.hash = (full_hash ^ (full_hash >> 32)) as u32;
+  }
+}
+
+impl Hash for LibContext {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    // 如果设计正确，这里应该用预计算的hash
+    // 但需要确保dirty时为false！
+    state.write_u32(self.hash);
   }
 }
 
@@ -663,6 +691,13 @@ fn display_maybe_expr<
     Some(expr) => expr.pretty(100),
     _ => "<none>".to_string(),
   }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CacheKey {
+  id: u32,   // 假设Id是u32或类似
+  hash: u32, // 如果可能，减小哈希位数
 }
 
 /// Extractor that minimizes AST size but ignores the cost of library
@@ -692,7 +727,9 @@ pub struct LibExtractor<
   /// context yet; if an entry is `None`, it's currently under processing,
   /// but we have no results for it yet; if an entry is `Some(_)`, we have
   /// found an expression for it (but it might still be improved).
-  memo: HashMap<Id, HashMap<LibContext, MaybeExpr<Op>>>,
+  memo: FxHashMap<CacheKey, usize>,
+  all_exprs: Vec<MaybeExpr<Op>>,
+  all_costs: Vec<Option<f32>>,
   /// Current lib context:
   /// contains all lib ids inside whose definitions we are currently
   /// extracting.
@@ -729,7 +766,9 @@ where
     strategy: f32,
   ) -> Self {
     Self {
-      memo: HashMap::new(),
+      memo: FxHashMap::default(),
+      all_exprs: Vec::with_capacity(10000),
+      all_costs: Vec::with_capacity(10000),
       lib_context: LibContext::new(),
       egraph,
       indent: 0,
@@ -740,17 +779,34 @@ where
   }
 
   /// Get best best expression for `id` in the current lib context.
-  fn get_from_memo(&self, id: Id) -> Option<&MaybeExpr<Op>> {
-    self.memo.get(&id)?.get(&self.lib_context)
+  fn get_from_memo(&self, id: Id) -> Option<&usize> {
+    let start = Instant::now();
+    let index = self.memo.get(&CacheKey {
+      id: usize::from(id) as u32,
+      hash: self.lib_context.hash,
+    });
+    println!("get_from_memo: {}ms", start.elapsed().as_millis());
+    index
   }
 
   /// Set best best expression for `id` in the current lib context.
-  fn insert_into_memo(&mut self, id: Id, val: MaybeExpr<Op>) {
-    self
-      .memo
-      .entry(id)
-      .or_default()
-      .insert(self.lib_context.clone(), val);
+  fn insert_into_memo(
+    &mut self,
+    id: Id,
+    val: MaybeExpr<Op>,
+    cost: Option<f32>,
+  ) {
+    let start = Instant::now();
+    self.all_exprs.push(val);
+    self.all_costs.push(cost);
+    self.memo.insert(
+      CacheKey {
+        id: usize::from(id) as u32,
+        hash: self.lib_context.hash,
+      },
+      self.all_exprs.len() - 1,
+    );
+    println!("inserted into memo: {}ms", start.elapsed().as_millis());
   }
 
   /// Extract the smallest expression for the eclass `id`.
@@ -760,15 +816,20 @@ where
   /// expression)
   pub fn best(&mut self, id: Id) -> RecExpr<AstNode<Op>> {
     // Populate the memo:
+    println!("extracting eclass {id}");
     self.extract(id);
     // println!("id: {:#?}", id);
     // println!("{:#?}", self.egraph[id]);
     // Get the best expression from the memo:
-    self.get_from_memo(id).unwrap().clone().unwrap()
+    let index = self.get_from_memo(id).unwrap().clone();
+    self.all_exprs[index]
+      .clone()
+      .expect("Failed to extract expression")
   }
 
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> f32 {
+    let start = Instant::now();
     let delay_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(expr);
     let selected_delay_cost = match delay_cost.2 {
       true => delay_cost.0,
@@ -779,6 +840,7 @@ where
       true => area_cost.0,
       false => area_cost.1,
     };
+    println!("used {}ms to get the cost", start.elapsed().as_millis());
     self.strategy * (selected_delay_cost as f32)
       + (1.0 - self.strategy) * (selected_area_cost as f32)
   }
@@ -786,21 +848,19 @@ where
   /// Extract the expression with the largest gain from the eclass id and its
   /// descendants in the current context, storing results in the memo
   fn extract(&mut self, id: Id) {
+    let extract_start = Instant::now();
+    println!("---------------memo.size(): {}", self.memo.len());
     self.debug_indented(&format!("extracting eclass {id}"));
-    if let Some(res) = self.get_from_memo(id) {
-      // This node has already been visited in this context (either done or
-      // under processing)
-      self.debug_indented(&format!(
-        "visited, memoized value: {}",
-        display_maybe_expr(res)
-      ));
-    } else {
+    if self.get_from_memo(id) == None {
       // Initialize memo with None to prevent infinite recursion in case of
       // cycles in the egraph
-      self.insert_into_memo(id, None);
+      self.insert_into_memo(id, None, None);
       // Extract a candidate expression from each node
       // println!("Extracting eclass {:#?}", self.egraph[id]);
+      let mut cnt = 0;
       for node in self.egraph[id].iter() {
+        println!("extracting node {}/{}", cnt, self.egraph[id].len());
+        cnt += 1;
         match self.extract_node(node) {
           None => (), // Extraction for this node failed (must be a cycle)
           Some(cand) => {
@@ -809,31 +869,82 @@ where
             // print!("node: {}, ", node.operation());
             // print!("cand: {}, ", cand.pretty(100));
             // println!("cand gain: {}", Self::gain(&self, &cand));
-            match self.get_from_memo(id).unwrap() {
-              // If we already had an expression and it was better, do nothing
-              Some(prev)
-                if Self::cost(&self, prev) <= Self::cost(&self, &cand) =>
-              {
-                ()
-              }
-              // Otherwise, update the memo;
-              // note that updating the memo after each better candidate is
-              // found instead of at the end is slightly
-              // suboptimal (because it might cause us to go around some cycles
-              // once), but the code is simpler and it doesn't
-              // matter too much.
-              _ => {
-                self.debug_indented(&format!(
-                  "new best for {id}: {} (gain {})",
-                  cand.pretty(100),
-                  Self::cost(&self, &cand)
-                ));
-                self.insert_into_memo(id, Some(cand));
+            let mut flag = true;
+            let mut cand_cost = None;
+            let mut prev_msg = (0, None);
+            let mut renew_flag = false;
+            // 首先，如果self.get_from_memo(id) 有值，并且all_exprs中有值
+            if let Some(index) = self.get_from_memo(id) {
+              // println!("index: {}", index);
+              if let Some(prev) = self.all_exprs[*index].clone() {
+                // 存在表达式，首先计算prev的cost，
+                // 如果all_costs中有值就不用计算，直接取出
+                let prev_cost = if let Some(cost) = self.all_costs[*index] {
+                  cost
+                } else {
+                  let cost = Self::cost(&self, &prev);
+                  prev_msg = (index.clone(), Some(cost));
+                  renew_flag = true;
+                  cost
+                };
+                // 接下来计算cand的cost，并赋给cand_cost
+                let c_cost = Self::cost(&self, &cand);
+                // 如果prev_cost < c_cost，说明cand的cost更大,
+                // 将flag置为false,否则就将c_cost赋给cand_cost
+                if prev_cost < c_cost {
+                  flag = false;
+                } else {
+                  cand_cost = Some(c_cost);
+                }
               }
             }
+            if renew_flag {
+              self.all_costs[prev_msg.0] = prev_msg.1;
+            }
+            // 如果flag为true，说明cand的cost更小,需要进行替换
+            if flag {
+              self.insert_into_memo(id, Some(cand.clone()), cand_cost);
+            }
+            // match self.get_from_memo(id) {
+            //   // If we already had an expression and it was better, do
+            // nothing   Some(index){
+            //     // 首先检查all_cost中是否有值
+            //     if let Some(cost) = self.all_costs[*index] {
+            //       if cost < Self::cost(&self, &cand) {
+            //         flag = false;
+            //       }
+            //     } else {
+            //       // 如果没有值，检查
+            //     }
+
+            //   }
+            // }
+            //   // Otherwise, update the memo;
+            //   // note that updating the memo after each better candidate is
+            //   // found instead of at the end is slightly
+            //   // suboptimal (because it might cause us to go around some
+            // cycles   // once), but the code is simpler and it
+            // doesn't   // matter too much.
+            //   _ => {
+            //     self.debug_indented(&format!(
+            //       "new best for {id}: {} (gain {})",
+            //       cand.pretty(100),
+            //       Self::cost(&self, &cand)
+            //     ));
+            //     let start = Instant::now();
+            //     self.insert_into_memo(id, Some(cand));
+            //     println!(
+            //       "using {}ms to insert into memo",
+            //       start.elapsed().as_millis()
+            //     );
+            //   }
           }
         }
       }
+      println!(
+        "using {}ms to extract eclass {id}",
+        extract_start.elapsed().as_millis()
+      );
     }
   }
 
@@ -841,6 +952,7 @@ where
   fn extract_node(&mut self, node: &AstNode<Op>) -> MaybeExpr<Op> {
     self.debug_indented(&format!("extracting node {node:?}"));
     if let Some(BindingExpr::Lib(lid, _, _)) = node.as_binding_expr() {
+      println!("checking lib {lid}");
       if self.lib_context.contains(lid) {
         // This node is a definition of one of the libs, whose definition we are
         // currently extracting: do not go down this road since it leads
@@ -851,6 +963,7 @@ where
     }
     // Otherwise: extract all children
     let mut child_indexes = vec![];
+    println!("extracting children of {node:?}");
     self.extract_children(node, 0, vec![], &mut child_indexes)
   }
 
@@ -865,12 +978,19 @@ where
     mut partial_expr: Vec<AstNode<Op>>,
     child_indexes: &mut Vec<usize>,
   ) -> MaybeExpr<Op> {
+    let child_start = Instant::now();
+    println!("begin extracting children");
     if current == node.children().len() {
+      println!("current == children.len()");
       // Done with children: add ourselves to the partial expression and return
       let child_ids: Vec<Id> =
         child_indexes.iter().map(|x| (*x).into()).collect();
       let root = AstNode::new(node.operation().clone(), child_ids);
       partial_expr.push(root);
+      println!(
+        "using {}ms to extract children",
+        child_start.elapsed().as_millis()
+      );
       Some(partial_expr.into())
     } else {
       // If this is the first child of a lib node (i.e. lib definition) add this
@@ -888,13 +1008,22 @@ where
       // Process the current child
       let child = &node.children()[current];
       self.indent += 1;
+      println!(">>>extracting child {child:?}");
       self.extract(*child);
       self.indent -= 1;
       // We need to get the result before restoring the context
-      let child_res = self.get_from_memo(*child).unwrap().clone();
+      println!("begin getting child {child:?}");
+      let start = Instant::now();
+      let child_res = self.get_from_memo(*child).clone();
+      let child_res = if let Some(index) = child_res {
+        self.all_exprs[*index].clone()
+      } else {
+        None
+      };
+      println!("using {}ms to get the expr", start.elapsed().as_millis());
       // Restore lib context
       self.lib_context = old_lib_context;
-
+      println!("begin matching");
       match child_res {
         None => None, /* Failed to extract a child, so the extraction of */
         // this node fails
@@ -903,15 +1032,28 @@ where
           // child indexes), and we don't want it to affect the memo
           // result for child.
           let mut new_expr = expr.as_ref().to_vec();
+          println!("begin offsetting");
           for n in &mut new_expr {
             // Increment all indexes inside `n` by the current expression
             // length; this is needed to make a well-formed
             // `RecExpr`
             Self::offset_children(n, partial_expr.len());
           }
+          println!(">>>>> new expr");
           partial_expr.extend(new_expr);
           child_indexes.push(partial_expr.len() - 1);
-          self.extract_children(node, current + 1, partial_expr, child_indexes)
+          let exp = self.extract_children(
+            node,
+            current + 1,
+            partial_expr,
+            child_indexes,
+          );
+          println!(">>>>>>> returning from child {child:?}");
+          println!(
+            "using {}ms to extract children",
+            child_start.elapsed().as_millis()
+          );
+          exp
         }
       }
     }
