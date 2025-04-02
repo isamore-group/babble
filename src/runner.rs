@@ -752,7 +752,7 @@ where
     let mut egraph = runner.egraph;
     let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
-    println!("root: {:#?}", egraph[egraph.find(root)]);
+    // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
     isax_cost
       .cs
