@@ -352,7 +352,7 @@ impl LibSel {
 
     res.delay_cost.0 += delay.0;
     res.delay_cost.1 += delay.0;
-    res.full_cost += delay.1 as f32 * strategy;
+    res.full_cost += delay.0 as f32 * strategy;
 
     Some(res)
   }
