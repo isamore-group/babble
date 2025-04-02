@@ -106,14 +106,30 @@ where
         let (_, ty) = condition.split_once(":").ok_or(anyhow!("missing ':'"))?;
         // 去除可能的空格
         let ty = ty.trim();
-        let ty = ty.parse::<T>()?;
-        // 获取所有的变量
-        let vars = lhs.vars();
-        let mut type_map = HashMap::new();
-        for var in vars {
-          type_map.insert(var, ty.clone());
+        if ty.contains("[") {
+          // 去除[]，并用,分割
+          let ty = ty.strip_prefix("[").ok_or(anyhow!("missing '['"))?.strip_suffix("]").ok_or(anyhow!("missing ']'"))?;
+          let ty = ty.split(",").map(|s| s.trim()).collect::<Vec<_>>();
+          // 解析成Vec<T>
+          let mut type_map = HashMap::new();
+          for var in lhs.vars() {
+            let mut egg_type = Vec::new();
+            for t in &ty {
+              egg_type.push(t.parse::<T>()?);
+            }
+            type_map.insert(var, egg_type);
+          }
+          TypeMatch::new(type_map)
         }
-        TypeMatch::new(type_map)
+        // 解析成单个类型
+        else {
+          let egg_type = vec![ty.parse::<T>()?];
+          let mut type_map = HashMap::new();
+          for var in lhs.vars() {
+            type_map.insert(var, egg_type.clone());
+          }
+          TypeMatch::new(type_map)
+        }
       }
       // 使用parse函数解析condition
       else {
@@ -131,11 +147,11 @@ where
 // Condition
 #[derive(Debug)]
 pub struct TypeMatch<T>{
-  pub type_map : HashMap<Var, T>,
+  pub type_map : HashMap<Var, Vec<T>>,
 }
 
 impl <T> TypeMatch<T>{
-  pub fn new(type_map: HashMap<Var, T>) -> Self{
+  pub fn new(type_map: HashMap<Var, Vec<T>>) -> Self{
     TypeMatch{
       type_map ,
     }
@@ -159,10 +175,19 @@ where <T as FromStr>::Err: std::error::Error + Send + Sync + 'static
         if parts.len() != 2 {
             return Err(anyhow!("Invalid format"));
         }
-        // Parse Var and  T
-        let var = parts[0].trim().parse::<Var>()?;
-        let egg_type = parts[1].trim().parse::<T>()?;
-        type_map.insert(var, egg_type);
+        // 如果含有[], 那么说明有多个可能的类型
+        let rparts = parts[1];
+        if rparts.contains("[") {
+            let rparts = rparts.strip_prefix("[").ok_or(anyhow!("Missing '['"))?.strip_suffix("]").ok_or(anyhow!("Missing ']'"))?;
+            let rparts = rparts.split(',').map(|s| s.trim().parse::<T>()).collect::<Result<Vec<T>, _>>()?;
+            type_map.insert(parts[0].trim().parse::<Var>()?, rparts);
+            continue;
+        }else {
+          // Parse Var and  T
+          let var = parts[0].trim().parse::<Var>()?;
+          let egg_type = vec![parts[1].trim().parse::<T>()?];
+          type_map.insert(var, egg_type);
+        }
     }
     Ok(TypeMatch { type_map })
 }
@@ -179,9 +204,16 @@ where L: Language + TypeInfo<T>,
     for (var, egg_type) in &self.type_map {
         if let Some(ecls_id) = subst.get(var.clone()) {
             let ty = &egraph[*ecls_id].data;
-            if ty != egg_type {
+            let mut found = false;
+            for t in egg_type {
+                if ty == t {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
                 return false;
-            } 
+            }
         }
     }
     true

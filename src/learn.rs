@@ -20,6 +20,7 @@ use crate::{
   co_occurrence::CoOccurrences,
   dfta::Dfta,
   extract::beam::PartialLibCost,
+  extract::beam_pareto::ClassMatch,
   teachable::{BindingExpr, Teachable},
 };
 use crate::{COST, MOD};
@@ -381,6 +382,7 @@ where
   ) -> LearnedLibrary<Op, (Id, Id), LD>
   where
     A: Analysis<AstNode<Op>> + Clone,
+    <A as Analysis<AstNode<Op>>>::Data: ClassMatch,
     AstNode<Op>: Language,
   {
     let roots = &self.roots;
@@ -495,7 +497,9 @@ where
     co_occurrences: CoOccurrences,
     dfta: bool,
     last_lib_id: usize,
-  ) -> Self {
+  ) -> Self 
+  where <A as Analysis<AstNode<Op>>>::Data: ClassMatch,
+  {
     let mut learned_lib = Self {
       egraph: my_egraph,
       lang_gain,
@@ -521,32 +525,87 @@ where
       }
     } else {
       let classes: Vec<_> = egraph.classes().map(|cls| cls.id).collect();
-
-      let eclass_pairs = classes
-        .iter()
-        .cartesian_product(classes.iter())
-        .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)));
-
-      // println!("there are {} eclass pairs", eclass_pairs.clone().count());
-      // let mut count = 0;
-      // for (ecls1, ecls2) in eclass_pairs.clone() {
-      //   // 收集每个elcass中的op组成的集合
-      //   let mut ecls1_ops = egraph[ecls1].nodes.iter().map(|enode|
-      // enode.operation().clone()).collect::<Vec<_>>();
-      //   let mut ecls2_ops = egraph[ecls2].nodes.iter().map(|enode|
-      // enode.operation().clone()).collect::<Vec<_>>();   ecls1_ops.
-      // sort();   ecls2_ops.sort();
-      //   if ecls1_ops == ecls2_ops {
-      //     count += 1;
-      //   }
-      // }
-      // println!("there are {} similar eclass pairs", count);
-      for (ecls1, ecls2) in eclass_pairs {
-        // 我在想，现在两个eclass肯定是eqsat的状态，
-        // 我们能不能通过二者op的数量判断是否需要anti-unify，
-        // 只有相似的eclass才需要anti-unify
-        learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
+      
+      // let eclass_pairs = classes
+      //   .iter()
+      //   .cartesian_product(classes.iter())
+      //   .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)));
+      let mut eclass_pairs = vec![];
+      // 用一个二维数组来存储pairs的配对情况
+      let mut can_pairs = HashMap::new();
+      for ecls1 in classes.iter() {
+        for ecls2 in classes.iter() {
+          if can_pairs.contains_key(&(*ecls1, *ecls2)) || can_pairs.contains_key(&(*ecls2, *ecls1)) {
+            let can_pair:&bool = can_pairs.get(&(*ecls1, *ecls2)).unwrap_or(can_pairs.get(&(*ecls2, *ecls1)).unwrap());
+            if can_pair.clone() {
+              eclass_pairs.push((ecls1.clone(), ecls2.clone()));
+            }
+            continue;
+          }
+          if learned_lib.co_occurrences.may_co_occur(ecls1.clone(), ecls2.clone()) && egraph[*ecls1].data.type_match(&egraph[*ecls2].data) && 
+            egraph[*ecls1].data.level_match(&egraph[*ecls2].data) {
+            // 这里的判断条件是为了避免重复计算
+            can_pairs.insert((*ecls1, *ecls2), true);
+            eclass_pairs.push((ecls1.clone(), ecls2.clone()));
+          } else {
+            can_pairs.insert((*ecls1, *ecls2), false);
+          }
+        }
       }
+
+      println!("there are {} eclass pairs", eclass_pairs.clone().len());
+
+      // let mut cnt1 = 0;
+      // let mut cnt2 = 0;
+      // let mut cnt3 = 0;
+      // let mut cnt4 = 0;
+      // let mut new_eclass_pairs = vec![];
+      // // 将每个eclass的parents存储到一个HashSet中，再将这个HashSet存储到一个Vec中
+      // let mut eclass_parents = vec![];
+      // for ecls in classes.iter() {
+      //   let mut parents = HashSet::new();
+      //   for index in egraph[*ecls].parents() {
+      //     let parent = egraph.nodes()[usize::from(index)].operation();
+      //     parents.insert(parent.clone());
+      //   }
+      //   eclass_parents.push(parents);
+      // }
+      // for ecls in classes.iter() {
+      //   let mut parents = HashSet::new();
+      //   for index in egraph[*ecls].parents() {
+      //     let parent = egraph.nodes()[usize::from(index)].operation();
+      //     parents.insert(parent.clone());
+      //   }
+      //   eclass_parents.push(parents);
+      // }
+      // for (ecls1, ecls2) in eclass_pairs.clone(){
+      //   if learned_lib.co_occurrences.may_co_occur(ecls1, ecls2)  {
+      //     cnt1 += 1;
+      //     if egraph[ecls1].data.type_match(&egraph[ecls2].data) {
+      //       cnt2 += 1;
+      //       // let p1_types: HashSet<_> = eclass_parents[usize::from(ecls1)].clone();
+      //       // let p2_types: HashSet<_> = eclass_parents[usize::from(ecls2)].clone();
+      //       // if p1_types.iter().any(|p| p2_types.contains(&p)){
+      //       //   cnt3 += 1;
+      //       // }
+      //       if egraph[ecls1].data.level_match(&egraph[ecls2].data) {
+      //         cnt4 += 1;
+      //         new_eclass_pairs.push((ecls1, ecls2));
+      //       }
+      //     }
+
+      //   }
+
+      // }
+      // println!("considering coocurr, We only need to consider {} pairs of eclasses", cnt1);
+      // println!("considering coocurr, We only need to consider {} pairs of eclasses with same type", cnt2);
+      // println!("considering coocurr, We only need to consider {} pairs of eclasses with same parents op and same type", cnt3);
+      // println!("futhermore, We only need to consider {} pairs of eclasses with same level", cnt4);
+      for (ecls1, ecls2) in eclass_pairs {
+        // 我在想，现在两个eclass肯定是eqsat的状态，我们能不能通过二者op的数量判断是否需要anti-unify，只有相似的eclass才需要anti-unify
+          learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
+      }
+
     }
     // 如果learned_lib中的aus数量大于500，就从排序结果中随机选取500个
     // if learned_lib.aus.len() > 500 {
@@ -565,6 +624,7 @@ where
       learned_lib.aus = sampled_aus;
     }
 
+    
     learned_lib
   }
 }

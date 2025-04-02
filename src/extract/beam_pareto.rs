@@ -1,6 +1,6 @@
 //! `extract::partial` implements a non-ILP-based extractor based on partial
 //! orderings of learned library sets.
-use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language, RecExpr};
+use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language, RecExpr, Runner, Extractor, AstSize};
 use log::debug;
 use rand::{Rng, seq::index, thread_rng};
 use rustc_hash::FxHashMap;
@@ -13,13 +13,38 @@ use std::{
   hash::{DefaultHasher, Hash, Hasher},
   sync::Arc,
 };
-
+use bitvec::prelude::*;
 use crate::{
   ast_node::{Arity, AstNode},
   extract::cost::{AreaCost, DelayCost, LangCost, LangGain},
   learn::LibId,
   teachable::{BindingExpr, Teachable},
 };
+
+/// 实现一个非常简单的没有实际意义的Analysis
+/// 这个Analysis只用于LibExtractor
+pub struct EmptyAnalysis<Op>{
+  _phantom: PhantomData<Op>,
+}
+impl<Op> Default for EmptyAnalysis<Op> {
+  fn default() -> Self {
+    EmptyAnalysis {
+      _phantom: PhantomData,
+    }
+  }
+}
+impl <Op> Analysis<AstNode<Op>> for EmptyAnalysis<Op> 
+where 
+  Op: Clone + std::fmt::Debug + std::hash::Hash + Ord + Teachable + std::fmt::Display,
+{
+  type Data = ();
+  fn merge(&mut self, _: &mut Self::Data, _: Self::Data) -> DidMerge {
+    DidMerge(false, false)
+  }
+  fn make(_: &mut EGraph<AstNode<Op>, Self>, _: &AstNode<Op>) -> Self::Data {
+    ()
+  }
+}
 
 /// A `CostSet` is a set of pairs; each pair contains a set of library
 /// functions paired with the cost of the current expression/eclass
@@ -499,29 +524,64 @@ where
   }
 }
 
+// 定义StructuralHash ,结构化哈希包含cls_hash和subtree_hash,均为u64
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuralHash {
+  pub cls_hash: u64,
+  pub subtree_levels: BitVec<u64, Lsb0>,
+}
+
+impl Default for StructuralHash {
+  fn default() -> Self {
+      Self {
+          cls_hash: 0,
+          subtree_levels: bitvec![u64, Lsb0; 0; 64], // 64位初始化为0
+      }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ISAXCost<T>
-where
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+where T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   pub cs: CostSet,
   pub ty: T,
+  pub hash: StructuralHash,
 }
 
-impl<T: PartialEq> PartialEq<T> for ISAXCost<T>
-where
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+impl <T: PartialEq> PartialEq<T> for ISAXCost<T> 
+where T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   fn eq(&self, other: &T) -> bool {
     self.ty == *other
   }
 }
 
-impl<T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
+impl <T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
   #[must_use]
-  pub fn new(cs: CostSet, ty: T) -> Self {
-    ISAXCost { cs, ty }
+  pub fn new(cs: CostSet, ty: T, hash: StructuralHash) -> Self {
+    ISAXCost { cs, ty, hash}
   }
+    
+}
+
+// 计算层级哈希映射
+fn compute_hash_level<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> usize {
+  let mut hasher = seahash::SeaHasher::new();
+  enode.operation().hash(&mut hasher);
+  for &h in child_hashes {
+      h.hash(&mut hasher);
+  }
+  (hasher.finish() % 64) as usize  // 取模映射到固定范围
+}
+/// 计算不考虑层级的精确哈希
+fn compute_full_hash<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> u64 {
+  let mut hasher = seahash::SeaHasher::new();
+  enode.operation().hash(&mut hasher);
+  for &h in child_hashes {
+      hasher.write_u64(h);
+  }
+  hasher.finish()
 }
 
 impl<Op, T, LA, LD> Analysis<AstNode<Op>> for ISAXAnalysis<Op, T, LA, LD>
@@ -556,10 +616,15 @@ where
     to.cs.prune(self.beam_size, self.lps);
     // we also need to merge the type information
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
+    // 合并哈希
+    // 合并ecls哈希，目前取最大值
+    to.hash.cls_hash = to.hash.cls_hash.max(from.hash.cls_hash.clone());
+    // 合并层级位图
+    to.hash.subtree_levels |= from.hash.subtree_levels.clone();
     // println!("{:?}", to);
     // println!("{} {}", &a0 != to, to != &from);
     // TODO: be more efficient with how we do this
-    DidMerge(&a0 != to, to != &from)
+    DidMerge(&a0 != to , to != &from)
     // DidMerge(false, false)
   }
 
@@ -568,13 +633,36 @@ where
     enode: &AstNode<Op>,
   ) -> Self::Data {
     // calculate the type
-    let child_types: Vec<T> = enode
-      .children()
-      .iter()
-      .map(|&child| egraph[child].data.ty.clone())
-      .collect();
+    // println!("enode: {:?}", enode);
+    let child_types: Vec<T> = enode.children().iter()
+            .map(|&child| {
+              egraph[child].data.ty.clone()
+            })
+            .collect();
     let ty = enode.get_rtype(&child_types);
-    // println!("make");
+    // 计算子节点哈希
+    let mut child_hashes = enode.children().iter()
+            .map(|&child| {
+              egraph[child].data.hash.cls_hash.clone()
+            })
+            .collect::<Vec<_>>();
+    // 排序子节点哈希
+    child_hashes.sort();
+    // 计算当前节点哈希
+    let current_level = compute_hash_level(enode, &child_hashes);
+    // 合并子树层级
+    let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
+    subtree_levels.set(current_level, true);
+    for child in enode.children() {
+      let child_level = egraph[*child].data.hash.subtree_levels.clone();
+      subtree_levels |= child_level;
+    }        
+    // 计算完整哈希
+    let extract_hash = compute_full_hash(enode, &child_hashes);
+    let hash = StructuralHash {
+      cls_hash: extract_hash,
+      subtree_levels,
+    };
     let x = |i: &Id| &egraph[*i].data.cs;
 
     let self_ref = &egraph.analysis;
@@ -588,7 +676,7 @@ where
         // println!("new cost set: {:#?}", e);
         e.unify();
         e.prune(self_ref.beam_size, self_ref.lps);
-        ISAXCost::new(e, ty)
+        ISAXCost::new(e, ty, hash)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
@@ -604,12 +692,13 @@ where
           ISAXCost::new(
             CostSet::intro_op(op_delay, op_area, self_ref.strategy),
             ty,
+            hash,
           )
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
           let mut e = x(&enode.args()[0]).clone();
           e.inc_cost(op_delay, op_area, self_ref.strategy);
-          ISAXCost::new(e, ty)
+          ISAXCost::new(e, ty, hash)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
@@ -624,7 +713,7 @@ where
           e.unify();
           e.prune(self_ref.beam_size, self_ref.lps);
           e.inc_cost(op_delay, op_area, self_ref.strategy);
-          ISAXCost::new(e, ty)
+          ISAXCost::new(e, ty, hash)
         }
       }
     }
@@ -791,25 +880,39 @@ where
     index
   }
 
-  /// Set best best expression for `id` in the current lib context.
-  fn insert_into_memo(
-    &mut self,
-    id: Id,
-    val: MaybeExpr<Op>,
-    cost: Option<f32>,
-  ) {
-    let start = Instant::now();
-    self.all_exprs.push(val);
-    self.all_costs.push(cost);
-    self.memo.insert(
-      CacheKey {
-        id: usize::from(id) as u32,
-        hash: self.lib_context.hash,
-      },
-      self.all_exprs.len() - 1,
-    );
-    // println!("inserted into memo: {}ms", start.elapsed().as_millis());
+/// Set best best expression for `id` in the current lib context.
+fn insert_into_memo(&mut self, id: Id, val: MaybeExpr<Op>, cost: Option<f32>) {
+  // let start = Instant::now();
+  // 使用prune进行修剪
+  let new_val = self.prune(val.clone());
+  self.all_exprs.push(new_val);
+  self.all_costs.push(cost);
+  self.memo.insert(CacheKey{
+    id: usize::from(id) as u32,
+    hash: self.lib_context.hash,
+  }, self.all_exprs.len() - 1);
+  // println!("inserted into memo: {}ms", start.elapsed().as_millis());
+}
+
+/// prune using egraph
+fn prune(&self, val: MaybeExpr<Op>) -> MaybeExpr<Op> {
+  // 如果val为None，直接返回
+  if val.is_none() {
+    return val;
   }
+  // 如果val不为None,取出RecExpr
+  let timeout = std::time::Duration::from_millis(60);
+  let expr = val.clone().unwrap();
+  let runner = Runner::<_, _, ()>::new(EmptyAnalysis::default())
+    .with_expr(&expr)
+    .with_time_limit(timeout)
+    .with_iter_limit(4)
+    .run(vec![]);
+  // 提取出最优的表达式
+  let egraph = runner.egraph;
+  let extractor = Extractor::new(&egraph, AstSize);
+  Some(extractor.find_best(runner.roots[0]).1)
+}
 
   /// Extract the smallest expression for the eclass `id`.
   /// # Panics
@@ -1080,4 +1183,37 @@ where
 pub trait TypeInfo<T> {
   fn get_rtype(&self, child_types: &Vec<T>) -> T;
   fn merge_types(a: &T, b: &T) -> T;
+}
+
+fn hamming_distance(a: u64, b: u64) -> u32 {
+  (a ^ b).count_ones()
+}
+
+fn jaccard_similarity(a: &BitVec<u64, Lsb0>, b: &BitVec<u64, Lsb0>) -> f64 {
+  let intersection = (a.clone() & b.clone()).count_ones() as f64;
+  let union = (a.clone() | b.clone()).count_ones() as f64;
+  if union == 0.0 {
+      1.0 // 完全相同
+  } else {
+      intersection / union
+  }
+}
+
+
+// 定义GetType trait
+pub trait ClassMatch {
+  fn type_match(&self, other: &Self) -> bool;
+  fn level_match(&self, other: &Self) -> bool;
+}
+
+// 为ISAXCost实现ClassMatch trait
+impl<T: PartialEq + Debug + Default + Clone + Ord + Hash> ClassMatch for ISAXCost<T> {
+  fn type_match(&self, other: &Self) -> bool {
+    self.ty == other.ty
+  }
+  fn level_match(&self, other: &Self) -> bool {
+    let hash_similar = hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 32;
+    let subtree_similar = jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels) > 0.95;
+    hash_similar && subtree_similar
+  }
 }

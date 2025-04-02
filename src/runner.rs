@@ -729,9 +729,9 @@ where
     );
 
     println!("learned {} libs", learned_lib.size());
-    for lib in &learned_lib.libs().collect::<Vec<_>>() {
-      println!("{}", lib);
-    }
+    // for lib in &learned_lib.libs().collect::<Vec<_>>() {
+    //   println!("{}", lib);
+    // }
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
@@ -769,6 +769,7 @@ where
 
     println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
+    println!("cs: {:#?}", isax_cost.cs);
     let mut chosen_rewrites = Vec::new();
     let mut rewrites_map = HashMap::new();
     for lib in &isax_cost.cs.set[0].libs {

@@ -12,6 +12,7 @@ use crate::{
   ast_node::{Arity, AstNode},
   learn::LibId,
   teachable::{BindingExpr, Teachable},
+  extract::beam_pareto::ClassMatch,
 };
 
 /// A `CostSet` is a set of pairs; each pair contains a set of library
@@ -214,6 +215,16 @@ impl CostSet {
       }
       i += 1;
     }
+  }
+}
+
+// 为CostSet实现ClassMatch
+impl ClassMatch for CostSet {
+  fn type_match(&self, other: &Self) -> bool {
+      true
+  }
+  fn level_match(&self, other: &Self) -> bool {
+      true
   }
 }
 
