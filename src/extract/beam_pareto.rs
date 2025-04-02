@@ -583,7 +583,9 @@ where
       Some(BindingExpr::Lib(id, f, b)) => {
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
+        // println!("before adding lib: {:#?}", x(b));
         let mut e = x(b).add_lib(id, x(f), self_ref.lps, self_ref.strategy);
+        // println!("new cost set: {:#?}", e);
         e.unify();
         e.prune(self_ref.beam_size, self_ref.lps);
         ISAXCost::new(e, ty)
@@ -785,7 +787,7 @@ where
       id: usize::from(id) as u32,
       hash: self.lib_context.hash,
     });
-    println!("get_from_memo: {}ms", start.elapsed().as_millis());
+    // println!("get_from_memo: {}ms", start.elapsed().as_millis());
     index
   }
 
@@ -806,7 +808,7 @@ where
       },
       self.all_exprs.len() - 1,
     );
-    println!("inserted into memo: {}ms", start.elapsed().as_millis());
+    // println!("inserted into memo: {}ms", start.elapsed().as_millis());
   }
 
   /// Extract the smallest expression for the eclass `id`.
@@ -816,7 +818,7 @@ where
   /// expression)
   pub fn best(&mut self, id: Id) -> RecExpr<AstNode<Op>> {
     // Populate the memo:
-    println!("extracting eclass {id}");
+    //println!("extracting eclass {id}");
     self.extract(id);
     // println!("id: {:#?}", id);
     // println!("{:#?}", self.egraph[id]);
@@ -840,7 +842,7 @@ where
       true => area_cost.0,
       false => area_cost.1,
     };
-    println!("used {}ms to get the cost", start.elapsed().as_millis());
+    // println!("used {}ms to get the cost", start.elapsed().as_millis());
     self.strategy * (selected_delay_cost as f32)
       + (1.0 - self.strategy) * (selected_area_cost as f32)
   }
@@ -849,7 +851,7 @@ where
   /// descendants in the current context, storing results in the memo
   fn extract(&mut self, id: Id) {
     let extract_start = Instant::now();
-    println!("---------------memo.size(): {}", self.memo.len());
+    // println!("---------------memo.size(): {}", self.memo.len());
     self.debug_indented(&format!("extracting eclass {id}"));
     if self.get_from_memo(id) == None {
       // Initialize memo with None to prevent infinite recursion in case of
@@ -859,7 +861,7 @@ where
       // println!("Extracting eclass {:#?}", self.egraph[id]);
       let mut cnt = 0;
       for node in self.egraph[id].iter() {
-        println!("extracting node {}/{}", cnt, self.egraph[id].len());
+        // println!("extracting node {}/{}", cnt, self.egraph[id].len());
         cnt += 1;
         match self.extract_node(node) {
           None => (), // Extraction for this node failed (must be a cycle)
@@ -941,10 +943,10 @@ where
           }
         }
       }
-      println!(
-        "using {}ms to extract eclass {id}",
-        extract_start.elapsed().as_millis()
-      );
+      // println!(
+      //   "using {}ms to extract eclass {id}",
+      //   extract_start.elapsed().as_millis()
+      // );
     }
   }
 
@@ -952,7 +954,7 @@ where
   fn extract_node(&mut self, node: &AstNode<Op>) -> MaybeExpr<Op> {
     self.debug_indented(&format!("extracting node {node:?}"));
     if let Some(BindingExpr::Lib(lid, _, _)) = node.as_binding_expr() {
-      println!("checking lib {lid}");
+      // println!("checking lib {lid}");
       if self.lib_context.contains(lid) {
         // This node is a definition of one of the libs, whose definition we are
         // currently extracting: do not go down this road since it leads
@@ -963,7 +965,7 @@ where
     }
     // Otherwise: extract all children
     let mut child_indexes = vec![];
-    println!("extracting children of {node:?}");
+    // println!("extracting children of {node:?}");
     self.extract_children(node, 0, vec![], &mut child_indexes)
   }
 
@@ -979,18 +981,18 @@ where
     child_indexes: &mut Vec<usize>,
   ) -> MaybeExpr<Op> {
     let child_start = Instant::now();
-    println!("begin extracting children");
+    // println!("begin extracting children");
     if current == node.children().len() {
-      println!("current == children.len()");
+      // println!("current == children.len()");
       // Done with children: add ourselves to the partial expression and return
       let child_ids: Vec<Id> =
         child_indexes.iter().map(|x| (*x).into()).collect();
       let root = AstNode::new(node.operation().clone(), child_ids);
       partial_expr.push(root);
-      println!(
-        "using {}ms to extract children",
-        child_start.elapsed().as_millis()
-      );
+      // println!(
+      //   "using {}ms to extract children",
+      //   child_start.elapsed().as_millis()
+      // );
       Some(partial_expr.into())
     } else {
       // If this is the first child of a lib node (i.e. lib definition) add this
@@ -1008,11 +1010,11 @@ where
       // Process the current child
       let child = &node.children()[current];
       self.indent += 1;
-      println!(">>>extracting child {child:?}");
+      // println!(">>>extracting child {child:?}");
       self.extract(*child);
       self.indent -= 1;
       // We need to get the result before restoring the context
-      println!("begin getting child {child:?}");
+      // println!("begin getting child {child:?}");
       let start = Instant::now();
       let child_res = self.get_from_memo(*child).clone();
       let child_res = if let Some(index) = child_res {
@@ -1020,10 +1022,10 @@ where
       } else {
         None
       };
-      println!("using {}ms to get the expr", start.elapsed().as_millis());
+      // println!("using {}ms to get the expr", start.elapsed().as_millis());
       // Restore lib context
       self.lib_context = old_lib_context;
-      println!("begin matching");
+      // println!("begin matching");
       match child_res {
         None => None, /* Failed to extract a child, so the extraction of */
         // this node fails
@@ -1032,14 +1034,14 @@ where
           // child indexes), and we don't want it to affect the memo
           // result for child.
           let mut new_expr = expr.as_ref().to_vec();
-          println!("begin offsetting");
+          // println!("begin offsetting");
           for n in &mut new_expr {
             // Increment all indexes inside `n` by the current expression
             // length; this is needed to make a well-formed
             // `RecExpr`
             Self::offset_children(n, partial_expr.len());
           }
-          println!(">>>>> new expr");
+          // println!(">>>>> new expr");
           partial_expr.extend(new_expr);
           child_indexes.push(partial_expr.len() - 1);
           let exp = self.extract_children(
@@ -1048,11 +1050,11 @@ where
             partial_expr,
             child_indexes,
           );
-          println!(">>>>>>> returning from child {child:?}");
-          println!(
-            "using {}ms to extract children",
-            child_start.elapsed().as_millis()
-          );
+          // println!(">>>>>>> returning from child {child:?}");
+          // println!(
+          //   "using {}ms to extract children",
+          //   child_start.elapsed().as_millis()
+          // );
           exp
         }
       }

@@ -728,10 +728,10 @@ where
       dedup_time.elapsed().as_millis()
     );
 
-    // println!("learned {} libs", learned_lib.size());
-    // for lib in &learned_lib.libs().collect::<Vec<_>>() {
-    //   println!("{}", lib);
-    // }
+    println!("learned {} libs", learned_lib.size());
+    for lib in &learned_lib.libs().collect::<Vec<_>>() {
+      println!("{}", lib);
+    }
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
@@ -752,7 +752,7 @@ where
     let mut egraph = runner.egraph;
     let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
-    // println!("root: {:#?}", egraph[egraph.find(root)]);
+    println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
     isax_cost
       .cs

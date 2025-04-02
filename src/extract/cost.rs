@@ -1,6 +1,6 @@
 //! Cost models for extraction
 
-use crate::{ast_node::AstNode, teachable::BindingExpr, Teachable};
+use crate::{Teachable, ast_node::AstNode, teachable::BindingExpr};
 use egg::CostFunction;
 use std::fmt::Debug;
 
@@ -59,11 +59,10 @@ where
     let in_lib = match enode.as_binding_expr() {
       Some(expr) => {
         match expr {
-          BindingExpr::Lib(_, _, _) => {
-            // If the operation is in a Lib, we regard it as a out-of-library
-            // operation
-            false
-          }
+          BindingExpr::Lib(_, _, _)
+          | BindingExpr::Apply(_, _)
+          | BindingExpr::LibVar(_) => false,
+          // Lambdas, Vars
           _ => true,
         }
       }
@@ -129,16 +128,13 @@ where
       .lang_gain
       .op_gain(enode.operation(), &arg_selected_costs);
     let in_lib = match enode.as_binding_expr() {
-      Some(expr) => {
-        match expr {
-          BindingExpr::Lib(_, _, _) => {
-            // If the operation is in a Lib, we regard it as a out-of-library
-            // operation
-            false
-          }
-          _ => true,
-        }
-      }
+      Some(expr) => match expr {
+        BindingExpr::Lib(_, _, _)
+        | BindingExpr::Apply(_, _)
+        | BindingExpr::LibVar(_) => false,
+        // Lambdas, Vars
+        _ => true,
+      },
       None => {
         // If any of the children are in a Lib, we regard it as a in-library
         // operation
@@ -150,10 +146,12 @@ where
       None => op_gain,
     };
     let out_of_lib_cost = arg_selected_costs.iter().sum::<usize>() + op_gain;
-    // println!("op_type: {:?}, op_gain: {}", enode.operation(), op_gain);
+    println!("op_type: {:?}, op_gain: {:#?}", enode.operation(), op_gain);
     // println!("arg_costs: {:?}", arg_costs);
-    // println!("in_lib_cost: {}, out_of_lib_cost: {}, in_lib: {}", in_lib_cost,
-    // out_of_lib_cost, in_lib);
+    println!(
+      "in_lib_cost: {}, out_of_lib_cost: {}, in_lib: {}",
+      in_lib_cost, out_of_lib_cost, in_lib
+    );
     (in_lib_cost, out_of_lib_cost, in_lib)
   }
 }
