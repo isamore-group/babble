@@ -1240,10 +1240,10 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash> ClassMatch
   }
   fn level_match(&self, other: &Self) -> bool {
     let hash_similar =
-      hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 64;
+      hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 36;
     let subtree_similar =
       jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels)
-        > 0.5;
+        > 0.89;
     hash_similar && subtree_similar
   }
   fn get_levels(&self) -> BitVec<u64, Lsb0> {
