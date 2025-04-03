@@ -556,8 +556,10 @@ where
             }
             continue;
           }
+          let subtree_levels1 = parents_subtree_levels[usize::from(*ecls1)].clone();
+          let subtree_levels2 = parents_subtree_levels[usize::from(*ecls2)].clone();
           if learned_lib.co_occurrences.may_co_occur(ecls1.clone(), ecls2.clone()) && egraph[*ecls1].data.type_match(&egraph[*ecls2].data) && 
-            egraph[*ecls1].data.level_match(&egraph[*ecls2].data) {
+            egraph[*ecls1].data.level_match(&egraph[*ecls2].data) && jaccard_similarity(&subtree_levels1, &subtree_levels2) > 0.90 {
             // 这里的判断条件是为了避免重复计算
             can_pairs.insert((*ecls1, *ecls2), true);
             eclass_pairs.push((ecls1.clone(), ecls2.clone()));
