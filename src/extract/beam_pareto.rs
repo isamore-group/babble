@@ -566,18 +566,24 @@ impl <T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
 }
 
 // 计算层级哈希映射
-fn compute_hash_level<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> usize {
+fn compute_hash_level<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> usize 
+where Op: Teachable,
+{
   let mut hasher = seahash::SeaHasher::new();
-  enode.operation().hash(&mut hasher);
+  let op = enode.operation().to_shielding_op();
+  op.hash(&mut hasher);
   for &h in child_hashes {
       h.hash(&mut hasher);
   }
   (hasher.finish() % 64) as usize  // 取模映射到固定范围
 }
 /// 计算不考虑层级的精确哈希
-fn compute_full_hash<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> u64 {
+fn compute_full_hash<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> u64 
+where Op: Teachable,
+{
   let mut hasher = seahash::SeaHasher::new();
-  enode.operation().hash(&mut hasher);
+  let op = enode.operation().to_shielding_op();
+  op.hash(&mut hasher);
   for &h in child_hashes {
       hasher.write_u64(h);
   }
@@ -1189,7 +1195,7 @@ fn hamming_distance(a: u64, b: u64) -> u32 {
   (a ^ b).count_ones()
 }
 
-fn jaccard_similarity(a: &BitVec<u64, Lsb0>, b: &BitVec<u64, Lsb0>) -> f64 {
+pub fn jaccard_similarity(a: &BitVec<u64, Lsb0>, b: &BitVec<u64, Lsb0>) -> f64 {
   let intersection = (a.clone() & b.clone()).count_ones() as f64;
   let union = (a.clone() | b.clone()).count_ones() as f64;
   if union == 0.0 {
@@ -1204,6 +1210,7 @@ fn jaccard_similarity(a: &BitVec<u64, Lsb0>, b: &BitVec<u64, Lsb0>) -> f64 {
 pub trait ClassMatch {
   fn type_match(&self, other: &Self) -> bool;
   fn level_match(&self, other: &Self) -> bool;
+  fn get_levels(&self) -> BitVec<u64, Lsb0>;
 }
 
 // 为ISAXCost实现ClassMatch trait
@@ -1212,8 +1219,11 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash> ClassMatch for ISAXCos
     self.ty == other.ty
   }
   fn level_match(&self, other: &Self) -> bool {
-    let hash_similar = hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 32;
-    let subtree_similar = jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels) > 0.95;
+    let hash_similar = hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 64;
+    let subtree_similar = jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels) > 0.5;
     hash_similar && subtree_similar
+  }
+  fn get_levels(&self) -> BitVec<u64, Lsb0> {
+    self.hash.subtree_levels.clone()
   }
 }

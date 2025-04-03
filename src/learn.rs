@@ -30,18 +30,19 @@ use log::{debug, info, warn};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::{
-  collections::{BTreeMap, BTreeSet, HashMap},
+  collections::{BTreeMap, BTreeSet, HashSet, HashMap},
   fmt::{Debug, Display},
   num::ParseIntError,
   str::FromStr,
 };
 use std::{default, hash::Hash, time::Instant, vec};
-
+use bitvec::prelude::*;
 use thiserror::Error;
 
 use crate::au_search::{get_random_aus, greedy_aus, kd_random_aus};
 
 use crate::extract::cost::{DelayCost, LangGain};
+use crate::extract::beam_pareto::jaccard_similarity;
 
 /// A library function's name.
 #[derive(
@@ -530,11 +531,24 @@ where
       //   .iter()
       //   .cartesian_product(classes.iter())
       //   .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)));
+      let mut parents_subtree_levels = vec![bitvec![u64, Lsb0; 0; 64]; classes.len()];
+      // 将每个eclass的parents所属的eclass的data中的hash.subtree_levels取出，并做相或，存储在Vec中
+      for ecls in classes.iter() {
+        let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
+        for index in egraph[*ecls].parents() {
+          let p_cls = egraph.find(index);
+          subtree_levels |= egraph[p_cls].data.get_levels();
+        }
+        parents_subtree_levels[usize::from(*ecls)] = subtree_levels;
+      }
       let mut eclass_pairs = vec![];
       // 用一个二维数组来存储pairs的配对情况
       let mut can_pairs = HashMap::new();
       for ecls1 in classes.iter() {
         for ecls2 in classes.iter() {
+          if usize::from(*ecls1) < usize::from(*ecls2) {
+            continue;
+          }
           if can_pairs.contains_key(&(*ecls1, *ecls2)) || can_pairs.contains_key(&(*ecls2, *ecls1)) {
             let can_pair:&bool = can_pairs.get(&(*ecls1, *ecls2)).unwrap_or(can_pairs.get(&(*ecls2, *ecls1)).unwrap());
             if can_pair.clone() {
@@ -560,37 +574,32 @@ where
       // let mut cnt3 = 0;
       // let mut cnt4 = 0;
       // let mut new_eclass_pairs = vec![];
-      // // 将每个eclass的parents存储到一个HashSet中，再将这个HashSet存储到一个Vec中
-      // let mut eclass_parents = vec![];
+      // let mut parents_subtree_levels = vec![bitvec![u64, Lsb0; 0; 64]; classes.len()];
+      // // 将每个eclass的parents所属的eclass的data中的hash.subtree_levels取出，并做相或，存储在Vec中
       // for ecls in classes.iter() {
-      //   let mut parents = HashSet::new();
+      //   let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
       //   for index in egraph[*ecls].parents() {
-      //     let parent = egraph.nodes()[usize::from(index)].operation();
-      //     parents.insert(parent.clone());
+      //     let p_cls = egraph.find(index);
+      //     subtree_levels |= egraph[p_cls].data.get_levels();
       //   }
-      //   eclass_parents.push(parents);
-      // }
-      // for ecls in classes.iter() {
-      //   let mut parents = HashSet::new();
-      //   for index in egraph[*ecls].parents() {
-      //     let parent = egraph.nodes()[usize::from(index)].operation();
-      //     parents.insert(parent.clone());
-      //   }
-      //   eclass_parents.push(parents);
+      //   parents_subtree_levels[usize::from(*ecls)] = subtree_levels;
       // }
       // for (ecls1, ecls2) in eclass_pairs.clone(){
+      //   if usize::from(ecls1) < usize::from(ecls2) {
+      //     continue;
+      //   }
       //   if learned_lib.co_occurrences.may_co_occur(ecls1, ecls2)  {
       //     cnt1 += 1;
       //     if egraph[ecls1].data.type_match(&egraph[ecls2].data) {
       //       cnt2 += 1;
-      //       // let p1_types: HashSet<_> = eclass_parents[usize::from(ecls1)].clone();
-      //       // let p2_types: HashSet<_> = eclass_parents[usize::from(ecls2)].clone();
-      //       // if p1_types.iter().any(|p| p2_types.contains(&p)){
-      //       //   cnt3 += 1;
-      //       // }
-      //       if egraph[ecls1].data.level_match(&egraph[ecls2].data) {
-      //         cnt4 += 1;
-      //         new_eclass_pairs.push((ecls1, ecls2));
+      //       let subtree_levels1 = parents_subtree_levels[usize::from(ecls1)].clone();
+      //       let subtree_levels2 = parents_subtree_levels[usize::from(ecls2)].clone();
+      //       if jaccard_similarity(&subtree_levels1, &subtree_levels2) > 0.90 {
+      //         cnt3 += 1;
+      //         if egraph[ecls1].data.level_match(&egraph[ecls2].data) {
+      //           cnt4 += 1;
+      //           new_eclass_pairs.push((ecls1, ecls2));
+      //         }
       //       }
       //     }
 
@@ -605,6 +614,8 @@ where
         // 我在想，现在两个eclass肯定是eqsat的状态，我们能不能通过二者op的数量判断是否需要anti-unify，只有相似的eclass才需要anti-unify
           learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
       }
+      println!("we all need to calculate {} pairs of eclasses", learned_lib.aus_by_state.len());
+      // println!("{:?}", learned_lib.aus_by_state);
 
     }
     // 如果learned_lib中的aus数量大于500，就从排序结果中随机选取500个
@@ -1088,6 +1099,7 @@ where
             // aus.extend(new_aus.map(|au| AU::new_cal_matches(au,
             // &self.egraph)));
             info!("aus_size: {}", aus.len());
+            // println!("{:?}", new_aus_dedu);
             aus.extend(new_aus_dedu);
             info!(
               "Total processing time: {:?}, lenth of new_aus and aus is {}",
@@ -1182,6 +1194,7 @@ where
             // au.num_nodes() > num_vars: {}", learn_trivial, num_vars <
             // au.num_holes(), au.num_nodes() > num_vars);
             Some(AU::new(au, matches, delay))
+
           } else {
             None
           }
@@ -1198,7 +1211,6 @@ where
       );
       self.aus.extend(nontrivial_aus);
     }
-
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
   }
 }

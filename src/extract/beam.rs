@@ -14,6 +14,7 @@ use crate::{
   teachable::{BindingExpr, Teachable},
   extract::beam_pareto::ClassMatch,
 };
+use bitvec::prelude::*;
 
 /// A `CostSet` is a set of pairs; each pair contains a set of library
 /// functions paired with the cost of the current expression/eclass
@@ -226,6 +227,10 @@ impl ClassMatch for CostSet {
   fn level_match(&self, other: &Self) -> bool {
       true
   }
+  fn get_levels(&self) -> BitVec<u64, LocalBits> {
+    bitvec![u64, Lsb0; 0; 64]
+  }
+
 }
 
 /// A `LibSel` is a selection of library functions, paired with two

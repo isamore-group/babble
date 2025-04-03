@@ -60,6 +60,13 @@ where
   fn lib_var<T>(name: LibId) -> AstNode<Self, T> {
     Self::from_binding_expr(BindingExpr::LibVar(name))
   }
+
+  /// from 'Op' to 'ShieldingOp'
+  #[must_use]
+  fn to_shielding_op(&self) -> ShieldingOp {
+    // 默认实现，返回ShieldingOp::Dummy("".to_string())
+    ShieldingOp::Dummy("".to_string())
+  }
 }
 
 /// A simplified language containing just the constructs necessary for library
@@ -167,4 +174,73 @@ impl FromStr for DeBruijnIndex {
       Err(ParseDeBruijnIndexError::NoLeadingDollar)
     }
   }
+}
+
+
+// 定义ShieldingOp, 这主要用于对Op做哈希，我们希望在learn.rs中学习库的时候，尽可能拿到关于操作符本身的
+// 信息，并希望屏蔽掉一些非常具体的，库学习中不希望出现的信息，比如Int1, Int2，我们希望屏蔽掉常数值，而只去关注
+// Int操作符本身
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShieldingOp {
+  List, 
+  Lambda,
+  Apply,
+  Var,
+  Lib(LibId),
+  LibVar(LibId),
+  Const(ShieldingConst),
+  Top(ShieldingTop),
+  Bop(ShieldingBop),
+  Uop(ShieldingUop),
+  Get,
+  Tuple,
+  Switch,
+  DoWhile,
+  Arg,
+  Function(String),
+  Dummy(String),
+  RulerVar,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShieldingConst {
+  Int(u32), 
+  Float(u32), //后面的参数都是用来表示位宽
+}
+
+#[derive(Clone,  Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShieldingTop {
+  Store,
+  Select,
+}
+
+#[derive(Clone,  Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShieldingBop {
+  Add,
+  Sub,
+  Mul,
+  Div,
+  Mod,
+  Eq,
+  Ne,
+  LessThan,
+  GreaterThan,
+  LessEq,
+  GreaterEq,
+  Max,
+  Min,
+  Shl,
+  Shr,
+  And,
+  Or,
+  Xor,
+  Load,
+  StateMerge,
+}
+
+#[derive(Clone,  Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ShieldingUop {
+  Abs,
+  Not,
+  Cast,
 }
