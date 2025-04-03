@@ -651,10 +651,7 @@ where
         egg::Extractor::new(&egraph, AreaCost::new(self.lang_cost.clone()));
       let (_, expr) = area_extractor.find_best(*root);
       let area_cost = AreaCost::new(self.lang_cost.clone()).cost_rec(&expr);
-      let selected_area_cost = match area_cost.2 {
-        true => area_cost.0,
-        false => area_cost.1,
-      };
+      let selected_area_cost = area_cost.1.iter().map(|ls| ls.1).sum::<usize>();
       init_area += selected_area_cost;
     }
     let init_cost = self.config.strategy * (init_delay as f32)
@@ -810,10 +807,7 @@ where
     };
 
     let area_cost = AreaCost::new(self.lang_cost.clone()).cost_rec(&best);
-    let selected_area_cost = match area_cost.2 {
-      true => area_cost.0,
-      false => area_cost.1,
-    };
+    let selected_area_cost = area_cost.1.iter().map(|ls| ls.1).sum::<usize>();
     let fin_cost = self.config.strategy * (selected_delay_cost as f32)
       + (1.0 - self.config.strategy) * (selected_area_cost as f32);
 

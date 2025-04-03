@@ -1,6 +1,6 @@
 //! Cost models for extraction
 
-use crate::{Teachable, ast_node::AstNode, teachable::BindingExpr};
+use crate::{LibId, Teachable, ast_node::AstNode, teachable::BindingExpr};
 use egg::CostFunction;
 use std::fmt::Debug;
 
@@ -34,6 +34,19 @@ where
       _phantom: std::marker::PhantomData,
     }
   }
+
+  fn combine(
+    ls1: Vec<(LibId, usize)>,
+    ls2: Vec<(LibId, usize)>,
+  ) -> Vec<(LibId, usize)> {
+    let mut combined = ls1;
+    for (lib_id, cost) in ls2 {
+      if let None = combined.iter_mut().find(|(id, _)| *id == lib_id) {
+        combined.push((lib_id, cost));
+      }
+    }
+    combined
+  }
 }
 
 impl<L, Op> CostFunction<AstNode<Op>> for AreaCost<L, Op>
@@ -41,45 +54,47 @@ where
   L: LangCost<Op>,
   Op: Clone + Debug + Ord + std::hash::Hash + Teachable,
 {
-  type Cost = (usize, usize, bool);
+  /// Area cost is a tuple of two usize values: the cost in the case that
+  /// all of the expression is in a library and a vector of lib ids and costs of
+  /// each lib that is in the expression.
+  type Cost = (usize, Vec<(LibId, usize)>);
 
   fn cost<C>(&mut self, enode: &AstNode<Op>, mut costs: C) -> Self::Cost
   where
     C: FnMut(egg::Id) -> Self::Cost,
   {
-    let arg_costs: Vec<Self::Cost> =
+    let mut arg_costs: Vec<Self::Cost> =
       enode.args().iter().map(|&id| costs(id)).collect();
-    let arg_selected_costs: Vec<usize> = arg_costs
-      .iter()
-      .map(|&cost| if cost.2 { cost.0 } else { cost.1 })
-      .collect();
-    let op_cost = self
-      .lang_cost
-      .op_cost(enode.operation(), &arg_selected_costs);
-    let in_lib = match enode.as_binding_expr() {
-      Some(expr) => {
-        match expr {
-          BindingExpr::Lib(_, _, _)
-          | BindingExpr::Apply(_, _)
-          | BindingExpr::LibVar(_) => false,
-          // Lambdas, Vars
-          _ => true,
+    let arg_areas: Vec<usize> = arg_costs.iter().map(|cost| cost.0).collect();
+    let op_cost = self.lang_cost.op_cost(enode.operation(), &arg_areas);
+    let in_lib_area = arg_areas.iter().sum::<usize>() + op_cost;
+
+    match enode.as_binding_expr() {
+      Some(expr) => match expr {
+        BindingExpr::Lib(lib_id, _, _) => {
+          assert!(enode.args().len() == 2);
+          let mut ls = std::mem::take(&mut arg_costs[1].1);
+          ls.push((lib_id, arg_areas[0]));
+          (in_lib_area, ls)
         }
-      }
+        _ => {
+          // combine all the arg's costs
+          let mut ls = vec![];
+          for cost in arg_costs.iter_mut() {
+            ls = Self::combine(ls, std::mem::take(&mut cost.1));
+          }
+          (in_lib_area, ls)
+        }
+      },
       None => {
-        // If any of the children are in a Lib, we regard it as a in-library
-        // operation
-        arg_costs.iter().any(|&cost| cost.2)
+        // combine all the arg's costs
+        let mut ls = vec![];
+        for cost in arg_costs.iter_mut() {
+          ls = Self::combine(ls, std::mem::take(&mut cost.1));
+        }
+        (in_lib_area, ls)
       }
-    };
-    let in_lib_cost =
-      arg_costs.iter().map(|&cost| cost.0).sum::<usize>() + op_cost;
-    let out_of_lib_cost = arg_selected_costs.iter().sum::<usize>();
-    // println!("op_type: {:?}, op_gain: {}", enode.operation(), op_gain);
-    // println!("arg_costs: {:?}", arg_costs);
-    // println!("in_lib_cost: {}, out_of_lib_cost: {}, in_lib: {}", in_lib_cost,
-    // out_of_lib_cost, in_lib);
-    (in_lib_cost, out_of_lib_cost, in_lib)
+    }
   }
 }
 

@@ -1,6 +1,16 @@
 //! `extract::partial` implements a non-ILP-based extractor based on partial
 //! orderings of learned library sets.
-use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language, RecExpr, Runner, Extractor, AstSize};
+use crate::{
+  ast_node::{Arity, AstNode},
+  extract::cost::{AreaCost, DelayCost, LangCost, LangGain},
+  learn::LibId,
+  teachable::{BindingExpr, Teachable},
+};
+use bitvec::prelude::*;
+use egg::{
+  Analysis, AstSize, CostFunction, DidMerge, EGraph, Extractor, Id, Language,
+  RecExpr, Runner,
+};
 use log::debug;
 use rand::{Rng, seq::index, thread_rng};
 use rustc_hash::FxHashMap;
@@ -13,17 +23,10 @@ use std::{
   hash::{DefaultHasher, Hash, Hasher},
   sync::Arc,
 };
-use bitvec::prelude::*;
-use crate::{
-  ast_node::{Arity, AstNode},
-  extract::cost::{AreaCost, DelayCost, LangCost, LangGain},
-  learn::LibId,
-  teachable::{BindingExpr, Teachable},
-};
 
 /// 实现一个非常简单的没有实际意义的Analysis
 /// 这个Analysis只用于LibExtractor
-pub struct EmptyAnalysis<Op>{
+pub struct EmptyAnalysis<Op> {
   _phantom: PhantomData<Op>,
 }
 impl<Op> Default for EmptyAnalysis<Op> {
@@ -33,9 +36,14 @@ impl<Op> Default for EmptyAnalysis<Op> {
     }
   }
 }
-impl <Op> Analysis<AstNode<Op>> for EmptyAnalysis<Op> 
-where 
-  Op: Clone + std::fmt::Debug + std::hash::Hash + Ord + Teachable + std::fmt::Display,
+impl<Op> Analysis<AstNode<Op>> for EmptyAnalysis<Op>
+where
+  Op: Clone
+    + std::fmt::Debug
+    + std::hash::Hash
+    + Ord
+    + Teachable
+    + std::fmt::Display,
 {
   type Data = ();
   fn merge(&mut self, _: &mut Self::Data, _: Self::Data) -> DidMerge {
@@ -533,59 +541,65 @@ pub struct StructuralHash {
 
 impl Default for StructuralHash {
   fn default() -> Self {
-      Self {
-          cls_hash: 0,
-          subtree_levels: bitvec![u64, Lsb0; 0; 64], // 64位初始化为0
-      }
+    Self {
+      cls_hash: 0,
+      subtree_levels: bitvec![u64, Lsb0; 0; 64], // 64位初始化为0
+    }
   }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ISAXCost<T>
-where T: Debug + Default + Clone + PartialEq + Ord + Hash,
+where
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   pub cs: CostSet,
   pub ty: T,
   pub hash: StructuralHash,
 }
 
-impl <T: PartialEq> PartialEq<T> for ISAXCost<T> 
-where T: Debug + Default + Clone + PartialEq + Ord + Hash,
+impl<T: PartialEq> PartialEq<T> for ISAXCost<T>
+where
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   fn eq(&self, other: &T) -> bool {
     self.ty == *other
   }
 }
 
-impl <T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
+impl<T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
   #[must_use]
   pub fn new(cs: CostSet, ty: T, hash: StructuralHash) -> Self {
-    ISAXCost { cs, ty, hash}
+    ISAXCost { cs, ty, hash }
   }
-    
 }
 
 // 计算层级哈希映射
-fn compute_hash_level<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> usize 
-where Op: Teachable,
+fn compute_hash_level<Op: Hash>(
+  enode: &AstNode<Op>,
+  child_hashes: &[u64],
+) -> usize
+where
+  Op: Teachable,
 {
   let mut hasher = seahash::SeaHasher::new();
   let op = enode.operation().to_shielding_op();
   op.hash(&mut hasher);
   for &h in child_hashes {
-      h.hash(&mut hasher);
+    h.hash(&mut hasher);
   }
-  (hasher.finish() % 64) as usize  // 取模映射到固定范围
+  (hasher.finish() % 64) as usize // 取模映射到固定范围
 }
 /// 计算不考虑层级的精确哈希
-fn compute_full_hash<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> u64 
-where Op: Teachable,
+fn compute_full_hash<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> u64
+where
+  Op: Teachable,
 {
   let mut hasher = seahash::SeaHasher::new();
   let op = enode.operation().to_shielding_op();
   op.hash(&mut hasher);
   for &h in child_hashes {
-      hasher.write_u64(h);
+    hasher.write_u64(h);
   }
   hasher.finish()
 }
@@ -630,7 +644,7 @@ where
     // println!("{:?}", to);
     // println!("{} {}", &a0 != to, to != &from);
     // TODO: be more efficient with how we do this
-    DidMerge(&a0 != to , to != &from)
+    DidMerge(&a0 != to, to != &from)
     // DidMerge(false, false)
   }
 
@@ -640,18 +654,18 @@ where
   ) -> Self::Data {
     // calculate the type
     // println!("enode: {:?}", enode);
-    let child_types: Vec<T> = enode.children().iter()
-            .map(|&child| {
-              egraph[child].data.ty.clone()
-            })
-            .collect();
+    let child_types: Vec<T> = enode
+      .children()
+      .iter()
+      .map(|&child| egraph[child].data.ty.clone())
+      .collect();
     let ty = enode.get_rtype(&child_types);
     // 计算子节点哈希
-    let mut child_hashes = enode.children().iter()
-            .map(|&child| {
-              egraph[child].data.hash.cls_hash.clone()
-            })
-            .collect::<Vec<_>>();
+    let mut child_hashes = enode
+      .children()
+      .iter()
+      .map(|&child| egraph[child].data.hash.cls_hash.clone())
+      .collect::<Vec<_>>();
     // 排序子节点哈希
     child_hashes.sort();
     // 计算当前节点哈希
@@ -662,7 +676,7 @@ where
     for child in enode.children() {
       let child_level = egraph[*child].data.hash.subtree_levels.clone();
       subtree_levels |= child_level;
-    }        
+    }
     // 计算完整哈希
     let extract_hash = compute_full_hash(enode, &child_hashes);
     let hash = StructuralHash {
@@ -886,39 +900,47 @@ where
     index
   }
 
-/// Set best best expression for `id` in the current lib context.
-fn insert_into_memo(&mut self, id: Id, val: MaybeExpr<Op>, cost: Option<f32>) {
-  // let start = Instant::now();
-  // 使用prune进行修剪
-  let new_val = self.prune(val.clone());
-  self.all_exprs.push(new_val);
-  self.all_costs.push(cost);
-  self.memo.insert(CacheKey{
-    id: usize::from(id) as u32,
-    hash: self.lib_context.hash,
-  }, self.all_exprs.len() - 1);
-  // println!("inserted into memo: {}ms", start.elapsed().as_millis());
-}
-
-/// prune using egraph
-fn prune(&self, val: MaybeExpr<Op>) -> MaybeExpr<Op> {
-  // 如果val为None，直接返回
-  if val.is_none() {
-    return val;
+  /// Set best best expression for `id` in the current lib context.
+  fn insert_into_memo(
+    &mut self,
+    id: Id,
+    val: MaybeExpr<Op>,
+    cost: Option<f32>,
+  ) {
+    // let start = Instant::now();
+    // 使用prune进行修剪
+    let new_val = self.prune(val.clone());
+    self.all_exprs.push(new_val);
+    self.all_costs.push(cost);
+    self.memo.insert(
+      CacheKey {
+        id: usize::from(id) as u32,
+        hash: self.lib_context.hash,
+      },
+      self.all_exprs.len() - 1,
+    );
+    // println!("inserted into memo: {}ms", start.elapsed().as_millis());
   }
-  // 如果val不为None,取出RecExpr
-  let timeout = std::time::Duration::from_millis(60);
-  let expr = val.clone().unwrap();
-  let runner = Runner::<_, _, ()>::new(EmptyAnalysis::default())
-    .with_expr(&expr)
-    .with_time_limit(timeout)
-    .with_iter_limit(4)
-    .run(vec![]);
-  // 提取出最优的表达式
-  let egraph = runner.egraph;
-  let extractor = Extractor::new(&egraph, AstSize);
-  Some(extractor.find_best(runner.roots[0]).1)
-}
+
+  /// prune using egraph
+  fn prune(&self, val: MaybeExpr<Op>) -> MaybeExpr<Op> {
+    // 如果val为None，直接返回
+    if val.is_none() {
+      return val;
+    }
+    // 如果val不为None,取出RecExpr
+    let timeout = std::time::Duration::from_millis(60);
+    let expr = val.clone().unwrap();
+    let runner = Runner::<_, _, ()>::new(EmptyAnalysis::default())
+      .with_expr(&expr)
+      .with_time_limit(timeout)
+      .with_iter_limit(4)
+      .run(vec![]);
+    // 提取出最优的表达式
+    let egraph = runner.egraph;
+    let extractor = Extractor::new(&egraph, AstSize);
+    Some(extractor.find_best(runner.roots[0]).1)
+  }
 
   /// Extract the smallest expression for the eclass `id`.
   /// # Panics
@@ -947,10 +969,7 @@ fn prune(&self, val: MaybeExpr<Op>) -> MaybeExpr<Op> {
       false => delay_cost.1,
     };
     let area_cost = AreaCost::new(self.lang_cost.clone()).cost_rec(expr);
-    let selected_area_cost = match area_cost.2 {
-      true => area_cost.0,
-      false => area_cost.1,
-    };
+    let selected_area_cost = area_cost.1.iter().map(|ls| ls.1).sum::<usize>();
     // println!("used {}ms to get the cost", start.elapsed().as_millis());
     self.strategy * (selected_delay_cost as f32)
       + (1.0 - self.strategy) * (selected_area_cost as f32)
@@ -1199,12 +1218,11 @@ pub fn jaccard_similarity(a: &BitVec<u64, Lsb0>, b: &BitVec<u64, Lsb0>) -> f64 {
   let intersection = (a.clone() & b.clone()).count_ones() as f64;
   let union = (a.clone() | b.clone()).count_ones() as f64;
   if union == 0.0 {
-      1.0 // 完全相同
+    1.0 // 完全相同
   } else {
-      intersection / union
+    intersection / union
   }
 }
-
 
 // 定义GetType trait
 pub trait ClassMatch {
@@ -1214,13 +1232,18 @@ pub trait ClassMatch {
 }
 
 // 为ISAXCost实现ClassMatch trait
-impl<T: PartialEq + Debug + Default + Clone + Ord + Hash> ClassMatch for ISAXCost<T> {
+impl<T: PartialEq + Debug + Default + Clone + Ord + Hash> ClassMatch
+  for ISAXCost<T>
+{
   fn type_match(&self, other: &Self) -> bool {
     self.ty == other.ty
   }
   fn level_match(&self, other: &Self) -> bool {
-    let hash_similar = hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 64;
-    let subtree_similar = jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels) > 0.5;
+    let hash_similar =
+      hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 64;
+    let subtree_similar =
+      jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels)
+        > 0.5;
     hash_similar && subtree_similar
   }
   fn get_levels(&self) -> BitVec<u64, Lsb0> {
