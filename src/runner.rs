@@ -732,6 +732,7 @@ where
 
     info!("Adding libs and running beam search... ");
     let lib_rewrite_time = Instant::now();
+    let extract_time = Instant::now();
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
@@ -810,7 +811,7 @@ where
     let selected_area_cost = area_cost.1.iter().map(|ls| ls.1).sum::<usize>();
     let fin_cost = self.config.strategy * (selected_delay_cost as f32)
       + (1.0 - self.config.strategy) * (selected_area_cost as f32);
-
+    println!("extracting using {}s", extract_time.elapsed().as_secs());
     // Lifting the lib will result in incorrect cost
     // let lifted = extract::lift_libs(&best);
 
