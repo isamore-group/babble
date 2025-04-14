@@ -22,8 +22,9 @@ impl CoOccurrences {
   #[must_use]
   pub fn may_co_occur(&self, a: Id, b: Id) -> bool {
     // Because data is not symmetrically closed, we need to check both directions:
-    self.data.get(&a).map_or(false, |set| set.contains(&b))
-      || self.data.get(&b).map_or(false, |set| set.contains(&a))
+    // self.data.get(&a).map_or(false, |set| set.contains(&b))
+    //   || self.data.get(&b).map_or(false, |set| set.contains(&a))
+    true
   }
 }
 

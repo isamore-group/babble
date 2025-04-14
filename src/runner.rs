@@ -719,7 +719,7 @@ where
     let dedup_time = Instant::now();
     learned_lib.deduplicate(&aeg);
     let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
-    let first_rewrite = lib_rewrites[0].clone();
+    // let first_rewrite = lib_rewrites[0].clone();
     // println!(
     //   "first rewrite: {:?}",
     //   first_rewrite
@@ -761,7 +761,7 @@ where
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
-    println!("cs: {:#?}", isax_cost.cs.clone());
+    // println!("cs: {:#?}", isax_cost.cs.clone());
     isax_cost
       .cs
       .set
