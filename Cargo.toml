@@ -44,6 +44,7 @@ rand = "0.8"
 rustc-hash = "1.1"
 seahash = "4.1"
 bitvec = "1.0"
+rayon = "1.8"
 
 [profile.release]
 debug = true

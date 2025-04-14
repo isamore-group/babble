@@ -589,7 +589,7 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default + 'static,
   LD: LangGain<Op> + Clone + Default + 'static,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash + Send + Sync + 'static + Display,
   AstNode<Op>: TypeInfo<T>,
 {
   /// Create a new BeamRunner with the given domain-specific rewrites and
@@ -684,13 +684,13 @@ where
       aeg.total_size()
     );
 
-    info!("Running co-occurrence analysis... ");
-    let co_time = Instant::now();
-    let co_ext = COBuilder::new(&aeg, roots);
-    let co_occurs = co_ext.run();
-    info!("Finished in {}ms", co_time.elapsed().as_millis());
+    // println!("Running co-occurrence analysis... ");
+    // let co_time = Instant::now();
+    // let co_ext = COBuilder::new(&aeg, roots);
+    // let co_occurs = co_ext.run();
+    // println!("Finished in {}ms", co_time.elapsed().as_millis());
 
-    info!("Running anti-unification... ");
+    println!("Running anti-unification... ");
     let au_time = Instant::now();
     // 在进行learn之前，先提取出LibId最大的Lib
     let mut max_lib_id = 0;
@@ -706,10 +706,10 @@ where
     let mut learned_lib = LearnedLibraryBuilder::default()
       .learn_constants(self.config.learn_constants)
       .max_arity(self.config.max_arity)
-      .with_co_occurs(co_occurs)
+      // .with_co_occurs(co_occurs)
       .with_last_lib_id(max_lib_id)
       .build(&aeg, self.lang_gain.clone());
-    info!(
+    println!(
       "Found {} patterns in {}ms",
       learned_lib.size(),
       au_time.elapsed().as_millis()
@@ -719,6 +719,15 @@ where
     let dedup_time = Instant::now();
     learned_lib.deduplicate(&aeg);
     let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
+    let first_rewrite = lib_rewrites[0].clone();
+    // println!(
+    //   "first rewrite: {:?}",
+    //   first_rewrite
+    // );
+    // let search_result = first_rewrite.search(&aeg);
+    // for matches in search_result {
+    //   println!("{:?}", matches);
+    // }
     info!(
       "Reduced to {} patterns in {}ms",
       learned_lib.size(),
@@ -731,8 +740,8 @@ where
     // }
 
     info!("Adding libs and running beam search... ");
-    let lib_rewrite_time = Instant::now();
     let extract_time = Instant::now();
+    let lib_rewrite_time = Instant::now();
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
@@ -752,6 +761,7 @@ where
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
+    println!("cs: {:#?}", isax_cost.cs.clone());
     isax_cost
       .cs
       .set
@@ -812,7 +822,8 @@ where
     let fin_cost = self.config.strategy * (selected_delay_cost as f32)
       + (1.0 - self.config.strategy) * (selected_area_cost as f32);
     println!("extracting using {}s", extract_time.elapsed().as_secs());
-
+    // Lifting the lib will result in incorrect cost
+    // let lifted = extract::lift_libs(&best);
 
     info!("Finished in {}ms", ex_time.elapsed().as_millis());
     debug!("final cost: {}", fin_cost);
@@ -849,7 +860,7 @@ where
     + 'static,
   LA: LangCost<Op> + Clone + Default + 'static,
   LD: LangGain<Op> + Clone + Default + 'static,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash + Send + Sync + 'static + Display,
   AstNode<Op>: TypeInfo<T>,
 {
   fn run(&self, expr: Expr<Op>) -> ParetoResult<Op, T, LA, LD> {

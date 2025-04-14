@@ -14,7 +14,7 @@ use egg::{
 use log::debug;
 use rand::{Rng, seq::index, thread_rng};
 use rustc_hash::FxHashMap;
-use std::time::Instant;
+use std::{cmp::max, collections::HashSet, default, time::Instant};
 use std::{
   borrow::Cow,
   cmp::Ordering,
@@ -533,10 +533,11 @@ where
 }
 
 // 定义StructuralHash ,结构化哈希包含cls_hash和subtree_hash,均为u64
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct StructuralHash {
   pub cls_hash: u64,
   pub subtree_levels: BitVec<u64, Lsb0>,
+  pub level_conflict: LevelConflictState,
 }
 
 impl Default for StructuralHash {
@@ -544,11 +545,69 @@ impl Default for StructuralHash {
     Self {
       cls_hash: 0,
       subtree_levels: bitvec![u64, Lsb0; 0; 64], // 64位初始化为0
+      level_conflict: LevelConflictState::new(),
     }
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl StructuralHash {
+  pub fn merge(
+    &mut self,
+    other: &Self,
+  ){
+    // 首先合并cls_hash
+    // 为了和enode进行区分，会使用加盐值和rotate的方法打散哈希
+    let mut state = seahash::SeaHasher::new();
+    let cls_hashes = [self.cls_hash, other.cls_hash];
+    for &h in &cls_hashes {
+        // 加salt混合 or shift
+        (h.rotate_left((h % 13) as u32)).hash(&mut state);
+    }
+    let merged_cls_hash = state.finish().rotate_left((cls_hashes.len() as u32 * 7) % 64);
+    // 之后合并subtree_levels
+    let mut merged_subtree_levels = bitvec!(u64, Lsb0; 0; 64);
+    for i in 0..64 {
+      if self.subtree_levels[i] & other.subtree_levels[i] {
+        self.level_conflict.update(i, true);
+        merged_subtree_levels.set(i, true);
+      } else if self.subtree_levels[i] ^ other.subtree_levels[i] {
+        self.level_conflict.update(i, false);
+        let prob = self.level_conflict.get(i);
+        if rand::random::<f32>() > prob {
+          merged_subtree_levels.set(i, true);
+        }
+      }
+    }
+    self.cls_hash = merged_cls_hash;
+    self.subtree_levels = merged_subtree_levels;
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct LevelConflictState{
+  // 本结构体用于在不同的enode进行合并时使用，记录不同层级的冲突状态
+  states: [f32; 64],
+  // 学习率
+  alpha: f32,
+}
+impl LevelConflictState {
+  pub fn new() -> Self {
+    Self {
+      states: [0.5; 64], // 初始化0.5的冲突概率
+      alpha: 0.1,
+    }
+  }
+
+  pub fn update(&mut self, level: usize, is_real_conflict: bool) {
+    self.states[level] = (1.0 - self.alpha) * self.states[level] + self.alpha * is_real_conflict as u8 as f32 * 0.5;
+  }
+
+  pub fn get(&self, level: usize) -> f32 {
+    self.states[level]
+  }
+}
+
+#[derive(Debug, Clone)]
 pub struct ISAXCost<T>
 where
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
@@ -556,6 +615,16 @@ where
   pub cs: CostSet,
   pub ty: T,
   pub hash: StructuralHash,
+}
+
+impl <T> PartialEq for ISAXCost<T>
+where
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+{
+  fn eq(&self, other: &Self) -> bool {
+    self.cs == other.cs && self.ty == other.ty
+  }
+    
 }
 
 impl<T: PartialEq> PartialEq<T> for ISAXCost<T>
@@ -638,9 +707,9 @@ where
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
     // 合并哈希
     // 合并ecls哈希，目前取最大值
-    to.hash.cls_hash = to.hash.cls_hash.max(from.hash.cls_hash.clone());
-    // 合并层级位图
-    to.hash.subtree_levels |= from.hash.subtree_levels.clone();
+    // to.hash.cls_hash = max(to.hash.cls_hash, from.hash.cls_hash); 
+    // to.hash.subtree_levels |= from.clone().hash.subtree_levels;
+    to.hash.merge(&from.hash);
     // println!("{:?}", to);
     // println!("{} {}", &a0 != to, to != &from);
     // TODO: be more efficient with how we do this
@@ -682,6 +751,7 @@ where
     let hash = StructuralHash {
       cls_hash: extract_hash,
       subtree_levels,
+      level_conflict: LevelConflictState::new(),
     };
     let x = |i: &Id| &egraph[*i].data.cs;
 
@@ -1210,43 +1280,50 @@ pub trait TypeInfo<T> {
   fn merge_types(a: &T, b: &T) -> T;
 }
 
-fn hamming_distance(a: u64, b: u64) -> u32 {
-  (a ^ b).count_ones()
-}
 
-pub fn jaccard_similarity(a: &BitVec<u64, Lsb0>, b: &BitVec<u64, Lsb0>) -> f64 {
-  let intersection = (a.clone() & b.clone()).count_ones() as f64;
-  let union = (a.clone() | b.clone()).count_ones() as f64;
-  if union == 0.0 {
-    1.0 // 完全相同
-  } else {
-    intersection / union
-  }
-}
 
 // 定义GetType trait
 pub trait ClassMatch {
-  fn type_match(&self, other: &Self) -> bool;
-  fn level_match(&self, other: &Self) -> bool;
-  fn get_levels(&self) -> BitVec<u64, Lsb0>;
+  fn get_type(&self) -> String {
+    "".to_string()
+  }
+  fn get_cls_hash(&self) -> u64 {
+    0
+  }
+  fn get_subtree_levels(&self) -> BitVec<u64, Lsb0> {
+    bitvec!(u64, Lsb0; 0; 64)
+  }
+  fn get_pattern(&self, _other: &Self) -> BitVec<u64, Lsb0> {
+    bitvec!(u64, Lsb0; 0; 64)
+  }
 }
 
 // 为ISAXCost实现ClassMatch trait
-impl<T: PartialEq + Debug + Default + Clone + Ord + Hash> ClassMatch
+impl<T: PartialEq + Debug + Default + Clone + Ord + Hash + ToString> ClassMatch
   for ISAXCost<T>
 {
-  fn type_match(&self, other: &Self) -> bool {
-    self.ty == other.ty
+  // fn type_match(&self, other: &Self) -> bool {
+  //   self.ty == other.ty
+  // }
+  // fn level_match(&self, other: &Self) -> bool {
+  //   let hash_similar =
+  //     hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 36;
+  //   let subtree_similar =
+  //     jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels)
+  //       > 0.67;
+  //   hash_similar && subtree_similar
+  // }
+  fn get_type(&self) -> String {
+    self.ty.to_string()
   }
-  fn level_match(&self, other: &Self) -> bool {
-    let hash_similar =
-      hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 36;
-    let subtree_similar =
-      jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels)
-        > 0.89;
-    hash_similar && subtree_similar
+  fn get_cls_hash(&self) -> u64 {
+    self.hash.cls_hash
   }
-  fn get_levels(&self) -> BitVec<u64, Lsb0> {
+  fn get_subtree_levels(&self) -> BitVec<u64, Lsb0> {
     self.hash.subtree_levels.clone()
   }
+  fn get_pattern(&self, other: &Self) -> BitVec<u64, LocalBits> {
+    self.hash.subtree_levels.clone() & other.hash.subtree_levels.clone() 
+  }
+
 }

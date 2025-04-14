@@ -4,7 +4,7 @@ use egg::{Analysis, CostFunction, DidMerge, EGraph, Id, Language, RecExpr};
 use log::debug;
 use std::{
   cmp::Ordering,
-  collections::{BinaryHeap, HashMap},
+  collections::{BinaryHeap, HashMap, HashSet},
   fmt::Debug,
 };
 
@@ -220,18 +220,7 @@ impl CostSet {
 }
 
 // 为CostSet实现ClassMatch
-impl ClassMatch for CostSet {
-  fn type_match(&self, other: &Self) -> bool {
-      true
-  }
-  fn level_match(&self, other: &Self) -> bool {
-      true
-  }
-  fn get_levels(&self) -> BitVec<u64, LocalBits> {
-    bitvec![u64, Lsb0; 0; 64]
-  }
-
-}
+impl ClassMatch for CostSet {}
 
 /// A `LibSel` is a selection of library functions, paired with two
 /// corresponding cost values: the cost of the expression without the library
