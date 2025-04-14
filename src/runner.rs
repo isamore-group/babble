@@ -812,8 +812,7 @@ where
     let fin_cost = self.config.strategy * (selected_delay_cost as f32)
       + (1.0 - self.config.strategy) * (selected_area_cost as f32);
     println!("extracting using {}s", extract_time.elapsed().as_secs());
-    // Lifting the lib will result in incorrect cost
-    // let lifted = extract::lift_libs(&best);
+
 
     info!("Finished in {}ms", ex_time.elapsed().as_millis());
     debug!("final cost: {}", fin_cost);
