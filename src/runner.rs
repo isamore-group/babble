@@ -4,7 +4,7 @@
 //! using either regular beam search or Pareto-optimal beam search.
 
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   fmt::{Debug, Display},
   hash::Hash,
   marker::PhantomData,
@@ -16,6 +16,7 @@ use egg::{
   AstSize, CostFunction, EGraph, Id, RecExpr, Rewrite, Runner as EggRunner,
 };
 use log::{debug, info};
+use serde::de;
 
 use crate::{
   Arity, AstNode, COBuilder, DiscriminantEq, Expr, LearnedLibraryBuilder,
@@ -30,11 +31,15 @@ use crate::{
 
 use crate::USE_RULES;
 
-/// 定义一个trait名为LibOperation,其中有两个函数，分别为get_libid和change_libid
-pub trait LibOperation {
+/// 定义一个trait名为OperationInfo,其中有三个函数，分别为get_libid/is_lib/get_const
+pub trait OprerationInfo {
   fn is_lib(&self) -> bool;
   /// Get the library ID of the operation
   fn get_libid(&self) -> usize;
+  /// Get the constant value of the operation
+  fn get_const(&self) -> Option<(i64, u32)>;
+  /// Make an AST node for type-awared Const
+  fn make_const(const_value: (i64, u32)) -> Self;
 }
 
 /// Result of running a BabbleRunner experiment
@@ -526,6 +531,8 @@ pub struct ParetoConfig {
   pub max_arity: Option<usize>,
   /// strategy of balancing area and delay
   pub strategy: f32,
+  /// whether to add all types
+  pub add_all_types: bool,
 }
 
 impl Default for ParetoConfig {
@@ -538,6 +545,7 @@ impl Default for ParetoConfig {
       learn_constants: false,
       max_arity: None,
       strategy: 0.8,
+      add_all_types: false,
     }
   }
 }
@@ -569,12 +577,13 @@ where
   config: ParetoConfig,
   lang_cost: LA,
   lang_gain: LD,
+  type_info_map: HashMap<(String, Vec<T>), T>,
 }
 
 impl<Op, T, LA, LD> ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
-    + LibOperation
+    + OprerationInfo
     + Teachable
     + Printable
     + Debug
@@ -603,6 +612,7 @@ where
     config: ParetoConfig,
     lang_cost: LA,
     lang_gain: LD,
+    type_info_map: HashMap<(String, Vec<T>), T>,
   ) -> Self
   where
     I: IntoIterator<Item = Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
@@ -619,6 +629,7 @@ where
       config,
       lang_cost,
       lang_gain,
+      type_info_map,
     }
   }
 
@@ -672,6 +683,12 @@ where
 
     let aeg = runner.egraph;
 
+
+    // aeg.dot()
+    //   .to_png("target/foo.png")
+    //   .unwrap_or_else(|_| panic!("Failed to write egraph to PNG"));
+
+
     println!(
       "Final egraph size: {}, eclasses: {}",
       aeg.total_size(),
@@ -702,7 +719,11 @@ where
         }
       }
     }
-    max_lib_id += 1;
+    max_lib_id = if max_lib_id == 0 {
+      0
+    } else {
+      max_lib_id + 1
+    };
     let mut learned_lib = LearnedLibraryBuilder::default()
       .learn_constants(self.config.learn_constants)
       .max_arity(self.config.max_arity)
@@ -749,6 +770,7 @@ where
       self.lang_cost.clone(),
       self.lang_gain.clone(),
       self.config.strategy,
+      self.type_info_map.clone(),
     ))
     .with_egraph(aeg.clone())
     .with_iter_limit(self.config.lib_iter_limit)
@@ -756,22 +778,43 @@ where
     .with_node_limit(1_000_000)
     .run(lib_rewrites.iter());
 
+    // let best = apply_libs_pareto(
+    //   aeg.clone(),
+    //   roots,
+    //   &lib_rewrites,
+    //   self.lang_cost.clone(),
+    //   self.lang_gain.clone(),
+    //   self.config.strategy,
+    // );
+    // let delay_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(&best);
+    // let selected_delay_cost = match delay_cost.2 {
+    //   true => delay_cost.0,
+    //   false => delay_cost.1,
+    // };
+    // let area_cost = AreaCost::new(self.lang_cost.clone()).cost_rec(&best);
+    // let selected_area_cost = area_cost.1.iter().map(|ls| ls.1).sum::<usize>();
+    // let fin_cost = self.config.strategy * (selected_delay_cost as f32)
+    //   + (1.0 - self.config.strategy) * (selected_area_cost as f32);
+    // println!(
+    //   "lib: all, delay cost: {}, area cost: {}, fin cost: {}",
+    //   selected_delay_cost, selected_area_cost, fin_cost
+    // );
+
     let mut egraph = runner.egraph;
     let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
-    // println!("cs: {:#?}", cs);
     // println!("cs: {:#?}", isax_cost.cs.clone());
+
     isax_cost
       .cs
       .set
       .sort_unstable_by_key(|elem| elem.full_cost as usize);
-
+    // println!("cs: {:#?}", isax_cost.cs.clone());
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
     info!("Number of nodes: {}", egraph.total_size());
 
-    // egraph.dot().to_png("target/foo.png").unwrap();
 
     // println!("egraph: {:#?}", egraph);
 
@@ -781,6 +824,7 @@ where
     let mut chosen_rewrites = Vec::new();
     let mut rewrites_map = HashMap::new();
     for lib in &isax_cost.cs.set[0].libs {
+      println!("libid: {}", lib.0.0);
       if lib.0.0 < max_lib_id {
         // 从self.lib_rewrites中取出
         // 打印self.lib_rewrites
@@ -790,11 +834,13 @@ where
           .insert(lib.0.0, self.lib_rewrites.get(&lib.0.0).unwrap().clone());
       } else {
         let new_lib = lib.0.0 - max_lib_id;
+        println!(
+          "new_lib: {}", new_lib
+        );
         chosen_rewrites.push(lib_rewrites[new_lib].clone());
         rewrites_map.insert(lib.0.0, lib_rewrites[new_lib].clone());
       }
     }
-
     debug!(
       "upper bound ('full') cost: {}",
       isax_cost.cs.set[0].full_cost
@@ -802,6 +848,9 @@ where
 
     let ex_time = Instant::now();
     info!("Extracting... ");
+
+
+
     let best = apply_libs_pareto(
       aeg.clone(),
       roots,
@@ -845,7 +894,7 @@ impl<Op, T, LA, LD> BabbleParetoRunner<Op, T, LA, LD>
   for ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
-    + LibOperation
+    + OprerationInfo
     + Teachable
     + Printable
     + Debug
@@ -878,12 +927,64 @@ where
       self.lang_cost.clone(),
       self.lang_gain.clone(),
       self.config.strategy,
+      self.type_info_map.clone(),
     ));
     let roots = recexprs
       .iter()
       .map(|x| egraph.add_expr(x))
       .collect::<Vec<_>>();
     egraph.rebuild();
+
+    if self.config.add_all_types {
+      // 加入类型重写，相当于是给egraph中添加node并做合并
+      let widths = vec![8 as u32, 16 as u32, 32 as u32, 64 as u32];
+      let mut int_width: HashMap<i64, HashSet<u32>> = HashMap::new();
+      let mut ecls_ids: HashMap<i64, HashSet<Id>> = HashMap::new();
+      // 收集已经存在的位宽信息和eclass信息
+      for ecls in egraph.classes() {
+        for node in ecls.nodes.clone() {
+          if let Some((a, aw)) = node.operation().get_const() {
+            if !int_width.contains_key(&a) {
+              int_width.insert(a, HashSet::new());
+              ecls_ids.insert(a, HashSet::new());
+            }
+            let int_node = int_width.get_mut(&a).unwrap();
+            int_node.insert(aw);
+            let ecls_id = ecls_ids.get_mut(&a).unwrap();
+            ecls_id.insert(ecls.id);
+          }
+        }
+      }
+      // 遍历width，如果已经存在的位宽不包含当前的位宽，则添加
+      for width in widths.iter() {
+        for (a, aw) in int_width.clone().iter() {
+          if !aw.contains(width) {
+            let new_node = AstNode::leaf(Op::make_const((*a, *width)));
+            let new_ecls_id = egraph.add_uncanonical(new_node);
+            // 将当前的eclass添加到ecls_ids中
+            let ecls_id = ecls_ids.get_mut(a).unwrap();
+            ecls_id.insert(new_ecls_id);
+          }
+        }
+      }
+      // 遍历ecls_ids，进行union
+      for (_, ecls_id) in ecls_ids.iter() {
+        let mut ids = Vec::new();
+        for id in ecls_id.iter() {
+          ids.push(*id);
+        }
+        if ids.len() > 1 {
+          let first = ids[0];
+          for i in 1..ids.len() {
+            egraph.union(first, ids[i]);
+          }
+        }
+      }
+      egraph.rebuild();
+    }
+
+    
+    egraph.dot().to_png("target/foo.png").unwrap();
 
     self.run_egraph(&roots, egraph)
   }
@@ -905,6 +1006,7 @@ where
       self.lang_cost.clone(),
       self.lang_gain.clone(),
       self.config.strategy,
+      self.type_info_map.clone(),
     ));
 
     let roots: Vec<_> = recexpr_groups
@@ -921,7 +1023,6 @@ where
       .collect();
 
     egraph.rebuild();
-
     self.run_egraph(&roots, egraph)
   }
 }

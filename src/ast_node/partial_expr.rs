@@ -15,11 +15,6 @@ use std::{
 };
 use crate::learn::Match;
 use crate::learn::normalize;
-// 为Op定义一个trait名为GetHash
-pub trait GetCost {
-  fn get_cost(&self) -> u32;
-}
-
 
 /// A partial expression. This is a generalization of an abstract syntax tree
 /// where subexpressions can be replaced by "holes", i.e., values of type `T`.

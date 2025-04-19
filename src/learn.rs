@@ -535,7 +535,7 @@ where
         (a ^ b).count_ones()
       }
       
-      fn jaccard_similarity(a: &BitVec<u64, Lsb0>, b: &BitVec<u64, Lsb0>) -> f64 {
+      fn jaccard_similarity(a: &u64, b: &u64) -> f64 {
         let intersection = (a.clone() & b.clone()).count_ones() as f64;
         let union = (a.clone() | b.clone()).count_ones() as f64;
         if union == 0.0 {
@@ -553,13 +553,13 @@ where
         a == b
       }
 
-      fn level_match (a: &(u64, BitVec<u64, Lsb0>), b: &(u64, BitVec<u64, Lsb0>)) -> bool {
+      fn level_match (a: &(u64, u64), b: &(u64, u64)) -> bool {
         let hash_similar = hamming_distance(a.0, b.0) < 36;
         let subtree_similar = jaccard_similarity(&a.1, &b.1) > 0.67;
         hash_similar && subtree_similar
       }
 
-      fn group_by_type_ranges(class_data: &[(&Id, String, u64, BitVec<u64, Lsb0>)]) -> Vec<(usize, usize)> {
+      fn group_by_type_ranges(class_data: &[(&Id, String, u64, u64)]) -> Vec<(usize, usize)> {
         let mut ranges = vec![];
         let mut i = 0;
         while i < class_data.len() {
@@ -666,181 +666,6 @@ where
       let elapsed = start.elapsed();
       println!("mode 1: enumerate over dfta takes {:?}", elapsed);
     }else {
-      // LSH参数配置（可通过实验调整）
-    //   const HAMMING_BANDS: usize = 6;     // 汉明距离分带数
-    //   const HAMMING_BAND_BITS: usize = 10; // 每带位数（6*10=60位，剩余4位处理见代码）
-    //   const JACCARD_THRESH: f32 = 0.67;
-    //   const JACCARD_BLOCKS: usize = 4;    // Jaccard分块数
-
-    //   fn construct_bucket_keys(
-    //       hash: u64, 
-    //       bitvec: &BitVec<u64, Lsb0>
-    //   ) -> (Vec<u64>, Vec<u64>) {
-    //       // 汉明距离LSH键（分带处理）
-    //       let hamming_keys = (0..HAMMING_BANDS)
-    //           .map(|band| {
-    //               let shift = band * HAMMING_BAND_BITS;
-    //               let mask = (1 << HAMMING_BAND_BITS) - 1;
-    //               // 处理最后4位的特殊情形
-    //               let bits = if band == HAMMING_BANDS - 1 {
-    //                   (hash >> shift) | ((hash & 0xF) << (HAMMING_BAND_BITS - 4))
-    //               } else {
-    //                   (hash >> shift) & mask
-    //               };
-    //               bits
-    //           })
-    //           .collect();
-
-    //       // Jaccard LSH键（块哈希）
-    //       let jaccard_keys = (0..JACCARD_BLOCKS)
-    //           .map(|block| {
-    //               let mut block_hash = 0u64;
-    //               let bits_per_block = 64 / JACCARD_BLOCKS;
-    //               for i in 0..bits_per_block {
-    //                   let pos = block * bits_per_block + i;
-    //                   if pos < 64 && bitvec[pos] {
-    //                       block_hash |= 1 << i;
-    //                   }
-    //               }
-    //               block_hash
-    //           })
-    //           .collect();
-
-    //       (hamming_keys, jaccard_keys)
-    //   }
-    //   let enum_start = Instant::now();
-    //   let class_data: Vec<_> = classes
-    //       .par_iter()
-    //       .map(|cls| {
-    //           let data = &egraph[*cls].data;
-    //           let ty = data.get_type();
-    //           let cls_hash = data.get_cls_hash();
-    //           let subtree = data.get_subtree_levels();
-              
-    //           // 构造LSH桶键
-    //           let (hamming_keys, jaccard_keys) = construct_bucket_keys(cls_hash, &subtree);
-              
-    //           // 计算快速过滤标记
-    //           let popcount = cls_hash.count_ones();
-    //           let jaccard_approx = subtree.count_ones() as f32 / 64.0;
-
-    //           (
-    //               *cls,
-    //               ty.clone(),
-    //               cls_hash,
-    //               subtree,
-    //               popcount,
-    //               hamming_keys,
-    //               jaccard_keys,
-    //               jaccard_approx
-    //           )
-    //       })
-    //       .collect();
-
-    //   // 并行分组（类型 + 汉明带键 + Jaccard块键）
-    //   let type_groups = class_data
-    //       .into_par_iter()
-    //       .fold(
-    //           || HashMap::new(),
-    //           |mut map, item| {
-    //               // 为每个可能的LSH组合创建子键
-    //               for h_key in &item.5 {
-    //                   for j_key in &item.6 {
-    //                       let full_key = (item.1.clone(), *h_key, *j_key);
-    //                       map.entry(full_key)
-    //                         .or_insert_with(Vec::new)
-    //                         .push((
-    //                             item.0, 
-    //                             item.2, 
-    //                             item.3.clone(), 
-    //                             item.4, 
-    //                             item.7
-    //                         ));
-    //                   }
-    //               }
-    //               map
-    //           }
-    //       )
-    //       .reduce(
-    //           || HashMap::new(),
-    //           |mut a, b| {
-    //               for (k, v) in b {
-    //                   a.entry(k).or_insert_with(Vec::new).extend(v);
-    //               }
-    //               a
-    //           }
-    //       );
-
-    //   let all_pairs: Vec<(Id, Id)> = type_groups
-    //       .into_par_iter()
-    //       .flat_map(|(_, group)| {
-    //           let mut local_pairs = Vec::with_capacity(group.len().pow(2));
-              
-    //           // 两层过滤
-    //           for i in 0..group.len() {
-    //               let a = &group[i];
-    //               for j in i..group.len() {
-    //                   let b = &group[j];
-                      
-    //                   // 快速过滤层
-    //                   if (a.3 as i32 - b.3 as i32).abs() >= 36 
-    //                       || (a.4 < JACCARD_THRESH * 0.9 && b.4 < JACCARD_THRESH * 0.9)
-    //                   {
-    //                       continue;
-    //                   }
-                      
-    //                   // 精确验证层
-    //                   let hamming = (a.1 ^ b.1).count_ones();
-    //                   let intersect = (a.2.clone() & b.2.clone()).count_ones();
-    //                   let union = (a.2.clone() | b.2.clone()).count_ones();
-                      
-    //                   if hamming < 36 && (intersect as f32 / union as f32) > JACCARD_THRESH {
-    //                       local_pairs.push((a.0, b.0));
-    //                   }
-    //               }
-    //           }
-    //           local_pairs
-    //       })
-    //       .collect();
-    // let eclass_pairs = all_pairs; // 原来的 vec
-
-      // // 外层循环按类型分组处理
-      // let mut i = 0;
-      // while i < class_data.len() {
-      //     // 找到当前类型分组的结束位置
-      //     let current_ty = &class_data[i].1;
-      //     let ty_end = class_data[i..]
-      //         .iter()
-      //         .position(|(_, ty, _, _)| ty != current_ty)
-      //         .map(|pos| i + pos)
-      //         .unwrap_or(class_data.len());
-
-      //     // 内层循环处理同一类型组
-      //     for i_in_ty in i..ty_end {
-      //         let (ecls1, _, cls_hash1, subtree_levels1) = &class_data[i_in_ty];
-
-      //         // 检查同一哈希分组内的元素
-      //         for j in i_in_ty..ty_end {
-      //             let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
-      //             if !level_match(
-      //                 &(*cls_hash1, subtree_levels1.clone()),
-      //                 &(*cls_hash2, subtree_levels2.clone()),
-      //             ) {
-      //                 continue;
-      //             }
-                  
-      //             // 调整检查顺序：先查快速失败条件
-      //             if !learned_lib.co_occurrences.may_co_occur(**ecls1, **ecls2) {
-      //                 continue;
-      //             }
-
-      //             // 类型已通过排序保证相同，无需检查
-      //             eclass_pairs.push((**ecls1, **ecls2));
-      //         }
-      //     }
-          
-      //     i = ty_end;
-      // }
       let mut class_data: Vec<_> = classes
       .iter()
       .map(|cls| {
@@ -851,6 +676,9 @@ where
       })
       .collect();
       class_data.sort_unstable_by_key(|(ecls, ty, _, _)| (ty.clone(), usize::from(**ecls)));
+      // for data in class_data.clone() {
+      //   println!("Id: {}, Type: {}", data.0, data.1);
+      // }
       let ranges = group_by_type_ranges(&class_data);
       // 用一个二维数组来存储pairs的配对情况
       let enum_start = Instant::now();
@@ -862,7 +690,7 @@ where
           for i in start..end {
               let (ecls1, _, cls_hash1, subtree_levels1) = &class_data[i];
               let popcount1 = cls_hash1.count_ones();
-              let density1 = subtree_levels1.count_ones() as f32 / 64.0;
+              let subtree_cnt1 = subtree_levels1.count_ones();
               for j in i..end {
                   let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
                   let popcount2 = cls_hash2.count_ones();
@@ -870,8 +698,9 @@ where
                       continue; // 汉明距离不可能<36
                   }
                   
-                  let density2 = subtree_levels2.count_ones() as f32 / 64.0;
-                  if density1.max(density2) < 0.67 {
+                  let subtree_cnt2 = subtree_levels2.count_ones();
+                  let all_one = (subtree_levels1.clone() | subtree_levels2.clone()).count_ones();
+                  if (subtree_cnt1.max(subtree_cnt2) as f64) < (0.67 * all_one as f64) {
                       continue; // Jaccard相似度不可能>0.67
                   }
                   if !level_match(
@@ -902,9 +731,10 @@ where
       println!("mode 2: enumerate over dfta takes {:?}", elapsed);
     }
       println!("we all need to calculate {} pairs of eclasses", learned_lib.aus_by_state.len());
-      // println!("{:?}", learned_lib.aus_by_state);
+    
 
     }
+
     // 如果learned_lib中的aus数量大于500，就从排序结果中随机选取500个
     // if learned_lib.aus.len() > 500 {
     //   let mut aus = learned_lib.aus.iter().cloned().collect::<Vec<_>>();
@@ -1318,6 +1148,8 @@ where
       return;
     }
 
+    // println!("Enumerating over state {:?}", state);
+
     let mut aus: BTreeSet<AU<Op, (Id, Id)>> = BTreeSet::new();
 
     let mut same = false;
@@ -1325,7 +1157,6 @@ where
 
     let ops1 = egraph[state.0].nodes.iter().map(AstNode::as_parts);
     let ops2 = egraph[state.1].nodes.iter().map(AstNode::as_parts);
-
     for (op1, args1) in ops1 {
       for (op2, args2) in ops2.clone() {
         if op1 == op2 {
@@ -1347,7 +1178,6 @@ where
             for next_state in &inputs {
               self.enumerate_over_egraph(egraph, *next_state);
             }
-
             let smax_arity = self.max_arity;
             // let au_range: Vec<Vec<PartialExpr<Op, (Id, Id)>>> =
             // au_range.collect::<Vec<_>>();
@@ -1387,7 +1217,6 @@ where
 
             info!("aus_state.len() is {}", self.aus_by_state.len());
             info!("deduplicating new_aus last: {} ", new_aus.clone().count());
-
             let new_aus_dedu = self
               .deduplicate_from_candidates::<PartialLibCost>(new_aus.clone());
             // info!("now  is {}", new_aus_dedu.len());
@@ -1395,8 +1224,6 @@ where
             // 为每一个新的模式生成一个AU
             // aus.extend(new_aus.map(|au| AU::new_cal_matches(au,
             // &self.egraph)));
-            // println!("aus_size: {}", aus.len());
-            // println!("{:?}", new_aus_dedu);
             aus.extend(new_aus_dedu);
             info!(
               "Total processing time: {:?}, lenth of new_aus and aus is {}",
@@ -1488,9 +1315,6 @@ where
             || au.num_nodes() > 1 + num_vars
           // FIXME:num_vars + 1, 这里改为2*num_vars是为了减少重复的模式
           {
-            // println!("learn_trivial: {}, num_vars < au.num_holes(): {},
-            // au.num_nodes() > num_vars: {}", learn_trivial, num_vars <
-            // au.num_holes(), au.num_nodes() > num_vars);
             Some(AU::new(au, matches, delay))
 
           } else {
@@ -1503,10 +1327,10 @@ where
             .any(|op| ast_node.operation().discriminant_eq(op)),
           PartialExpr::Hole(_) => true,
         });
-      info!(
-        "length of nontrivial_aus is {}",
-        nontrivial_aus.clone().count()
-      );
+      // info!(
+      //   "length of nontrivial_aus is {}",
+      //   nontrivial_aus.clone().count()
+      // );
       self.aus.extend(nontrivial_aus);
     }
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
