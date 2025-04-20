@@ -1,25 +1,24 @@
 use crate::teachable::BindingExpr;
 
 use super::{super::teachable::Teachable, AstNode, Expr};
-use egg::{Analysis, AstSize, CostFunction, EGraph, ENodeOrVar, Id, Language, Pattern, RecExpr, Var, Searcher};
-use crate::extract::cost::{DelayCost, LangGain};
-use crate::extract::beam::PartialLibCost;
 use crate::ast_node::Arity;
+use crate::extract::beam::PartialLibCost;
+use crate::learn::Match;
+use crate::learn::normalize;
+use crate::schedule::Schedulable;
+use egg::{EGraph, ENodeOrVar, Id, Language, Pattern, RecExpr, Searcher, Var};
 use std::{
-  collections::{HashSet,HashMap},
+  collections::HashSet,
   convert::{TryFrom, TryInto},
   error::Error,
   fmt::{self, Debug, Display, Formatter},
   hash::Hash,
   sync::Arc,
 };
-use crate::learn::Match;
-use crate::learn::normalize;
 // 为Op定义一个trait名为GetHash
 pub trait GetCost {
   fn get_cost(&self) -> u32;
 }
-
 
 /// A partial expression. This is a generalization of an abstract syntax tree
 /// where subexpressions can be replaced by "holes", i.e., values of type `T`.
@@ -32,24 +31,27 @@ pub enum PartialExpr<Op, T> {
   Hole(T),
 }
 
-
-impl <Op, T> PartialExpr<Op, T> 
-where 
-Op:Clone
-+ Default
-+ Arity
-+ Debug
-+ Display
-+ Ord
-+ Send
-+ Sync
-+ Teachable
-+ 'static
-+ Hash,
-AstNode<Op>: Language,
-T: Eq + Clone + Hash + Debug
+impl<Op, T> PartialExpr<Op, T>
+where
+  Op: Clone
+    + Default
+    + Arity
+    + Debug
+    + Display
+    + Ord
+    + Send
+    + Sync
+    + Teachable
+    + 'static
+    + Hash
+    + Schedulable,
+  AstNode<Op>: Language,
+  T: Eq + Clone + Hash + Debug,
 {
-  pub fn get_match(self, egraph: &EGraph<AstNode<Op>, PartialLibCost>) -> Vec<Match> {
+  pub fn get_match(
+    self,
+    egraph: &EGraph<AstNode<Op>, PartialLibCost>,
+  ) -> Vec<Match> {
     let pattern: Pattern<_> = normalize(self.clone()).0.into();
     // A key in `cache` is a set of matches
     // represented as a sorted vector.
@@ -57,8 +59,7 @@ T: Eq + Clone + Hash + Debug
 
     for m in pattern.search(egraph) {
       for sub in m.substs {
-        let actuals: Vec<_> =
-          pattern.vars().iter().map(|v| sub[*v]).collect();
+        let actuals: Vec<_> = pattern.vars().iter().map(|v| sub[*v]).collect();
         let match_signature = Match::new(m.eclass, actuals);
         key.push(match_signature);
       }
@@ -66,28 +67,37 @@ T: Eq + Clone + Hash + Debug
 
     key.sort();
     key
-  } 
+  }
   // 定义get_delay函数，输入是一个PartialExpr<Op, T>，输出是一个u32
-    pub fn get_delay<LD>(&self, lang_gain: LD) -> usize 
-    where LD: LangGain<Op>,
-    {
-        // 首先将PE转化为Expr
-        let expr: Expr<Op> = self.clone().try_into().unwrap();
-        // 将Expr转化成RecExpr
-        let rec_expr: RecExpr<AstNode<Op>> = expr.into();
-        // 使用lang_gain计算delay
-        DelayCost::new(lang_gain).cost_rec(&rec_expr).0
-        
+  // Critical path delay (maybe use hls in the future)
+  pub fn get_delay(&self) -> usize {
+    // 首先将PE转化为Expr
+    let expr: Expr<Op> = self.clone().try_into().unwrap();
+    // 将Expr转化成RecExpr
+    let rec_expr: RecExpr<AstNode<Op>> = expr.into();
+    // 计算delay
+    let node_delay: Vec<usize> = Vec::new();
+    for node in &rec_expr {
+      let op_delay = node.op_delay();
+      let args_max_delay = node
+        .args()
+        .iter()
+        .map(|id| {
+          let idx: usize = id.into();
+          node_delay[idx]
+        })
+        .max()
+        .unwrap_or(0);
+      node_delay.push(op_delay + args_max_delay);
     }
+    node_delay.last().unwrap_or(0)
+  }
 }
-
-
 
 impl<Op, T> PartialExpr<Op, T>
 where
-  Op: Teachable
+  Op: Teachable,
 {
-
   /// Same as [`Self::fill`], but also provides the number of outer binders
   /// to the function.
   pub fn fill_with_binders<U, F>(self, mut f: F) -> PartialExpr<Op, U>
@@ -339,7 +349,8 @@ impl<T: Debug> Display for IncompleteExprError<T> {
   }
 }
 
-// 修改从PE转化到Expr的函数，当PE是Hole的时候，不再返回错误，而是返回一个叶子节点表示的表达式
+// 修改从PE转化到Expr的函数，当PE是Hole的时候，不再返回错误，
+// 而是返回一个叶子节点表示的表达式
 
 impl<Op: Default + Arity + Debug, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
   type Error = IncompleteExprError<T>;
@@ -359,7 +370,9 @@ impl<Op: Default + Arity + Debug, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
         Ok(node.into())
       }
       PartialExpr::Hole(_) => {
-        // 首先，我们将PE转化为Expr只是为了转化成Recexpr进行delay计算，所以Hole可以不需要在意，将其作为一个叶节点处理就好，目前直接使用Op(也就是RdgEgg的default，我设定default是const 0)
+        // 首先，我们将PE转化为Expr只是为了转化成Recexpr进行delay计算，
+        // 所以Hole可以不需要在意，将其作为一个叶节点处理就好，
+        // 目前直接使用Op(也就是RdgEgg的default，我设定default是const 0)
         let node = AstNode::leaf(Op::default());
         Ok(node.into())
       }

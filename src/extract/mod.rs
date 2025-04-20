@@ -2,7 +2,6 @@
 
 pub mod beam;
 pub mod beam_pareto;
-pub mod cost;
 
 use std::collections::HashMap;
 
@@ -76,8 +75,12 @@ where
     .egraph;
   let root = fin.add(AstNode::new(Op::list(), roots.iter().copied()));
 
-  let mut extractor =
-    beam_pareto::LibExtractor::new(&fin, lang_cost.clone(), lang_gain.clone(), strategy);
+  let mut extractor = beam_pareto::LibExtractor::new(
+    &fin,
+    lang_cost.clone(),
+    lang_gain.clone(),
+    strategy,
+  );
   extractor.best(root)
 }
 
