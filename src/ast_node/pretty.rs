@@ -22,9 +22,7 @@ pub struct Pretty<Op> {
 
 impl<Op> Pretty<Op> {
   pub fn new(expr: Arc<Expr<Op>>) -> Self {
-    Self {
-      expr,
-    }
+    Self { expr }
   }
 }
 
@@ -34,7 +32,11 @@ where
 {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let mut printer = Printer::new(String::new());
-    printer.print_in_context(self.expr.clone(), 110, &mut ExprMemoizer::new())?;
+    printer.print_in_context(
+      self.expr.clone(),
+      110,
+      &mut ExprMemoizer::new(),
+    )?;
     write!(f, "{}", printer.writer)
   }
 }
@@ -90,7 +92,7 @@ impl<Op> Memoize for ExprMemoizer<Op> {
     self.next_id
   }
   fn checkpoint(&mut self) -> usize {
-    let id =self.checkpoints.len();
+    let id = self.checkpoints.len();
     self.checkpoints.push(self.memo.clone());
     id
   }
@@ -235,7 +237,7 @@ impl<W: Write + Clone + Default + ToString + Clone + Default + ToString>
     id: usize,
   ) -> fmt::Result {
     self.writer.write_str(&format!("[{id}]:"))?;
-    
+
     match expr.0.as_binding_expr() {
       Some(binding_expr) => {
         match binding_expr {
@@ -259,7 +261,7 @@ impl<W: Write + Clone + Default + ToString + Clone + Default + ToString>
               .expect("unbound variable");
             self.writer.write_str(name)
           }
-          BindingExpr::Lib(ix, def, body) => {
+          BindingExpr::Lib(ix, def, body, _, _) => {
             self.with_binding("f", |p| {
               write!(p.writer, "lib {ix} =")?; // print binding
               p.indentation += 1;
@@ -380,7 +382,14 @@ impl<W: Write + Clone + Default + ToString + Clone + Default + ToString>
   /// Print f(i) for i in 0..n on one/multiple lines
   /// if the original printing is too long or multi-lined, add newline
   /// adaptably.
-  pub fn sep_adaptable<Op, T: FnMut(&mut Self, usize, &mut dyn Memoize<Key = *const Expr<Op>>) -> fmt::Result>(
+  pub fn sep_adaptable<
+    Op,
+    T: FnMut(
+      &mut Self,
+      usize,
+      &mut dyn Memoize<Key = *const Expr<Op>>,
+    ) -> fmt::Result,
+  >(
     &mut self,
     f: &mut T,
     n: usize,
@@ -413,8 +422,9 @@ impl<W: Write + Clone + Default + ToString + Clone + Default + ToString>
       );
     }
 
-    if adaptable && (temp_printed_str.lines().collect_vec().len() > 1
-      || temp_printed_str.len() > LINE_LENGTH)
+    if adaptable
+      && (temp_printed_str.lines().collect_vec().len() > 1
+        || temp_printed_str.len() > LINE_LENGTH)
     {
       memoizer.restore(backup_memoizer);
       for i in 0..n {
