@@ -25,6 +25,10 @@ pub trait Schedulable {
   fn is_sequential(&self) -> bool {
     self.op_latency() > 0
   }
+
+  /// Returns the latency of the operation in the case of running on cpu
+  #[must_use]
+  fn op_latency_cpu(&self) -> usize;
 }
 
 impl<Op, T> AstNode<Op, T>
@@ -54,6 +58,12 @@ where
   pub fn is_sequential(&self) -> bool {
     self.operation().is_sequential()
   }
+
+  /// Returns the latency of the operation in the case of running on cpu
+  #[must_use]
+  fn op_latency_cpu(&self) -> usize {
+    self.operation().op_latency_cpu()
+  }
 }
 
 /// A struct representing a scheduler which used to estimate the area and
@@ -65,7 +75,8 @@ pub struct Scheduler {
   // Maybe more parameters in the future.
 }
 
-/// The result type of scheduling operations, containing (latency, area).
+/// The result type of scheduling operations, containing (gain, cost), where
+/// gain = latency_cpu - latency_accelerator, cost = area.
 pub type ScheduleResult = (usize, usize);
 
 impl Scheduler {
@@ -139,15 +150,20 @@ impl Scheduler {
       }
       cycle += 1;
     }
-    // Calculate the latency
-    let mut latency = 0;
+    // Calculate the gain
+    let mut latency_accelerator = 0;
     for i in 0..expr.len() {
       let node = &expr[i];
       if node.is_sequential() {
-        latency = cmp::max(latency, sc[i] + node.op_latency());
+        latency_accelerator =
+          cmp::max(latency_accelerator, sc[i] + node.op_latency());
       } else {
-        latency = cmp::max(latency, sc[i] + 1);
+        latency_accelerator = cmp::max(latency_accelerator, sc[i] + 1);
       }
+    }
+    let mut latency_cpu = 0;
+    for node in expr {
+      latency_cpu += node.op_latency_cpu();
     }
     // Calculate the area
     // For each type of operation, we record the scheduled cycles of all the AST
@@ -170,7 +186,7 @@ impl Scheduler {
     let mut area = 0;
     for (op, schedule) in op_schedule.iter() {
       let mut op_count = 0;
-      for i in 0..latency {
+      for i in 0..latency_accelerator {
         let mut cycle_count = 0;
         for (start, end) in schedule.iter() {
           if *start <= i && i <= *end {
@@ -181,6 +197,6 @@ impl Scheduler {
       }
       area += op_count * op.op_area();
     }
-    (latency, area)
+    (latency_cpu - latency_accelerator, area)
   }
 }
