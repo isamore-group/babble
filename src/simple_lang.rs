@@ -11,7 +11,7 @@ use egg::Symbol;
 
 use crate::{
   ast_node::{Arity, AstNode},
-  learn::{LibId, ParseLibIdError},
+  learn::LibId,
   teachable::{BindingExpr, DeBruijnIndex, Teachable},
 };
 
