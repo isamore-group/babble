@@ -25,12 +25,14 @@ where
   #[must_use]
   fn as_binding_expr<T>(node: &AstNode<Self, T>) -> Option<BindingExpr<&T>>;
 
-  /// Returns the equivalent of a "list" operation in the language, used internally
-  /// to combine multiple expressions when reporting lib learning results.
+  /// Returns the equivalent of a "list" operation in the language, used
+  /// internally to combine multiple expressions when reporting lib learning
+  /// results.
   #[must_use]
   fn list() -> Self;
 
-  /// Creates an AST node representing a de Bruijn-indexed lambda with body `body`.
+  /// Creates an AST node representing a de Bruijn-indexed lambda with body
+  /// `body`.
   #[must_use]
   fn lambda<T>(body: T) -> AstNode<Self, T> {
     Self::from_binding_expr(BindingExpr::Lambda(body))
@@ -49,10 +51,17 @@ where
     Self::from_binding_expr(BindingExpr::Var(DeBruijnIndex(index)))
   }
 
-  /// Creates an expression defining the library function `name` as `value` in `body`.
+  /// Creates an expression defining the library function `name` as `value` in
+  /// `body`.
   #[must_use]
-  fn lib<T>(name: LibId, value: T, body: T) -> AstNode<Self, T> {
-    Self::from_binding_expr(BindingExpr::Lib(name, value, body))
+  fn lib<T>(
+    name: LibId,
+    value: T,
+    body: T,
+    latency: usize,
+    area: usize,
+  ) -> AstNode<Self, T> {
+    Self::from_binding_expr(BindingExpr::Lib(name, value, body, latency, area))
   }
 
   /// Creates a named variable referencing a library function.
@@ -83,7 +92,7 @@ pub enum BindingExpr<T> {
   /// An application of a function to an argument
   Apply(T, T),
   /// An expression defining a named library function within a certain scope
-  Lib(LibId, T, T),
+  Lib(LibId, T, T, usize, usize),
 }
 
 impl<Op, T> From<BindingExpr<T>> for AstNode<Op, T>
@@ -176,13 +185,14 @@ impl FromStr for DeBruijnIndex {
   }
 }
 
-
-// 定义ShieldingOp, 这主要用于对Op做哈希，我们希望在learn.rs中学习库的时候，尽可能拿到关于操作符本身的
-// 信息，并希望屏蔽掉一些非常具体的，库学习中不希望出现的信息，比如Int1, Int2，我们希望屏蔽掉常数值，而只去关注
+// 定义ShieldingOp,
+// 这主要用于对Op做哈希，我们希望在learn.rs中学习库的时候，
+// 尽可能拿到关于操作符本身的 信息，并希望屏蔽掉一些非常具体的，
+// 库学习中不希望出现的信息，比如Int1, Int2，我们希望屏蔽掉常数值，而只去关注
 // Int操作符本身
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ShieldingOp {
-  List, 
+  List,
   Lambda,
   Apply,
   Var,
@@ -202,19 +212,19 @@ pub enum ShieldingOp {
   RulerVar,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 pub enum ShieldingConst {
-  Int(u32), 
+  Int(u32),
   Float(u32), //后面的参数都是用来表示位宽
 }
 
-#[derive(Clone,  Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 pub enum ShieldingTop {
   Store,
   Select,
 }
 
-#[derive(Clone,  Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 pub enum ShieldingBop {
   Add,
   Sub,
@@ -238,7 +248,7 @@ pub enum ShieldingBop {
   StateMerge,
 }
 
-#[derive(Clone,  Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 pub enum ShieldingUop {
   Abs,
   Not,

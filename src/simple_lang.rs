@@ -1,4 +1,5 @@
-//! Defines [`SimpleOp`], a simple lambda calculus which can be used with babble.
+//! Defines [`SimpleOp`], a simple lambda calculus which can be used with
+//! babble.
 
 use std::{
   convert::Infallible,
@@ -28,7 +29,7 @@ pub enum SimpleOp {
   /// An anonymous function
   Lambda,
   /// A library function binding
-  Lib(LibId),
+  Lib(LibId, usize, usize),
   /// A list of expressions
   List,
 }
@@ -38,7 +39,7 @@ impl Arity for SimpleOp {
     match self {
       Self::Var(_) | Self::Symbol(_) => 0,
       Self::Lambda | Self::LibVar(_) | Self::List => 1,
-      Self::Apply | Self::Lib(_) => 2,
+      Self::Apply | Self::Lib(_, _, _) => 2,
     }
   }
 }
@@ -48,7 +49,7 @@ impl Display for SimpleOp {
     let s = match self {
       Self::Apply => "@",
       Self::Lambda => "λ",
-      Self::Lib(libid) => {
+      Self::Lib(libid, _, _) => {
         return write!(f, "lib {libid}");
       }
       Self::LibVar(libid) => {
@@ -78,12 +79,7 @@ impl FromStr for SimpleOp {
         .parse()
         .map(Self::Var)
         .or_else(|_| input.parse().map(Self::LibVar))
-        .or_else(|_| {
-          input
-            .strip_prefix("lib ")
-            .ok_or(ParseLibIdError::NoLeadingL)
-            .and_then(|x| x.parse().map(Self::Lib))
-        })
+        // Lib is emitted
         .unwrap_or_else(|_| Self::Symbol(input.into())),
     };
     Ok(op)
@@ -96,8 +92,8 @@ impl Teachable for SimpleOp {
       BindingExpr::Lambda(body) => AstNode::new(Self::Lambda, [body]),
       BindingExpr::Apply(fun, arg) => AstNode::new(Self::Apply, [fun, arg]),
       BindingExpr::Var(index) => AstNode::leaf(Self::Var(index)),
-      BindingExpr::Lib(ix, bound_value, body) => {
-        AstNode::new(Self::Lib(ix), [bound_value, body])
+      BindingExpr::Lib(ix, bound_value, body, latency, area) => {
+        AstNode::new(Self::Lib(ix, latency, area), [bound_value, body])
       }
       BindingExpr::LibVar(ix) => AstNode::new(Self::LibVar(ix), []),
     }
@@ -108,8 +104,8 @@ impl Teachable for SimpleOp {
       (Self::Lambda, [body]) => BindingExpr::Lambda(body),
       (Self::Apply, [fun, arg]) => BindingExpr::Apply(fun, arg),
       (Self::Var(index), []) => BindingExpr::Var(*index),
-      (Self::Lib(ix), [bound_value, body]) => {
-        BindingExpr::Lib(*ix, bound_value, body)
+      (Self::Lib(ix, latency, area), [bound_value, body]) => {
+        BindingExpr::Lib(*ix, bound_value, body, *latency, *area)
       }
       (Self::LibVar(ix), []) => BindingExpr::LibVar(*ix),
       _ => return None,
