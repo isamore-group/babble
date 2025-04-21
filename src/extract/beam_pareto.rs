@@ -2,30 +2,26 @@
 //! orderings of learned library sets.
 use crate::{
   ast_node::{Arity, AstNode},
-  extract::cost::{AreaCost, DelayCost, LangCost, LangGain},
   learn::LibId,
   teachable::{BindingExpr, Teachable},
 };
 use bitvec::prelude::*;
 use egg::{
-  Analysis, AstSize, CostFunction, DidMerge, EGraph, Extractor, Id, Language,
-  RecExpr, Runner,
+  Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
 };
 use log::debug;
-use rand::{Rng, seq::index, thread_rng};
 use rustc_hash::FxHashMap;
-use std::{cmp::max, collections::HashSet, default, time::Instant};
+use std::collections::HashSet;
 use std::{
-  borrow::Cow,
   cmp::Ordering,
-  collections::{BinaryHeap, HashMap},
+  collections::{BinaryHeap, HashMap, hash_map::Entry},
   fmt::Debug,
   hash::{DefaultHasher, Hash, Hasher},
-  sync::Arc,
 };
 
 /// 实现一个非常简单的没有实际意义的Analysis
 /// 这个Analysis只用于LibExtractor
+#[derive(Debug, Clone)]
 pub struct EmptyAnalysis<Op> {
   _phantom: PhantomData<Op>,
 }
@@ -68,9 +64,9 @@ pub struct CostSet {
 impl CostSet {
   /// Creates a `CostSet` corresponding to introducing a nullary operation.
   #[must_use]
-  pub fn intro_op(op_delay: usize, op_area: usize, strategy: f32) -> CostSet {
+  pub fn new() -> CostSet {
     let mut set = Vec::with_capacity(10);
-    set.push(LibSel::intro_op(op_delay, op_area, strategy));
+    set.push(LibSel::new());
     CostSet { set }
   }
 
@@ -138,21 +134,13 @@ impl CostSet {
     }
   }
 
-  /// Increments the cost of every `LibSel` in this `CostSet`.
-  /// This is done if we e.g. cross all the args of a node, then have to add
-  /// the node itself to the cost.
-  pub fn inc_cost(&mut self, delay: usize, area: usize, strategy: f32) {
-    // println!("inc_cost");
-    for ls in &mut self.set {
-      ls.inc_cost(delay, area, strategy);
-    }
-  }
-
   #[must_use]
   pub fn add_lib(
     &self,
     lib: LibId,
-    cost: &CostSet,
+    gain: usize,
+    cost: usize,
+    nested_libs: &CostSet,
     lps: usize,
     strategy: f32,
   ) -> CostSet {
@@ -160,14 +148,9 @@ impl CostSet {
     // To add a lib, we do a modified cross.
     let mut set = Vec::new();
 
-    for ls1 in &cost.set {
-      if ls1.libs.iter().any(|l| l.0 == lib) {
-        // If this libsel contains the lib we are defining,
-        // we can't use in in the definition.
-        continue;
-      }
+    for ls1 in &nested_libs.set {
       for ls2 in &self.set {
-        match ls2.add_lib(lib, ls1, lps, strategy) {
+        match ls2.add_lib(lib, gain, cost, ls1, lps, strategy) {
           None => continue,
           Some(ls) => {
             if let Err(pos) = set.binary_search(&ls) {
@@ -265,46 +248,58 @@ impl CostSet {
 /// A `LibSel` is a selection of library functions, paired with two
 /// corresponding cost values: the cost of the expression without the library
 /// functions, and the cost of the library functions themselves
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone)]
 
 pub struct LibSel {
-  /// The full cost of the expression, including the delay cost and area cost.
+  /// The full cost of the expression, balancing the latency gain and area
+  /// cost.
   pub full_cost: f32,
-  /// The delay cost of the expression. The first element of the tuple is the
-  /// delay if the expression is in a library, the second one is the delay if
-  /// the expression is not in a library.
-  pub delay_cost: (usize, usize),
-  /// The cost of the expression if the expression is in a library.
-  pub area_cost: usize,
   /// The libraries used in this expression. Each library is binded with its
-  /// delay cost and area cost.
-  pub libs: Vec<(LibId, usize, usize)>,
+  /// gain, cost and its times being used.
+  pub libs: HashMap<LibId, (usize, usize, usize)>,
 }
 
 impl Eq for LibSel {}
+
+impl PartialEq for LibSel {
+  fn eq(&self, other: &Self) -> bool {
+    self.full_cost == other.full_cost && self.libs == other.libs
+  }
+}
+
+impl PartialOrd for LibSel {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    let r = self.full_cost.partial_cmp(&other.full_cost);
+    match r {
+      Some(ord) => Some(ord),
+      None => None,
+    }
+  }
+}
 
 impl Ord for LibSel {
   fn cmp(&self, other: &Self) -> Ordering {
     let r = self.full_cost.partial_cmp(&other.full_cost);
     match r {
-      Some(ord) => {
-        return ord;
+      Some(ord) => ord,
+      None => {
+        // If the full cost is NaN, we want to sort it to the end.
+        if self.full_cost.is_nan() {
+          Ordering::Greater
+        } else {
+          Ordering::Less
+        }
       }
-      None => {}
     }
-
-    self.libs.cmp(&other.libs)
   }
 }
 
 impl LibSel {
   #[must_use]
-  pub fn intro_op(op_delay: usize, op_area: usize, strategy: f32) -> LibSel {
+  pub fn new() -> LibSel {
     LibSel {
-      full_cost: (op_delay as f32) * strategy,
-      delay_cost: (op_delay, op_delay),
-      area_cost: op_area,
-      libs: Vec::new(),
+      full_cost: 0.0,
+      libs: HashMap::new(),
     }
   }
 
@@ -319,25 +314,23 @@ impl LibSel {
   ) -> Option<LibSel> {
     let mut res = self.clone();
 
-    for (k, delay, area) in &other.libs {
-      match res.libs.binary_search_by_key(k, |(id, _, _)| *id) {
-        Ok(_) => {
-          continue;
+    for (lib_id, lib_info) in &other.libs {
+      match res.libs.entry(*lib_id) {
+        Entry::Occupied(mut entry) => {
+          let (_, _, times) = entry.get_mut();
+          *times += lib_info.2;
+          res.full_cost -= lib_info.2 as f32 * lib_info.0 as f32 * strategy;
         }
-        Err(ix) => {
-          res.libs.insert(ix, (*k, *delay, *area));
-          res.full_cost += *area as f32 * (1.0 - strategy);
+        Entry::Vacant(entry) => {
+          entry.insert(*lib_info);
+          res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
+            - lib_info.2 as f32 * lib_info.0 as f32 * strategy;
           if res.libs.len() > lps {
             return None;
           }
         }
       }
     }
-
-    res.delay_cost.0 = std::cmp::max(res.delay_cost.0, other.delay_cost.0);
-    res.delay_cost.1 += other.delay_cost.1;
-    res.area_cost += other.area_cost;
-    res.full_cost += other.delay_cost.1 as f32 * strategy;
 
     Some(res)
   }
@@ -346,25 +339,26 @@ impl LibSel {
   pub fn add_lib(
     &self,
     lib: LibId,
-    cost: &LibSel,
+    gain: usize,
+    cost: usize,
+    nested_libs: &LibSel,
     lps: usize,
     strategy: f32,
   ) -> Option<LibSel> {
     let mut res = self.clone();
-    let delay = cost.delay_cost;
-    let area = cost.area_cost;
 
     // Add all nested libs that the lib uses, then add the lib itself.
-    for (nested_lib, delay, area) in &cost.libs {
-      let nested_lib = *nested_lib;
-
-      match res.libs.binary_search_by_key(&nested_lib, |(id, _, _)| *id) {
-        Ok(_) => {
-          continue;
+    for (nested_lib, lib_info) in &nested_libs.libs {
+      match res.libs.entry(*nested_lib) {
+        Entry::Occupied(mut entry) => {
+          let (_, _, times) = entry.get_mut();
+          *times += lib_info.2;
+          res.full_cost -= lib_info.2 as f32 * lib_info.0 as f32 * strategy;
         }
-        Err(ix) => {
-          res.libs.insert(ix, (nested_lib, *delay, *area));
-          res.full_cost += *area as f32 * (1.0 - strategy);
+        Entry::Vacant(entry) => {
+          entry.insert(*lib_info);
+          res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
+            - lib_info.2 as f32 * lib_info.0 as f32 * strategy;
           if res.libs.len() > lps {
             return None;
           }
@@ -372,66 +366,38 @@ impl LibSel {
       }
     }
 
-    match res.libs.binary_search_by_key(&lib, |(id, _, _)| *id) {
-      Ok(_) => {}
-      Err(ix) => {
-        res.libs.insert(ix, (lib, delay.0, area));
-        res.full_cost += area as f32 * (1.0 - strategy);
+    match res.libs.entry(lib) {
+      Entry::Occupied(mut entry) => {
+        let (_, _, times) = entry.get_mut();
+        *times += 1;
+        res.full_cost -= gain as f32 * strategy;
+      }
+      Entry::Vacant(entry) => {
+        entry.insert((gain, cost, 1));
+        res.full_cost +=
+          cost as f32 * (1.0 - strategy) - gain as f32 * strategy;
         if res.libs.len() > lps {
           return None;
         }
       }
     }
 
-    res.delay_cost.0 += delay.0;
-    res.delay_cost.1 += delay.0;
-    res.full_cost += delay.0 as f32 * strategy;
-
     Some(res)
-  }
-
-  pub fn inc_cost(&mut self, delay: usize, area: usize, strategy: f32) {
-    self.delay_cost.0 += delay;
-    self.delay_cost.1 += delay;
-    self.area_cost += area;
-    self.full_cost += delay as f32 * strategy;
   }
 
   /// O(n) subset check
   #[must_use]
   pub fn is_subset(&self, other: &LibSel) -> bool {
-    let mut oix = 0;
-
     // For every element in this LibSel, we want to see
     // if it exists in other.
-    'outer: for (lib, _, _) in &self.libs {
-      loop {
-        // If oix is beyond the length of other, return false.
-        if oix >= other.libs.len() {
+    for (lib_id, _) in &self.libs {
+      match other.libs.get(lib_id) {
+        Some(_) => {}
+        None => {
           return false;
-        }
-
-        match &other.libs[oix].0.cmp(lib) {
-          Ordering::Less => {
-            // Increment oix by default
-            oix += 1;
-          }
-          Ordering::Equal => {
-            // If other[oix] is equal to lib, continue in the outer loop and
-            // increment oix
-            oix += 1;
-            continue 'outer;
-          }
-          Ordering::Greater => {
-            // Otherwise if it's larger, there was no element equal. Not subset,
-            // ret false.
-            return false;
-          }
         }
       }
     }
-
-    // We made it! ret true
     true
   }
 }
@@ -455,15 +421,11 @@ impl Ord for LibSelFC {
 // --------------------------------
 // --- The actual Analysis part ---
 // --------------------------------
-
 use std::marker::PhantomData;
-
 #[derive(Debug, Clone)]
-pub struct ISAXAnalysis<Op, T, LA, LD>
+pub struct ISAXAnalysis<Op, T>
 where
   Op: Clone + Debug + Ord + std::hash::Hash + Teachable + Arity,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
 {
   /// The number of `LibSel`s to keep per `EClass`.
   beam_size: usize,
@@ -471,35 +433,27 @@ where
   /// The maximum number of libs per lib selection. Any lib selections with a
   /// larger amount will be pruned.
   lps: usize,
-  lang_cost: LA,
-  lang_gain: LD,
   strategy: f32,
   /// Marker to indicate that this struct uses the Op type parameter
   op_phantom: PhantomData<Op>,
   ty_phantom: PhantomData<T>,
 }
 
-impl<Op, T, LA, LD> ISAXAnalysis<Op, T, LA, LD>
+impl<Op, T> ISAXAnalysis<Op, T>
 where
   Op: Clone + Debug + Ord + std::hash::Hash + Teachable + Arity,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
 {
   #[must_use]
   pub fn new(
     beam_size: usize,
     inter_beam: usize,
     lps: usize,
-    lang_cost: LA,
-    lang_gain: LD,
     strategy: f32,
-  ) -> ISAXAnalysis<Op, T, LA, LD> {
+  ) -> ISAXAnalysis<Op, T> {
     ISAXAnalysis {
       beam_size,
       inter_beam,
       lps,
-      lang_cost,
-      lang_gain,
       strategy,
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
@@ -507,13 +461,11 @@ where
   }
 
   #[must_use]
-  pub fn empty() -> ISAXAnalysis<Op, T, LA, LD> {
+  pub fn empty() -> ISAXAnalysis<Op, T> {
     ISAXAnalysis {
       beam_size: 0,
       inter_beam: 0,
       lps: 1,
-      lang_cost: LA::default(),
-      lang_gain: LD::default(),
       strategy: 1.0,
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
@@ -521,11 +473,9 @@ where
   }
 }
 
-impl<Op, T, LA, LD> Default for ISAXAnalysis<Op, T, LA, LD>
+impl<Op, T> Default for ISAXAnalysis<Op, T>
 where
   Op: Clone + Debug + Ord + std::hash::Hash + Teachable + Arity,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
 {
   fn default() -> Self {
     ISAXAnalysis::empty()
@@ -551,19 +501,18 @@ impl Default for StructuralHash {
 }
 
 impl StructuralHash {
-  pub fn merge(
-    &mut self,
-    other: &Self,
-  ){
+  pub fn merge(&mut self, other: &Self) {
     // 首先合并cls_hash
     // 为了和enode进行区分，会使用加盐值和rotate的方法打散哈希
     let mut state = seahash::SeaHasher::new();
     let cls_hashes = [self.cls_hash, other.cls_hash];
     for &h in &cls_hashes {
-        // 加salt混合 or shift
-        (h.rotate_left((h % 13) as u32)).hash(&mut state);
+      // 加salt混合 or shift
+      (h.rotate_left((h % 13) as u32)).hash(&mut state);
     }
-    let merged_cls_hash = state.finish().rotate_left((cls_hashes.len() as u32 * 7) % 64);
+    let merged_cls_hash = state
+      .finish()
+      .rotate_left((cls_hashes.len() as u32 * 7) % 64);
     // 之后合并subtree_levels
     let mut merged_subtree_levels = bitvec!(u64, Lsb0; 0; 64);
     for i in 0..64 {
@@ -584,7 +533,7 @@ impl StructuralHash {
 }
 
 #[derive(Debug, Clone)]
-pub struct LevelConflictState{
+pub struct LevelConflictState {
   // 本结构体用于在不同的enode进行合并时使用，记录不同层级的冲突状态
   states: [f32; 64],
   // 学习率
@@ -599,7 +548,8 @@ impl LevelConflictState {
   }
 
   pub fn update(&mut self, level: usize, is_real_conflict: bool) {
-    self.states[level] = (1.0 - self.alpha) * self.states[level] + self.alpha * is_real_conflict as u8 as f32 * 0.5;
+    self.states[level] = (1.0 - self.alpha) * self.states[level]
+      + self.alpha * is_real_conflict as u8 as f32 * 0.5;
   }
 
   pub fn get(&self, level: usize) -> f32 {
@@ -617,14 +567,13 @@ where
   pub hash: StructuralHash,
 }
 
-impl <T> PartialEq for ISAXCost<T>
+impl<T> PartialEq for ISAXCost<T>
 where
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   fn eq(&self, other: &Self) -> bool {
     self.cs == other.cs && self.ty == other.ty
   }
-    
 }
 
 impl<T: PartialEq> PartialEq<T> for ISAXCost<T>
@@ -673,7 +622,7 @@ where
   hasher.finish()
 }
 
-impl<Op, T, LA, LD> Analysis<AstNode<Op>> for ISAXAnalysis<Op, T, LA, LD>
+impl<Op, T> Analysis<AstNode<Op>> for ISAXAnalysis<Op, T>
 where
   Op: Ord
     + std::hash::Hash
@@ -685,8 +634,6 @@ where
     + Send
     + Sync
     + 'static,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
 {
@@ -707,7 +654,7 @@ where
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
     // 合并哈希
     // 合并ecls哈希，目前取最大值
-    // to.hash.cls_hash = max(to.hash.cls_hash, from.hash.cls_hash); 
+    // to.hash.cls_hash = max(to.hash.cls_hash, from.hash.cls_hash);
     // to.hash.subtree_levels |= from.clone().hash.subtree_levels;
     to.hash.merge(&from.hash);
     // println!("{:?}", to);
@@ -758,11 +705,12 @@ where
     let self_ref = &egraph.analysis;
 
     match Teachable::as_binding_expr(enode) {
-      Some(BindingExpr::Lib(id, f, b)) => {
+      Some(BindingExpr::Lib(id, f, b, gain, cost)) => {
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
-        let mut e = x(b).add_lib(id, x(f), self_ref.lps, self_ref.strategy);
+        let mut e =
+          x(b).add_lib(id, gain, cost, x(f), self_ref.lps, self_ref.strategy);
         // println!("new cost set: {:#?}", e);
         e.unify();
         e.prune(self_ref.beam_size, self_ref.lps);
@@ -771,23 +719,12 @@ where
       Some(_) | None => {
         // This is some other operation of some kind.
         // We test the arity of the function
-        let op_delay = self_ref.lang_gain.op_gain(enode.operation(), &[]);
-        let op_area = self_ref.lang_cost.op_cost(enode.operation(), &[]);
-        // println!("op: {:#?}", enode.operation());
-        // println!("op_delay: {:#?}", op_delay);
-        // println!("number of args: {:#?}", enode.args().len());
         if enode.is_empty() {
-          // 0 args. Return intro.
-
-          ISAXCost::new(
-            CostSet::intro_op(op_delay, op_area, self_ref.strategy),
-            ty,
-            hash,
-          )
+          // 0 args. Return new.
+          ISAXCost::new(CostSet::new(), ty, hash)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
-          let mut e = x(&enode.args()[0]).clone();
-          e.inc_cost(op_delay, op_area, self_ref.strategy);
+          let e = x(&enode.args()[0]).clone();
           ISAXCost::new(e, ty, hash)
         } else {
           // 2+ args. Cross/unify time!
@@ -802,7 +739,6 @@ where
 
           e.unify();
           e.prune(self_ref.beam_size, self_ref.lps);
-          e.inc_cost(op_delay, op_area, self_ref.strategy);
           ISAXCost::new(e, ty, hash)
         }
       }
@@ -862,18 +798,6 @@ impl Hash for LibContext {
 
 type MaybeExpr<Op> = Option<RecExpr<AstNode<Op>>>;
 
-/// This is here for debugging purposes.
-fn display_maybe_expr<
-  Op: Clone + std::fmt::Debug + std::hash::Hash + Ord + std::fmt::Display,
->(
-  maybe_expr: &MaybeExpr<Op>,
-) -> String {
-  match maybe_expr {
-    Some(expr) => expr.pretty(100),
-    _ => "<none>".to_string(),
-  }
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CacheKey {
@@ -900,8 +824,6 @@ pub struct LibExtractor<
     + Teachable
     + std::fmt::Display,
   N: Analysis<AstNode<Op>>,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
 > {
   /// Remembers the best expression so far for each pair of class id and lib
   /// context; if an entry is absent, we haven't visited this class in this
@@ -919,14 +841,12 @@ pub struct LibExtractor<
   egraph: &'a EGraph<AstNode<Op>, N>,
   /// This is here for pretty debug messages.
   indent: usize,
-  lang_cost: LA,
-  lang_gain: LD,
   /// The relative weight of area cost and delay cost, from 0.0 (all areaa) to
   /// 1.0 (all delay)
   strategy: f32,
 }
 
-impl<'a, Op, N, LA, LD> LibExtractor<'a, Op, N, LA, LD>
+impl<'a, Op, N> LibExtractor<'a, Op, N>
 where
   Op: Clone
     + std::fmt::Debug
@@ -936,16 +856,9 @@ where
     + std::fmt::Display
     + Arity,
   N: Analysis<AstNode<Op>> + Clone,
-  LA: LangCost<Op> + Clone + Default,
-  LD: LangGain<Op> + Clone + Default,
 {
   /// Create a lib extractor for the given egraph
-  pub fn new(
-    egraph: &'a EGraph<AstNode<Op>, N>,
-    lang_cost: LA,
-    lang_gain: LD,
-    strategy: f32,
-  ) -> Self {
+  pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, strategy: f32) -> Self {
     Self {
       memo: FxHashMap::default(),
       all_exprs: Vec::with_capacity(10000),
@@ -953,15 +866,13 @@ where
       lib_context: LibContext::new(),
       egraph,
       indent: 0,
-      lang_cost,
-      lang_gain,
       strategy,
     }
   }
 
   /// Get best best expression for `id` in the current lib context.
   fn get_from_memo(&self, id: Id) -> Option<&usize> {
-    let start = Instant::now();
+    // let start = Instant::now();
     let index = self.memo.get(&CacheKey {
       id: usize::from(id) as u32,
       hash: self.lib_context.hash,
@@ -1032,23 +943,28 @@ where
 
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> f32 {
-    let start = Instant::now();
-    let delay_cost = DelayCost::new(self.lang_gain.clone()).cost_rec(expr);
-    let selected_delay_cost = match delay_cost.2 {
-      true => delay_cost.0,
-      false => delay_cost.1,
-    };
-    let area_cost = AreaCost::new(self.lang_cost.clone()).cost_rec(expr);
-    let selected_area_cost = area_cost.1.iter().map(|ls| ls.1).sum::<usize>();
+    let mut used_lib: HashSet<LibId> = HashSet::new();
+    let mut latency_gain: usize = 0;
+    let mut area: usize = 0;
+    for node in expr.iter() {
+      if let Some(BindingExpr::Lib(lid, _, _, gain, cost)) =
+        node.as_binding_expr()
+      {
+        latency_gain += gain;
+        if used_lib.insert(lid) {
+          area += cost;
+        }
+      }
+    }
     // println!("used {}ms to get the cost", start.elapsed().as_millis());
-    self.strategy * (selected_delay_cost as f32)
-      + (1.0 - self.strategy) * (selected_area_cost as f32)
+    (1.0 - self.strategy) * (area as f32)
+      - self.strategy * (latency_gain as f32)
   }
 
   /// Extract the expression with the largest gain from the eclass id and its
   /// descendants in the current context, storing results in the memo
   fn extract(&mut self, id: Id) {
-    let extract_start = Instant::now();
+    // let extract_start = Instant::now();
     // println!("---------------memo.size(): {}", self.memo.len());
     self.debug_indented(&format!("extracting eclass {id}"));
     if self.get_from_memo(id) == None {
@@ -1057,10 +973,10 @@ where
       self.insert_into_memo(id, None, None);
       // Extract a candidate expression from each node
       // println!("Extracting eclass {:#?}", self.egraph[id]);
-      let mut cnt = 0;
+      // let mut cnt = 0;
       for node in self.egraph[id].iter() {
         // println!("extracting node {}/{}", cnt, self.egraph[id].len());
-        cnt += 1;
+        // cnt += 1;
         match self.extract_node(node) {
           None => (), // Extraction for this node failed (must be a cycle)
           Some(cand) => {
@@ -1151,7 +1067,7 @@ where
   /// Extract the smallest expression from `node`.
   fn extract_node(&mut self, node: &AstNode<Op>) -> MaybeExpr<Op> {
     self.debug_indented(&format!("extracting node {node:?}"));
-    if let Some(BindingExpr::Lib(lid, _, _)) = node.as_binding_expr() {
+    if let Some(BindingExpr::Lib(lid, _, _, _, _)) = node.as_binding_expr() {
       // println!("checking lib {lid}");
       if self.lib_context.contains(lid) {
         // This node is a definition of one of the libs, whose definition we are
@@ -1178,7 +1094,7 @@ where
     mut partial_expr: Vec<AstNode<Op>>,
     child_indexes: &mut Vec<usize>,
   ) -> MaybeExpr<Op> {
-    let child_start = Instant::now();
+    // let child_start = Instant::now();
     // println!("begin extracting children");
     if current == node.children().len() {
       // println!("current == children.len()");
@@ -1196,7 +1112,7 @@ where
       // If this is the first child of a lib node (i.e. lib definition) add this
       // lib to the context:
       let old_lib_context = self.lib_context.clone();
-      if let Some(BindingExpr::Lib(lid, _, _)) = node.as_binding_expr() {
+      if let Some(BindingExpr::Lib(lid, _, _, _, _)) = node.as_binding_expr() {
         if current == 0 {
           self.debug_indented(&format!(
             "processing first child of {node:?}, adding {lid} to context"
@@ -1213,7 +1129,7 @@ where
       self.indent -= 1;
       // We need to get the result before restoring the context
       // println!("begin getting child {child:?}");
-      let start = Instant::now();
+      // let start = Instant::now();
       let child_res = self.get_from_memo(*child).clone();
       let child_res = if let Some(index) = child_res {
         self.all_exprs[*index].clone()
@@ -1280,8 +1196,6 @@ pub trait TypeInfo<T> {
   fn merge_types(a: &T, b: &T) -> T;
 }
 
-
-
 // 定义GetType trait
 pub trait ClassMatch {
   fn get_type(&self) -> String {
@@ -1309,7 +1223,8 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash + ToString> ClassMatch
   //   let hash_similar =
   //     hamming_distance(self.hash.cls_hash, other.hash.cls_hash) < 36;
   //   let subtree_similar =
-  //     jaccard_similarity(&self.hash.subtree_levels, &other.hash.subtree_levels)
+  //     jaccard_similarity(&self.hash.subtree_levels,
+  // &other.hash.subtree_levels)
   //       > 0.67;
   //   hash_similar && subtree_similar
   // }
@@ -1323,7 +1238,6 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash + ToString> ClassMatch
     self.hash.subtree_levels.clone()
   }
   fn get_pattern(&self, other: &Self) -> BitVec<u64, LocalBits> {
-    self.hash.subtree_levels.clone() & other.hash.subtree_levels.clone() 
+    self.hash.subtree_levels.clone() & other.hash.subtree_levels.clone()
   }
-
 }

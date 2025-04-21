@@ -60,14 +60,14 @@ pub trait Memoize {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExprMemoizer<Op> {
+struct ExprMemoizer<Op> {
   memo: HashMap<*const Expr<Op>, usize>,
   next_id: usize,
   checkpoints: Vec<HashMap<*const Expr<Op>, usize>>,
 }
 
 impl<Op> ExprMemoizer<Op> {
-  pub fn new() -> Self {
+  fn new() -> Self {
     Self {
       memo: HashMap::new(),
       next_id: 0,

@@ -1,8 +1,8 @@
+use crate::extract::beam_pareto::EmptyAnalysis;
 use crate::teachable::BindingExpr;
 
 use super::{super::teachable::Teachable, AstNode, Expr};
 use crate::ast_node::Arity;
-use crate::extract::beam::PartialLibCost;
 use crate::learn::Match;
 use crate::learn::normalize;
 use crate::schedule::Schedulable;
@@ -15,10 +15,6 @@ use std::{
   hash::Hash,
   sync::Arc,
 };
-// 为Op定义一个trait名为GetHash
-pub trait GetCost {
-  fn get_cost(&self) -> u32;
-}
 
 /// A partial expression. This is a generalization of an abstract syntax tree
 /// where subexpressions can be replaced by "holes", i.e., values of type `T`.
@@ -46,11 +42,11 @@ where
     + Hash
     + Schedulable,
   AstNode<Op>: Language,
-  T: Eq + Clone + Hash + Debug,
+  T: Eq + Clone + Hash + Debug + Default + Ord,
 {
   pub fn get_match(
     self,
-    egraph: &EGraph<AstNode<Op>, PartialLibCost>,
+    egraph: &EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
   ) -> Vec<Match> {
     let pattern: Pattern<_> = normalize(self.clone()).0.into();
     // A key in `cache` is a set of matches
@@ -76,21 +72,21 @@ where
     // 将Expr转化成RecExpr
     let rec_expr: RecExpr<AstNode<Op>> = expr.into();
     // 计算delay
-    let node_delay: Vec<usize> = Vec::new();
+    let mut node_delay: Vec<usize> = Vec::new();
     for node in &rec_expr {
       let op_delay = node.op_delay();
       let args_max_delay = node
         .args()
         .iter()
         .map(|id| {
-          let idx: usize = id.into();
+          let idx: usize = (*id).into();
           node_delay[idx]
         })
         .max()
         .unwrap_or(0);
       node_delay.push(op_delay + args_max_delay);
     }
-    node_delay.last().unwrap_or(0)
+    *node_delay.last().unwrap_or(&0)
   }
 }
 

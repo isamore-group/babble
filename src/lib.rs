@@ -19,35 +19,33 @@
 /// type of cost : "delay", "Match", "size"
 pub const COST: &str = "delay";
 /// whether to use rules
-pub const USE_RULES: bool = true ;
+pub const USE_RULES: bool = true;
 /// type of optimization : "random", "kd", "greedy"
 pub const MOD: &str = "greedy";
 
 pub mod ast_node;
+pub mod au_search;
 mod co_occurrence;
 mod dfta;
 pub mod extract;
 pub mod learn;
 pub mod rewrites;
 pub mod runner;
+pub mod schedule;
 pub mod sexp;
 pub mod simple_lang;
 pub mod teachable;
 pub mod util;
-pub mod au_search;
-pub mod schedule;
 
 pub use ast_node::{
-  combine_exprs, Arity, AstNode, Expr, PartialExpr, Precedence, Pretty,
-  Printable, Printer,
+  Arity, AstNode, Expr, PartialExpr, Precedence, Pretty, Printable, Printer,
+  combine_exprs,
 };
 pub use co_occurrence::{COBuilder, CoOccurrences};
 pub use learn::{
   DiscriminantEq, LearnedLibrary, LearnedLibraryBuilder, LibId, ParseLibIdError,
 };
-pub use runner::{
-  BabbleResult, BabbleRunner, BeamConfig, BeamRunner, ParetoConfig, ParetoRunner,
-};
+pub use runner::{ParetoConfig, ParetoRunner};
 pub use teachable::{
   BindingExpr, DeBruijnIndex, ParseDeBruijnIndexError, Teachable,
 };
