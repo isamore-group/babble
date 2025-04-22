@@ -16,20 +16,26 @@ use std::{
   num::ParseIntError,
   str::FromStr,
 };
-use crate::COST;
 use thiserror::Error;
 use crate::learn::{Match, AU};
+use crate::runner::LiblearnCost;
 
 
 /// 定义Vec<PatialExpr<Op, Var>>的类型
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VecPE<Op>{
     aus: Vec<AU<Op, (Id, Id)>>,
+    cost_config: LiblearnCost,
 }
 /// 为VecPE实现new_with_egraph
 impl <Op> VecPE<Op> {
     pub fn new(aus: Vec<AU<Op, (Id, Id)>>) -> Self {
-        Self { aus }
+        let cost_config = if aus.len() > 0 {
+            aus[0].liblearn_cost()
+        }else{
+            LiblearnCost::default()
+        };
+        Self { aus, cost_config }
     }
 }
 
@@ -45,28 +51,23 @@ impl <Op: Eq> PartialOrd for VecPE<Op> {
         // let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
         // let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
         // Some(self_delay.cmp(&other_delay))
-        match COST {
-            "Match" => {
+        match self.cost_config {
+            LiblearnCost::Match => {
                 // 将matches收集起来
                 let self_matched = self.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
                 let other_matched = other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
                 Some(self_matched.cmp(&other_matched))
             },
-            "size" => {
+            LiblearnCost::Size => {
                 let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
                 let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
                 Some(self_delay.cmp(&other_delay))
             },
-            "delay" => {
+            LiblearnCost::Delay => {
                 let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
                 let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
                 Some(self_size.cmp(&other_size))
-            }
-            _ => {
-                let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
-                let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
-                Some(self_delay.cmp(&other_delay))
-            }
+            },
         }
     }
 }
@@ -81,27 +82,22 @@ impl <Op: Eq> Ord for VecPE<Op> {
         // let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
         // let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
         // self_delay.cmp(&other_delay)
-        match COST {
-            "Match" => {
+        match self.cost_config {
+            LiblearnCost::Match => {
                 let self_matched = self.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
                 let other_matched = other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
                 self_matched.cmp(&other_matched)
             },
-            "size" => {
+            LiblearnCost::Size => {
                 let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
                 let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
                 self_size.cmp(&other_size)
             },
-            "delay" => {
+            LiblearnCost::Delay => {
                 let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
                 let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
                 self_delay.cmp(&other_delay)
             },
-            _ => {
-                let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
-                let other_size = other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
-                self_size.cmp(&other_size)
-            }
         }
     }
 }

@@ -10,6 +10,8 @@ use std::{
   marker::PhantomData,
   sync::Arc,
   time::{Duration, Instant},
+  fs::File,
+  io::{self, Write},
 };
 
 use egg::{
@@ -29,7 +31,6 @@ use crate::{
   },
 };
 
-use crate::USE_RULES;
 
 /// 定义一个trait名为OperationInfo,其中有三个函数，分别为get_libid/is_lib/get_const
 pub trait OprerationInfo {
@@ -189,11 +190,7 @@ where
     I: IntoIterator<Item = Rewrite<AstNode<Op>, PartialLibCost>>,
   {
     // 如果USE_RULES为false，将dsrs清空
-    let dsrs = if !USE_RULES {
-      Vec::new()
-    } else {
-      dsrs.into_iter().collect()
-    };
+    let dsrs = dsrs.into_iter().collect();
     Self {
       dsrs,
       config,
@@ -515,7 +512,7 @@ where
 }
 
 /// Configuration for beam search
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct ParetoConfig {
   /// The final beam size to use
   pub final_beams: usize,
@@ -533,6 +530,8 @@ pub struct ParetoConfig {
   pub strategy: f32,
   /// whether to add all types
   pub add_all_types: bool,
+  /// liblearn config
+  pub liblearn_config: LiblearnConfig,
 }
 
 impl Default for ParetoConfig {
@@ -546,7 +545,97 @@ impl Default for ParetoConfig {
       max_arity: None,
       strategy: 0.8,
       add_all_types: false,
+      liblearn_config: LiblearnConfig::default(),
     }
+  }
+}
+
+/// Config for Learning Library
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LiblearnCost {
+  /// type of cost : "delay", "Match", "size"
+  Match,
+  Delay, 
+  Size,
+}
+impl Default for LiblearnCost {
+  fn default() -> Self {
+    Self::Delay
+  } 
+}
+#[derive(Debug, Clone, Copy)]
+pub enum AUMergeMod {
+  /// type of AU merge : "random", "kd", "greedy", "catesian"
+  Random,
+  Kd,
+  Greedy,
+  Catesian,
+}
+#[derive(Debug, Clone, Copy)]
+pub enum EnumMode {
+  /// enumerate mode: "all", "pruning vanilla", "pruning gold", "cluster test"
+  All,
+  PruningVanilla,
+  PruningGold,
+  ClusterTest,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiblearnConfig {
+  /// type of cost : "delay", "Match", "size"
+  pub cost: LiblearnCost,
+  /// type of AU merge : "random", "kd", "greedy"
+  pub au_merge_mod: AUMergeMod,
+  /// enumerate mode: "all", "pruning vanilla", "pruning gold"
+  pub enum_mode: EnumMode,
+  /// file to log the liblearn time
+  pub log_file: String,
+}
+
+impl Default for LiblearnConfig {
+  fn default() -> Self {
+    Self {
+      cost: LiblearnCost::Delay,
+      au_merge_mod: AUMergeMod::Greedy,
+      enum_mode: EnumMode::All,
+      log_file: "result/liblearn.log".to_string(),
+    }
+  }
+}
+
+impl LiblearnConfig {
+  /// Create a new LiblearnConfig with the given parameters
+  pub fn new(
+    cost: LiblearnCost,
+    au_merge_mod: AUMergeMod,
+    enum_mode: EnumMode,
+    log_file: String,
+  ) -> Self {
+    Self {
+      cost,
+      au_merge_mod,
+      enum_mode,
+      log_file,
+    }
+  }
+
+  /// 初始化log文件
+  pub fn init_log(&self) -> io::Result<File> {
+    let mut file = File::create(&self.log_file)?;
+    writeln!(file, "liblearn log")?;
+    writeln!(file, "cost: {:?}", self.cost)?;
+    writeln!(file, "au_merge_mod: {:?}", self.au_merge_mod)?;
+    writeln!(file, "enum_mode: {:?}", self.enum_mode)?;
+    Ok(file)
+  }
+  /// Write a log entry to the log file
+  pub fn write_log(
+    &self,
+    file: &mut File,
+    message: &str,
+  ) -> io::Result<()> {
+    writeln!(file, "{}", message)?;
+    Ok(())
   }
 }
 
@@ -618,11 +707,7 @@ where
     I: IntoIterator<Item = Rewrite<AstNode<Op>, ISAXAnalysis<Op, T, LA, LD>>>,
   {
     // 如果USE_RULES为false，将dsrs清空
-    let dsrs = if !USE_RULES {
-      Vec::new()
-    } else {
-      dsrs.into_iter().collect()
-    };
+    let dsrs = dsrs.into_iter().collect();
     Self {
       dsrs,
       lib_rewrites,
@@ -729,6 +814,7 @@ where
       .max_arity(self.config.max_arity)
       // .with_co_occurs(co_occurs)
       .with_last_lib_id(max_lib_id)
+      .with_liblearn_config(self.config.liblearn_config.clone())
       .build(&aeg, self.lang_gain.clone());
     println!(
       "Found {} patterns in {}ms",
@@ -984,7 +1070,7 @@ where
     }
 
     
-    egraph.dot().to_png("target/foo.png").unwrap();
+    // egraph.dot().to_png("target/foo.png").unwrap();
 
     self.run_egraph(&roots, egraph)
   }
