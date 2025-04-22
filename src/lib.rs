@@ -15,14 +15,6 @@
 #![allow(clippy::non_ascii_literal)]
 #![allow(clippy::non_canonical_partial_ord_impl)]
 
-// use for simple test
-/// type of cost : "delay", "Match", "size"
-pub const COST: &str = "delay";
-/// whether to use rules
-pub const USE_RULES: bool = true;
-/// type of optimization : "random", "kd", "greedy"
-pub const MOD: &str = "greedy";
-
 pub mod ast_node;
 pub mod au_search;
 #[cfg(test)]

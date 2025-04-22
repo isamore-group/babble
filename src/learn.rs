@@ -14,6 +14,7 @@
 //! add the partial expression op(z1, ..., zn) to the set AU(a, b).
 //! If the set AU(a, b) is empty, we add to it the partial expression (a, b).
 // 使用随机数
+use crate::runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost};
 use crate::{
   COBuilder,
   ast_node::{Arity, AstNode, Expr, PartialExpr},
@@ -23,7 +24,6 @@ use crate::{
   schedule::{Schedulable, Scheduler},
   teachable::{BindingExpr, Teachable},
 };
-use crate::{COST, MOD};
 use bitvec::prelude::*;
 use egg::{
   Analysis, EGraph, Id, Language, Pattern, RecExpr, Rewrite, Searcher, Var,
@@ -115,6 +115,8 @@ pub struct AU<Op, T> {
   matches: Vec<Match>,
   /// delay
   delay: usize,
+  /// strategy for sort
+  liblearn_cost: LiblearnCost,
 }
 
 impl<Op, T> AU<Op, T> {
@@ -122,16 +124,19 @@ impl<Op, T> AU<Op, T> {
     expr: PartialExpr<Op, T>,
     matches: Vec<Match>,
     delay: usize,
+    liblearn_cost: LiblearnCost,
   ) -> Self {
     Self {
       expr,
       matches,
       delay,
+      liblearn_cost,
     }
   }
   pub fn new_with_expr(
     expr: PartialExpr<Op, T>,
     egraph: &EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
+    liblearn_cost: LiblearnCost,
   ) -> Self
   where
     Op: Clone
@@ -155,17 +160,24 @@ impl<Op, T> AU<Op, T> {
       expr,
       matches,
       delay,
+      liblearn_cost,
     }
   }
 
   pub fn expr(&self) -> &PartialExpr<Op, T> {
     &self.expr
   }
+
   pub fn matches(&self) -> &Vec<Match> {
     &self.matches
   }
+
   pub fn delay(&self) -> usize {
     self.delay
+  }
+
+  pub fn liblearn_cost(&self) -> LiblearnCost {
+    self.liblearn_cost
   }
 }
 // 为AU实现Ord，只对比matches的大小
@@ -174,11 +186,10 @@ impl<Op: Eq, T: Eq> PartialOrd for AU<Op, T> {
     // Some(self.matches.cmp(&other.matches))
     // Some(self.expr.size().cmp(&other.expr.size()))
     // Some(self.delay.cmp(&other.delay))
-    match COST {
-      "Match" => Some(self.matches.len().cmp(&other.matches.len())),
-      "size" => Some(self.expr.size().cmp(&other.expr.size())),
-      "delay" => Some(self.delay.cmp(&other.delay)),
-      _ => Some(self.expr.size().cmp(&other.expr.size())),
+    match self.liblearn_cost {
+      LiblearnCost::Match => Some(self.matches.len().cmp(&other.matches.len())),
+      LiblearnCost::Size => Some(self.expr.size().cmp(&other.expr.size())),
+      LiblearnCost::Delay => Some(self.delay.cmp(&other.delay)),
     }
   }
 }
@@ -188,13 +199,41 @@ impl<Op: Eq, T: Eq> Ord for AU<Op, T> {
     // self.matches.cmp(&other.matches)
     // self.expr.size().cmp(&other.expr.size())
     // self.delay.cmp(&other.delay)
-    match COST {
-      "Match" => self.matches.len().cmp(&other.matches.len()),
-      "size" => self.expr.size().cmp(&other.expr.size()),
-      "delay" => self.delay.cmp(&other.delay),
-      _ => self.expr.size().cmp(&other.expr.size()),
+    match self.liblearn_cost {
+      LiblearnCost::Match => self.matches.len().cmp(&other.matches.len()),
+      LiblearnCost::Size => self.expr.size().cmp(&other.expr.size()),
+      LiblearnCost::Delay => self.delay.cmp(&other.delay),
     }
   }
+}
+
+#[derive(Clone, Debug)]
+pub struct LearnedLibraryBuilder<Op>
+where
+  Op: Arity
+    + Clone
+    + Debug
+    + Ord
+    + Sync
+    + Send
+    + Display
+    + Hash
+    + DiscriminantEq
+    + 'static
+    + Teachable
+    + Schedulable,
+{
+  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
+  learn_trivial: bool,
+  learn_constants: bool,
+  max_arity: Option<usize>,
+  banned_ops: Vec<Op>,
+  roots: Vec<Id>,
+  co_occurences: Option<CoOccurrences>,
+  dfta: bool,
+  last_lib_id: usize,
+  clock_period: usize,
+  liblearn_config: LiblearnConfig,
 }
 
 impl<Op> Default for LearnedLibraryBuilder<Op>
@@ -224,35 +263,9 @@ where
       dfta: true,
       last_lib_id: 0,
       clock_period: 3,
+      liblearn_config: LiblearnConfig::default(),
     }
   }
-}
-#[derive(Clone, Debug)]
-pub struct LearnedLibraryBuilder<Op>
-where
-  Op: Arity
-    + Clone
-    + Debug
-    + Ord
-    + Sync
-    + Send
-    + Display
-    + Hash
-    + DiscriminantEq
-    + 'static
-    + Teachable
-    + Schedulable,
-{
-  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
-  learn_trivial: bool,
-  learn_constants: bool,
-  max_arity: Option<usize>,
-  banned_ops: Vec<Op>,
-  roots: Vec<Id>,
-  co_occurences: Option<CoOccurrences>,
-  dfta: bool,
-  last_lib_id: usize,
-  clock_period: usize,
 }
 
 // impl<Op: Ord+ Debug + Clone + Hash, A: egg::Analysis<AstNode<Op>>> Default
@@ -301,6 +314,7 @@ where
       dfta: true,
       last_lib_id: 0,
       clock_period: 3,
+      liblearn_config: LiblearnConfig::default(),
     }
   }
 }
@@ -382,6 +396,15 @@ where
     self
   }
 
+  #[must_use]
+  pub fn with_liblearn_config(
+    mut self,
+    liblearn_config: LiblearnConfig,
+  ) -> Self {
+    self.liblearn_config = liblearn_config;
+    self
+  }
+
   pub fn build<A>(
     self,
     egraph: &EGraph<AstNode<Op>, A>,
@@ -412,6 +435,7 @@ where
       self.dfta,
       self.last_lib_id,
       self.clock_period,
+      self.liblearn_config,
     )
   }
 }
@@ -461,6 +485,8 @@ where
   last_lib_id: usize,
   /// clock period used in scheduling
   clock_period: usize,
+  /// config for liblearn
+  liblearn_config: LiblearnConfig,
 }
 
 #[allow(unused)]
@@ -506,6 +532,7 @@ where
     dfta: bool,
     last_lib_id: usize,
     clock_period: usize,
+    liblearn_config: LiblearnConfig,
   ) -> Self
   where
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
@@ -524,7 +551,7 @@ where
       co_occurrences,
       last_lib_id,
       clock_period,
-      // pattern_cache: HashMap::new(),
+      liblearn_config: liblearn_config.clone(),
     };
 
     if !dfta {
@@ -544,10 +571,7 @@ where
         (a ^ b).count_ones()
       }
 
-      fn jaccard_similarity(
-        a: &BitVec<u64, Lsb0>,
-        b: &BitVec<u64, Lsb0>,
-      ) -> f64 {
+      fn jaccard_similarity(a: &u64, b: &u64) -> f64 {
         let intersection = (a.clone() & b.clone()).count_ones() as f64;
         let union = (a.clone() | b.clone()).count_ones() as f64;
         if union == 0.0 {
@@ -565,17 +589,14 @@ where
         a == b
       }
 
-      fn level_match(
-        a: &(u64, BitVec<u64, Lsb0>),
-        b: &(u64, BitVec<u64, Lsb0>),
-      ) -> bool {
+      fn level_match(a: &(u64, u64), b: &(u64, u64)) -> bool {
         let hash_similar = hamming_distance(a.0, b.0) < 36;
         let subtree_similar = jaccard_similarity(&a.1, &b.1) > 0.67;
         hash_similar && subtree_similar
       }
 
       fn group_by_type_ranges(
-        class_data: &[(&Id, String, u64, BitVec<u64, Lsb0>)],
+        class_data: &[(&Id, String, u64, u64)],
       ) -> Vec<(usize, usize)> {
         let mut ranges = vec![];
         let mut i = 0;
@@ -591,354 +612,269 @@ where
         }
         ranges
       }
+      // 初始化AU计算日志
+      let file = match liblearn_config.init_log() {
+        Ok(file) => file,
+        Err(_) => {
+          // 创建必要的目录
+          if let Some(parent) =
+            std::path::Path::new(&liblearn_config.log_file).parent()
+          {
+            if !parent.exists() {
+              if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("Unable to create log directory: {}", e);
+              }
+            }
+          }
 
-      let mode = 2;
-      if mode == 0 {
-        let eclass_pairs = classes
-          .iter()
-          .cartesian_product(classes.iter())
-          .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)))
-          .collect::<Vec<_>>();
-        let start = Instant::now();
-        for pair in eclass_pairs.clone() {
-          learned_lib.enumerate_over_egraph(egraph, pair);
-        }
-        let elapsed = start.elapsed();
-        println!("mode 0: enumerate over dfta takes {:?}", elapsed);
-      } else if mode == 1 {
-        let mut eclass_pairs = vec![];
-        let mut class_data: Vec<_> = classes
-          .iter()
-          .map(|cls| {
-            let ty = egraph[*cls].data.get_type();
-            let cls_hash = egraph[*cls].data.get_cls_hash();
-            let subtree_levels = egraph[*cls].data.get_subtree_levels();
-            (cls, ty, cls_hash, subtree_levels)
-          })
-          .collect();
-        class_data.sort_unstable_by_key(|(ecls, _, _, _)| usize::from(**ecls));
-        let mut matched_patterns: HashMap<BitVec<u64>, Vec<(usize, usize)>> =
-          HashMap::new();
-        let mut patterns = vec![];
-        for i in 0..class_data.len() {
-          for j in i..class_data.len() {
-            let (ecls1, ty1, cls_hash1, subtree_levels1) =
-              class_data[i].clone();
-            let (ecls2, ty2, cls_hash2, subtree_levels2) =
-              class_data[j].clone();
-            if !type_match(&ty1, &ty2) {
-              continue;
-            }
-            if !level_match(
-              &(cls_hash1, subtree_levels1),
-              &(cls_hash2, subtree_levels2),
-            ) {
-              continue;
-            }
-            if !learned_lib.co_occurrences.may_co_occur(*ecls1, *ecls2) {
-              continue;
-            }
-            let pattern = egraph[*ecls1].data.get_pattern(&egraph[*ecls2].data);
-            if pattern.count_ones() == 0 {
-              continue;
-            }
-            if matched_patterns.contains_key(&pattern) {
-              matched_patterns.get_mut(&pattern).unwrap().push((i, j));
-            } else {
-              matched_patterns.insert(pattern.clone(), vec![(i, j)]);
-              patterns.push(pattern.clone());
+          match std::fs::File::create(&liblearn_config.log_file) {
+            Ok(file) => file,
+            Err(e) => {
+              eprintln!("Unable to create log file {}", e);
+              panic!("Failed to create log file");
             }
           }
         }
-
-        patterns.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()));
-        println!("there are {} patterns", patterns.len());
-        let m = 30;
-        for i in 0..patterns.len() {
-          if i > m {
-            break;
-          }
-          let pattern = &patterns[i];
-          let mut pairs = matched_patterns.get(pattern).unwrap().clone();
-          pairs.sort_by(|a, b| b.cmp(a));
-          // 如果小于k个pair就直接插入，否则取前k个
-          let k = 10;
-          let id_pair = pairs
-            .clone()
-            .into_iter()
-            .map(|(i, j)| (classes[i], classes[j]))
+      };
+      let mut file = file;
+      match liblearn_config.enum_mode {
+        EnumMode::All => {
+          // 计算所有pair
+          let eclass_pairs = classes
+            .iter()
+            .cartesian_product(classes.iter())
+            .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)))
             .collect::<Vec<_>>();
-          if pairs.len() < k {
-            eclass_pairs.extend(id_pair);
-          } else {
-            // 取前两个
-            for i in 0..k {
-              eclass_pairs.push(id_pair[i]);
+          let start = Instant::now();
+          for pair in eclass_pairs.clone() {
+            learned_lib.enumerate_over_egraph(egraph, pair);
+          }
+          let elapsed = start.elapsed();
+          let _ = liblearn_config.write_log(
+            &mut file,
+            "Not need to calculate pruned pairs, so use 0s",
+          );
+          let _ = liblearn_config.write_log(
+            &mut file,
+            format!("Enumerate over dfta takes {:?}", elapsed).as_str(),
+          );
+        }
+        EnumMode::PruningVanilla => {
+          // 无剪枝优化+并行处理+模块分组，仅有针对pair的筛选
+          let mut eclass_pairs = vec![];
+          let mut class_data: Vec<_> = classes
+            .iter()
+            .map(|cls| {
+              let ty = egraph[*cls].data.get_type();
+              let cls_hash = egraph[*cls].data.get_cls_hash();
+              let subtree_levels = egraph[*cls].data.get_subtree_levels();
+              (cls, ty, cls_hash, subtree_levels)
+            })
+            .collect();
+          class_data
+            .sort_unstable_by_key(|(ecls, _, _, _)| usize::from(**ecls));
+          // 用一个二维数组来存储pairs的配对情况
+          for i in 0..class_data.len() {
+            for j in i..class_data.len() {
+              let (ecls1, ty1, cls_hash1, subtree_levels1) =
+                class_data[i].clone();
+              let (ecls2, ty2, cls_hash2, subtree_levels2) =
+                class_data[j].clone();
+              if !level_match(
+                &(cls_hash1, subtree_levels1),
+                &(cls_hash2, subtree_levels2),
+              ) {
+                continue;
+              }
+              if !learned_lib.co_occurrences.may_co_occur(*ecls1, *ecls2) {
+                continue;
+              }
+              if !type_match(&ty1, &ty2) {
+                continue;
+              }
+              eclass_pairs.push((*ecls1, *ecls2));
+            }
+          }
+        }
+        EnumMode::PruningGold => {
+          // 剪枝优化+并行处理
+          let mut class_data: Vec<_> = classes
+            .iter()
+            .map(|cls| {
+              let ty = egraph[*cls].data.get_type();
+              let cls_hash = egraph[*cls].data.get_cls_hash();
+              let subtree_levels = egraph[*cls].data.get_subtree_levels();
+              (cls, ty, cls_hash, subtree_levels)
+            })
+            .collect();
+          class_data.sort_unstable_by_key(|(ecls, ty, _, _)| {
+            (ty.clone(), usize::from(**ecls))
+          });
+          // for data in class_data.clone() {
+          //   println!("Id: {}, Type: {}", data.0, data.1);
+          // }
+          let ranges = group_by_type_ranges(&class_data);
+          // 用一个二维数组来存储pairs的配对情况
+          let enum_start = Instant::now();
+          let all_pairs: Vec<(Id, Id)> = ranges
+            .into_par_iter()
+            .flat_map(|(start, end)| {
+              let mut local_pairs = vec![];
+
+              for i in start..end {
+                let (ecls1, _, cls_hash1, subtree_levels1) = &class_data[i];
+                let popcount1 = cls_hash1.count_ones();
+                let subtree_cnt1 = subtree_levels1.count_ones();
+                for j in i..end {
+                  let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
+                  let popcount2 = cls_hash2.count_ones();
+                  if (popcount1 as i32 - popcount2 as i32).abs() >= 36 {
+                    continue; // 汉明距离不可能<36
+                  }
+
+                  let subtree_cnt2 = subtree_levels2.count_ones();
+                  let all_one = (subtree_levels1.clone()
+                    | subtree_levels2.clone())
+                  .count_ones();
+                  if (subtree_cnt1.max(subtree_cnt2) as f64)
+                    < (0.67 * all_one as f64)
+                  {
+                    continue; // Jaccard相似度不可能>0.67
+                  }
+                  if !level_match(
+                    &(*cls_hash1, subtree_levels1.clone()),
+                    &(*cls_hash2, subtree_levels2.clone()),
+                  ) {
+                    continue;
+                  }
+
+                  if !learned_lib.co_occurrences.may_co_occur(**ecls1, **ecls2)
+                  {
+                    continue;
+                  }
+
+                  local_pairs.push((**ecls1, **ecls2));
+                }
+              }
+
+              local_pairs
+            })
+            .collect();
+          let eclass_pairs = all_pairs.clone();
+          let _ = liblearn_config.write_log(
+            &mut file,
+            format!("use {:?} to collect pairs", enum_start.elapsed()).as_str(),
+          );
+          let start = Instant::now();
+          for pair in eclass_pairs.clone() {
+            learned_lib.enumerate_over_egraph(egraph, pair);
+          }
+          let elapsed = start.elapsed();
+          let _ = liblearn_config.write_log(
+            &mut file,
+            format!("enumerate over dfta takes {:?}", elapsed).as_str(),
+          );
+        }
+        EnumMode::ClusterTest => {
+          let mut eclass_pairs = vec![];
+          let prune_start = Instant::now();
+          let mut class_data: Vec<_> = classes
+            .iter()
+            .map(|cls| {
+              let ty = egraph[*cls].data.get_type();
+              let cls_hash = egraph[*cls].data.get_cls_hash();
+              let subtree_levels = egraph[*cls].data.get_subtree_levels();
+              (cls, ty, cls_hash, subtree_levels)
+            })
+            .collect();
+          class_data
+            .sort_unstable_by_key(|(ecls, _, _, _)| usize::from(**ecls));
+          let mut matched_patterns: HashMap<BitVec<u64>, Vec<(usize, usize)>> =
+            HashMap::new();
+          let mut patterns = vec![];
+          for i in 0..class_data.len() {
+            for j in i..class_data.len() {
+              let (ecls1, ty1, cls_hash1, subtree_levels1) =
+                class_data[i].clone();
+              let (ecls2, ty2, cls_hash2, subtree_levels2) =
+                class_data[j].clone();
+              if !type_match(&ty1, &ty2) {
+                continue;
+              }
+              if !level_match(
+                &(cls_hash1, subtree_levels1),
+                &(cls_hash2, subtree_levels2),
+              ) {
+                continue;
+              }
+              if !learned_lib.co_occurrences.may_co_occur(*ecls1, *ecls2) {
+                continue;
+              }
+              let pattern =
+                egraph[*ecls1].data.get_pattern(&egraph[*ecls2].data);
+              if pattern.count_ones() == 0 {
+                continue;
+              }
+              if matched_patterns.contains_key(&pattern) {
+                matched_patterns.get_mut(&pattern).unwrap().push((i, j));
+              } else {
+                matched_patterns.insert(pattern.clone(), vec![(i, j)]);
+                patterns.push(pattern.clone());
+              }
             }
           }
 
-          // println!("pattern: {:?}", pattern);
-          // println!("matched patterns: {:?}", matched_patterns.get(pattern));
-        }
-        println!(
-          "we need to calculate {} pairs of eclasses",
-          eclass_pairs.len()
-        );
-        let start = Instant::now();
-        for (ecls1, ecls2) in eclass_pairs {
-          learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
-        }
-        let elapsed = start.elapsed();
-        println!("mode 1: enumerate over dfta takes {:?}", elapsed);
-      } else {
-        // LSH参数配置（可通过实验调整）
-        //   const HAMMING_BANDS: usize = 6;     // 汉明距离分带数
-        //   const HAMMING_BAND_BITS: usize = 10; //
-        // 每带位数（6*10=60位，剩余4位处理见代码）
-        //   const JACCARD_THRESH: f32 = 0.67;
-        //   const JACCARD_BLOCKS: usize = 4;    // Jaccard分块数
-
-        //   fn construct_bucket_keys(
-        //       hash: u64,
-        //       bitvec: &BitVec<u64, Lsb0>
-        //   ) -> (Vec<u64>, Vec<u64>) {
-        //       // 汉明距离LSH键（分带处理）
-        //       let hamming_keys = (0..HAMMING_BANDS)
-        //           .map(|band| {
-        //               let shift = band * HAMMING_BAND_BITS;
-        //               let mask = (1 << HAMMING_BAND_BITS) - 1;
-        //               // 处理最后4位的特殊情形
-        //               let bits = if band == HAMMING_BANDS - 1 {
-        //                   (hash >> shift) | ((hash & 0xF) <<
-        // (HAMMING_BAND_BITS - 4))               } else {
-        //                   (hash >> shift) & mask
-        //               };
-        //               bits
-        //           })
-        //           .collect();
-
-        //       // Jaccard LSH键（块哈希）
-        //       let jaccard_keys = (0..JACCARD_BLOCKS)
-        //           .map(|block| {
-        //               let mut block_hash = 0u64;
-        //               let bits_per_block = 64 / JACCARD_BLOCKS;
-        //               for i in 0..bits_per_block {
-        //                   let pos = block * bits_per_block + i;
-        //                   if pos < 64 && bitvec[pos] {
-        //                       block_hash |= 1 << i;
-        //                   }
-        //               }
-        //               block_hash
-        //           })
-        //           .collect();
-
-        //       (hamming_keys, jaccard_keys)
-        //   }
-        //   let enum_start = Instant::now();
-        //   let class_data: Vec<_> = classes
-        //       .par_iter()
-        //       .map(|cls| {
-        //           let data = &egraph[*cls].data;
-        //           let ty = data.get_type();
-        //           let cls_hash = data.get_cls_hash();
-        //           let subtree = data.get_subtree_levels();
-
-        //           // 构造LSH桶键
-        //           let (hamming_keys, jaccard_keys) =
-        // construct_bucket_keys(cls_hash, &subtree);
-
-        //           // 计算快速过滤标记
-        //           let popcount = cls_hash.count_ones();
-        //           let jaccard_approx = subtree.count_ones() as f32 / 64.0;
-
-        //           (
-        //               *cls,
-        //               ty.clone(),
-        //               cls_hash,
-        //               subtree,
-        //               popcount,
-        //               hamming_keys,
-        //               jaccard_keys,
-        //               jaccard_approx
-        //           )
-        //       })
-        //       .collect();
-
-        //   // 并行分组（类型 + 汉明带键 + Jaccard块键）
-        //   let type_groups = class_data
-        //       .into_par_iter()
-        //       .fold(
-        //           || HashMap::new(),
-        //           |mut map, item| {
-        //               // 为每个可能的LSH组合创建子键
-        //               for h_key in &item.5 {
-        //                   for j_key in &item.6 {
-        //                       let full_key = (item.1.clone(), *h_key,
-        // *j_key);                       map.entry(full_key)
-        //                         .or_insert_with(Vec::new)
-        //                         .push((
-        //                             item.0,
-        //                             item.2,
-        //                             item.3.clone(),
-        //                             item.4,
-        //                             item.7
-        //                         ));
-        //                   }
-        //               }
-        //               map
-        //           }
-        //       )
-        //       .reduce(
-        //           || HashMap::new(),
-        //           |mut a, b| {
-        //               for (k, v) in b {
-        //                   a.entry(k).or_insert_with(Vec::new).extend(v);
-        //               }
-        //               a
-        //           }
-        //       );
-
-        //   let all_pairs: Vec<(Id, Id)> = type_groups
-        //       .into_par_iter()
-        //       .flat_map(|(_, group)| {
-        //           let mut local_pairs =
-        // Vec::with_capacity(group.len().pow(2));
-
-        //           // 两层过滤
-        //           for i in 0..group.len() {
-        //               let a = &group[i];
-        //               for j in i..group.len() {
-        //                   let b = &group[j];
-
-        //                   // 快速过滤层
-        //                   if (a.3 as i32 - b.3 as i32).abs() >= 36
-        //                       || (a.4 < JACCARD_THRESH * 0.9 && b.4 < JACCARD_THRESH * 0.9)
-        //                   {
-        //                       continue;
-        //                   }
-
-        //                   // 精确验证层
-        //                   let hamming = (a.1 ^ b.1).count_ones();
-        //                   let intersect = (a.2.clone() &
-        // b.2.clone()).count_ones();                   let union =
-        // (a.2.clone() | b.2.clone()).count_ones();
-
-        //                   if hamming < 36 && (intersect as f32 / union as
-        // f32) > JACCARD_THRESH {
-        // local_pairs.push((a.0, b.0));                   }
-        //               }
-        //           }
-        //           local_pairs
-        //       })
-        //       .collect();
-        // let eclass_pairs = all_pairs; // 原来的 vec
-
-        // // 外层循环按类型分组处理
-        // let mut i = 0;
-        // while i < class_data.len() {
-        //     // 找到当前类型分组的结束位置
-        //     let current_ty = &class_data[i].1;
-        //     let ty_end = class_data[i..]
-        //         .iter()
-        //         .position(|(_, ty, _, _)| ty != current_ty)
-        //         .map(|pos| i + pos)
-        //         .unwrap_or(class_data.len());
-
-        //     // 内层循环处理同一类型组
-        //     for i_in_ty in i..ty_end {
-        //         let (ecls1, _, cls_hash1, subtree_levels1) =
-        // &class_data[i_in_ty];
-
-        //         // 检查同一哈希分组内的元素
-        //         for j in i_in_ty..ty_end {
-        //             let (ecls2, _, cls_hash2, subtree_levels2) =
-        // &class_data[j];             if !level_match(
-        //                 &(*cls_hash1, subtree_levels1.clone()),
-        //                 &(*cls_hash2, subtree_levels2.clone()),
-        //             ) {
-        //                 continue;
-        //             }
-
-        //             // 调整检查顺序：先查快速失败条件
-        //             if !learned_lib.co_occurrences.may_co_occur(**ecls1,
-        // **ecls2) {                 continue;
-        //             }
-
-        //             // 类型已通过排序保证相同，无需检查
-        //             eclass_pairs.push((**ecls1, **ecls2));
-        //         }
-        //     }
-
-        //     i = ty_end;
-        // }
-        let mut class_data: Vec<_> = classes
-          .iter()
-          .map(|cls| {
-            let ty = egraph[*cls].data.get_type();
-            let cls_hash = egraph[*cls].data.get_cls_hash();
-            let subtree_levels = egraph[*cls].data.get_subtree_levels();
-            (cls, ty, cls_hash, subtree_levels)
-          })
-          .collect();
-        class_data.sort_unstable_by_key(|(ecls, ty, _, _)| {
-          (ty.clone(), usize::from(**ecls))
-        });
-        let ranges = group_by_type_ranges(&class_data);
-        // 用一个二维数组来存储pairs的配对情况
-        let enum_start = Instant::now();
-        let all_pairs: Vec<(Id, Id)> = ranges
-          .into_par_iter()
-          .flat_map(|(start, end)| {
-            let mut local_pairs = vec![];
-
-            for i in start..end {
-              let (ecls1, _, cls_hash1, subtree_levels1) = &class_data[i];
-              let popcount1 = cls_hash1.count_ones();
-              let density1 = subtree_levels1.count_ones() as f32 / 64.0;
-              for j in i..end {
-                let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
-                let popcount2 = cls_hash2.count_ones();
-                if (popcount1 as i32 - popcount2 as i32).abs() >= 36 {
-                  continue; // 汉明距离不可能<36
-                }
-
-                let density2 = subtree_levels2.count_ones() as f32 / 64.0;
-                if density1.max(density2) < 0.67 {
-                  continue; // Jaccard相似度不可能>0.67
-                }
-                if !level_match(
-                  &(*cls_hash1, subtree_levels1.clone()),
-                  &(*cls_hash2, subtree_levels2.clone()),
-                ) {
-                  continue;
-                }
-
-                if !learned_lib.co_occurrences.may_co_occur(**ecls1, **ecls2) {
-                  continue;
-                }
-
-                local_pairs.push((**ecls1, **ecls2));
+          patterns.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()));
+          let m = 30;
+          for i in 0..patterns.len() {
+            if i > m {
+              break;
+            }
+            let pattern = &patterns[i];
+            let mut pairs = matched_patterns.get(pattern).unwrap().clone();
+            pairs.sort_by(|a, b| b.cmp(a));
+            // 如果小于k个pair就直接插入，否则取前k个
+            let k = 10;
+            let id_pair = pairs
+              .clone()
+              .into_iter()
+              .map(|(i, j)| (classes[i], classes[j]))
+              .collect::<Vec<_>>();
+            if pairs.len() < k {
+              eclass_pairs.extend(id_pair);
+            } else {
+              // 取前两个
+              for i in 0..k {
+                eclass_pairs.push(id_pair[i]);
               }
             }
 
-            local_pairs
-          })
-          .collect();
-        let eclass_pairs = all_pairs.clone();
-        println!("use {}s to enumerate pairs", enum_start.elapsed().as_secs());
-        let start = Instant::now();
-        for pair in eclass_pairs.clone() {
-          learned_lib.enumerate_over_egraph(egraph, pair);
+            // println!("pattern: {:?}", pattern);
+            // println!("matched patterns: {:?}",
+            // matched_patterns.get(pattern));
+          }
+          let _ = liblearn_config.write_log(
+            &mut file,
+            format!("use {:?} to collect pairs", prune_start.elapsed())
+              .as_str(),
+          );
+          let enum_start = Instant::now();
+          for (ecls1, ecls2) in eclass_pairs {
+            learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
+          }
+          let _ = liblearn_config.write_log(
+            &mut file,
+            format!("enumerate over dfta takes {:?}", enum_start.elapsed())
+              .as_str(),
+          );
         }
-        let elapsed = start.elapsed();
-        println!("mode 2: enumerate over dfta takes {:?}", elapsed);
-      }
+      };
       println!(
         "we all need to calculate {} pairs of eclasses",
         learned_lib.aus_by_state.len()
       );
-      // println!("{:?}", learned_lib.aus_by_state);
     }
+
     // 如果learned_lib中的aus数量大于500，就从排序结果中随机选取500个
     // if learned_lib.aus.len() > 500 {
     //   let mut aus = learned_lib.aus.iter().cloned().collect::<Vec<_>>();
@@ -946,6 +882,7 @@ where
     //   let aus = aus.into_iter().take(500).collect::<BTreeSet<_>>();
     //   learned_lib.aus = aus;
     // }
+
     if learned_lib.aus.len() > 500 {
       let aus = learned_lib.aus.iter().collect::<Vec<_>>();
       let mut sampled_aus = BTreeSet::new();
@@ -1031,7 +968,12 @@ where
     let mut new_aus = BTreeSet::new();
     for au in &self.aus {
       let new_au = f(&au.expr);
-      new_aus.insert(AU::new(new_au, au.matches.clone(), au.delay));
+      new_aus.insert(AU::new(
+        new_au,
+        au.matches.clone(),
+        au.delay,
+        self.liblearn_config.cost.clone(),
+      ));
     }
     self.aus = new_aus;
   }
@@ -1112,7 +1054,14 @@ where
     }
     self.aus = cache
       .into_iter()
-      .map(|(matches, expr)| AU::new(expr, matches, default_delay))
+      .map(|(matches, expr)| {
+        AU::new(
+          expr,
+          matches,
+          default_delay,
+          self.liblearn_config.cost.clone(),
+        )
+      })
       .collect();
   }
 
@@ -1167,7 +1116,9 @@ where
     // 将cache中的模式转换为AU
     let result = cache
       .into_iter()
-      .map(|(matches, (expr, delay))| AU::new(expr, matches, delay))
+      .map(|(matches, (expr, delay))| {
+        AU::new(expr, matches, delay, self.liblearn_config.cost.clone())
+      })
       .collect();
     result
   }
@@ -1234,7 +1185,11 @@ where
           same = true;
           if inputs.is_empty() {
             let new_au = PartialExpr::from(AstNode::leaf(op1.clone()));
-            aus.insert(AU::new_with_expr(new_au, &self.egraph));
+            aus.insert(AU::new_with_expr(
+              new_au,
+              &self.egraph,
+              self.liblearn_config.cost.clone(),
+            ));
           } else {
             // Recursively enumerate the inputs to this rule.
             for &input in inputs {
@@ -1259,11 +1214,11 @@ where
               });
               let au_range: Vec<Vec<AU<Op, (Id, Id)>>> =
                 au_range.collect::<Vec<_>>();
-              let new_au = match MOD {
-                "random" => get_random_aus(au_range, 1000),
-                "kd" => kd_random_aus(au_range, 1000),
-                "greedy" => greedy_aus(au_range),
-                _ => greedy_aus(au_range),
+              let new_au = match self.liblearn_config.au_merge_mod {
+                AUMergeMod::Random => get_random_aus(au_range, 1000),
+                AUMergeMod::Kd => kd_random_aus(au_range, 1000),
+                AUMergeMod::Greedy => greedy_aus(au_range),
+                AUMergeMod::Catesian => greedy_aus(au_range),
               };
               // get_random_aus(au_range, 10)
               //beam_search_aus(au_range, 1000, 2000)
@@ -1319,7 +1274,11 @@ where
 
     if same && different {
       let new_expr = PartialExpr::Hole(state);
-      aus.insert(AU::new_with_expr(new_expr, &self.egraph));
+      aus.insert(AU::new_with_expr(
+        new_expr,
+        &self.egraph,
+        self.liblearn_config.cost.clone(),
+      ));
     }
     self.filter_aus(aus, state);
   }
@@ -1360,7 +1319,11 @@ where
           if args1.is_empty() && args2.is_empty() {
             // FIXME: is that right?
             let new_expr = AstNode::leaf(op1.clone()).into();
-            aus.insert(AU::new_with_expr(new_expr, &self.egraph));
+            aus.insert(AU::new_with_expr(
+              new_expr,
+              &self.egraph,
+              self.liblearn_config.cost.clone(),
+            ));
           } else {
             info!("Processing op1 {:?} and op2 {:?}", op1, op2);
             // recursively enumerate the inputs to this rule.
@@ -1381,11 +1344,11 @@ where
             });
             info!("get_range_aus");
             let au_range = new_aus.collect::<Vec<_>>();
-            let new_aus = match MOD {
-              "random" => get_random_aus(au_range, 1000),
-              "kd" => kd_random_aus(au_range, 1000),
-              "greedy" => greedy_aus(au_range),
-              _ => {
+            let new_aus = match self.liblearn_config.au_merge_mod {
+              AUMergeMod::Random => get_random_aus(au_range, 1000),
+              AUMergeMod::Kd => kd_random_aus(au_range, 1000),
+              AUMergeMod::Greedy => greedy_aus(au_range),
+              AUMergeMod::Catesian => {
                 // 笛卡尔积
                 // 首先取出所有的expr
                 let new_exprs = au_range.into_iter().map(|inputs| {
@@ -1437,7 +1400,11 @@ where
 
     if same && different {
       let new_expr = PartialExpr::Hole(state);
-      aus.insert(AU::new_with_expr(new_expr, &self.egraph));
+      aus.insert(AU::new_with_expr(
+        new_expr,
+        &self.egraph,
+        self.liblearn_config.cost.clone(),
+      ));
     }
 
     self.filter_aus(aus, state);
@@ -1450,7 +1417,11 @@ where
   ) {
     if aus.is_empty() {
       let new_expr = PartialExpr::Hole(state);
-      aus.insert(AU::new_with_expr(new_expr, &self.egraph));
+      aus.insert(AU::new_with_expr(
+        new_expr,
+        &self.egraph,
+        self.liblearn_config.cost.clone(),
+      ));
     } else {
       // If the two e-classes cannot co-occur in the same program, do not
       // produce an AU for them! We filter out the anti-unifications which
@@ -1507,7 +1478,12 @@ where
             // println!("learn_trivial: {}, num_vars < au.num_holes(): {},
             // au.num_nodes() > num_vars: {}", learn_trivial, num_vars <
             // au.num_holes(), au.num_nodes() > num_vars);
-            Some(AU::new(au, matches, delay))
+            Some(AU::new(
+              au,
+              matches,
+              delay,
+              self.liblearn_config.cost.clone(),
+            ))
           } else {
             None
           }

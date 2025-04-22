@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use crate::ast_node::{AstNode, Expr, Pretty};
 use crate::extract::beam_pareto::ISAXAnalysis;
-use crate::runner::{BabbleParetoRunner, ParetoConfig, ParetoRunner};
+use crate::runner::{
+  BabbleParetoRunner, LiblearnConfig, ParetoConfig, ParetoRunner,
+};
 use crate::simple_lang::{SimpleOp, SimpleType};
 use egg::{RecExpr, Rewrite};
 
@@ -39,6 +41,8 @@ fn beam_pareto_test() {
     max_arity: None,
     strategy: 0.8,
     clock_period: 10,
+    add_all_types: false,
+    liblearn_config: LiblearnConfig::default(),
   };
 
   let exprs = vec![create_expr(1, 2), create_expr(3, 4)];
@@ -51,7 +55,7 @@ fn beam_pareto_test() {
   > = vec![];
   let lib_rewrites = HashMap::new();
 
-  let runner = ParetoRunner::new(dsrs, lib_rewrites, config);
+  let runner = ParetoRunner::new(dsrs, lib_rewrites, config, HashMap::new());
   let result = runner.run_multi(exprs);
   println!("Final cost: {:#?}", result.final_cost);
   // println!("Compression ratio: {:.2}", result.compression_ratio());

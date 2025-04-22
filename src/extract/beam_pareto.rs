@@ -434,6 +434,8 @@ where
   /// larger amount will be pruned.
   lps: usize,
   strategy: f32,
+  /// use a TypeMap to get result map
+  type_info_map: HashMap<(String, Vec<T>), T>,
   /// Marker to indicate that this struct uses the Op type parameter
   op_phantom: PhantomData<Op>,
   ty_phantom: PhantomData<T>,
@@ -449,12 +451,14 @@ where
     inter_beam: usize,
     lps: usize,
     strategy: f32,
+    type_info_map: HashMap<(String, Vec<T>), T>,
   ) -> ISAXAnalysis<Op, T> {
     ISAXAnalysis {
       beam_size,
       inter_beam,
       lps,
       strategy,
+      type_info_map,
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
     }
@@ -467,6 +471,7 @@ where
       inter_beam: 0,
       lps: 1,
       strategy: 1.0,
+      type_info_map: HashMap::new(),
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
     }
@@ -675,7 +680,7 @@ where
       .iter()
       .map(|&child| egraph[child].data.ty.clone())
       .collect();
-    let ty = enode.get_rtype(&child_types);
+    let ty = enode.get_rtype(&egraph.analysis.type_info_map, &child_types);
     // 计算子节点哈希
     let mut child_hashes = enode
       .children()
@@ -1192,7 +1197,11 @@ where
 
 // 定义trait TypeInfo
 pub trait TypeInfo<T> {
-  fn get_rtype(&self, child_types: &Vec<T>) -> T;
+  fn get_rtype(
+    &self,
+    type_info_map: &HashMap<(String, Vec<T>), T>,
+    child_types: &Vec<T>,
+  ) -> T;
   fn merge_types(a: &T, b: &T) -> T;
 }
 
@@ -1204,8 +1213,8 @@ pub trait ClassMatch {
   fn get_cls_hash(&self) -> u64 {
     0
   }
-  fn get_subtree_levels(&self) -> BitVec<u64, Lsb0> {
-    bitvec!(u64, Lsb0; 0; 64)
+  fn get_subtree_levels(&self) -> u64 {
+    0
   }
   fn get_pattern(&self, _other: &Self) -> BitVec<u64, Lsb0> {
     bitvec!(u64, Lsb0; 0; 64)
@@ -1234,8 +1243,8 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash + ToString> ClassMatch
   fn get_cls_hash(&self) -> u64 {
     self.hash.cls_hash
   }
-  fn get_subtree_levels(&self) -> BitVec<u64, Lsb0> {
-    self.hash.subtree_levels.clone()
+  fn get_subtree_levels(&self) -> u64 {
+    self.hash.subtree_levels.load()
   }
   fn get_pattern(&self, other: &Self) -> BitVec<u64, LocalBits> {
     self.hash.subtree_levels.clone() & other.hash.subtree_levels.clone()

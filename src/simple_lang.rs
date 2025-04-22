@@ -2,6 +2,7 @@
 //! babble.
 
 use std::{
+  collections::HashMap,
   convert::Infallible,
   fmt::{self, Display, Formatter},
   str::FromStr,
@@ -16,7 +17,7 @@ use crate::{
   ast_node::{Arity, AstNode, Memoize, Printable},
   extract::beam_pareto::TypeInfo,
   learn::LibId,
-  runner::LibOperation,
+  runner::OperationInfo,
   schedule::Schedulable,
   teachable::{BindingExpr, DeBruijnIndex, Teachable},
 };
@@ -298,7 +299,7 @@ impl DiscriminantEq for SimpleOp {
   }
 }
 
-impl LibOperation for SimpleOp {
+impl OperationInfo for SimpleOp {
   fn get_libid(&self) -> usize {
     match self {
       Self::Lib(libid, _, _) => (*libid).0,
@@ -311,6 +312,17 @@ impl LibOperation for SimpleOp {
       Self::Lib(_, _, _) => true,
       _ => false,
     }
+  }
+
+  fn get_const(&self) -> Option<(i64, u32)> {
+    match self {
+      Self::Const(c) => Some((*c, 0)),
+      _ => None,
+    }
+  }
+
+  fn make_const(const_value: (i64, u32)) -> Self {
+    Self::Const(const_value.0)
   }
 }
 
@@ -340,21 +352,17 @@ impl Default for SimpleType {
 }
 
 impl TypeInfo<SimpleType> for AstNode<SimpleOp> {
-  fn get_rtype(&self, child_types: &Vec<SimpleType>) -> SimpleType {
-    let child_max_width = child_types
-      .iter()
-      .map(|t| match t {
-        SimpleType::IntT(w) => *w,
-        SimpleType::Unknown => 0,
-      })
-      .max()
-      .unwrap_or(0);
-    if child_max_width == 0 {
-      SimpleType::Unknown
-    } else {
-      SimpleType::IntT(child_max_width)
-    }
+  fn get_rtype(
+    &self,
+    type_info_map: &HashMap<(String, Vec<SimpleType>), SimpleType>,
+    child_types: &Vec<SimpleType>,
+  ) -> SimpleType {
+    type_info_map
+      .get(&(self.operation().to_string(), child_types.clone()))
+      .cloned()
+      .unwrap_or_else(|| SimpleType::Unknown)
   }
+
   fn merge_types(a: &SimpleType, b: &SimpleType) -> SimpleType {
     let a = match a {
       SimpleType::IntT(a) => *a,
