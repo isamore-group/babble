@@ -17,10 +17,7 @@ use log::{debug, info};
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
   Printable, Teachable,
-  extract::{
-    apply_libs_pareto,
-    beam_pareto::{ISAXAnalysis, TypeInfo},
-  },
+  extract::beam_pareto::{ISAXAnalysis, LibExtractor, TypeInfo},
   schedule::Schedulable,
 };
 
@@ -314,12 +311,12 @@ where
       dedup_time.elapsed().as_millis()
     );
 
-    println!("learned {} libs", learned_lib.size());
+    // println!("learned {} libs", learned_lib.size());
     // for lib in &learned_lib.libs().collect::<Vec<_>>() {
     //   println!("{}", lib);
     // }
 
-    info!("Adding libs and running beam search... ");
+    println!("Adding libs and running beam search... ");
     let extract_time = Instant::now();
     let lib_rewrite_time = Instant::now();
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
@@ -362,7 +359,7 @@ where
       if lib.0.0 < max_lib_id {
         // 从self.lib_rewrites中取出
         // 打印self.lib_rewrites
-        // println!("{}: {:?}", lib.0.0, self.lib_rewrites);
+        println!("{}: {:?}", lib.0.0, self.lib_rewrites);
         chosen_rewrites.push(self.lib_rewrites.get(&lib.0.0).unwrap().clone());
         rewrites_map
           .insert(lib.0.0, self.lib_rewrites.get(&lib.0.0).unwrap().clone());
@@ -379,13 +376,27 @@ where
     );
 
     let ex_time = Instant::now();
-    info!("Extracting... ");
-    let (best, final_cost) = apply_libs_pareto(
-      aeg.clone(),
-      roots,
-      &chosen_rewrites,
+    println!("Rewriting");
+    let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
+      0,
+      0,
+      0,
       self.config.strategy,
-    );
+    ))
+    .with_egraph(aeg)
+    .with_iter_limit(1)
+    .with_time_limit(timeout)
+    .with_node_limit(1_000_000)
+    .run(chosen_rewrites.iter())
+    .egraph;
+    println!("Rewriting done");
+    let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+
+    let mut extractor = LibExtractor::new(&egraph, self.config.strategy);
+    println!("Extracting");
+    let best = extractor.best(root);
+    let final_cost = extractor.cost(&best);
+    println!("Extracting done");
 
     println!("extracting using {}s", extract_time.elapsed().as_secs());
     // Lifting the lib will result in incorrect cost

@@ -1683,7 +1683,9 @@ where
   // Calculate the gain and the cost of the au
   let expr: Expr<Op> = au.clone().try_into().unwrap();
   let rec_expr: RecExpr<AstNode<Op>> = expr.into();
+  // println!("rec_expr: {:?}", rec_expr);
   let (gain, cost) = Scheduler::new(clock_period).asap_schedule(&rec_expr);
+  // println!("gain: {}, cost: {}", gain, cost);
 
   PartialExpr::Node(BindingExpr::Lib(ix, fun, body, gain, cost).into())
 }

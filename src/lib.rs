@@ -25,6 +25,8 @@ pub const MOD: &str = "greedy";
 
 pub mod ast_node;
 pub mod au_search;
+#[cfg(test)]
+mod beam_pareto_test;
 mod co_occurrence;
 mod dfta;
 pub mod extract;
