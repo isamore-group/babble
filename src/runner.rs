@@ -433,7 +433,7 @@ where
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
-    // println!("cs: {:#?}", isax_cost.cs.clone());
+    println!("cs: {:#?}", isax_cost.cs.set[0]);
     isax_cost
       .cs
       .set

@@ -3,6 +3,7 @@
 use crate::{
   ast_node::{Arity, AstNode},
   learn::LibId,
+  schedule::rec_cost,
   teachable::{BindingExpr, Teachable},
 };
 use bitvec::prelude::*;
@@ -11,7 +12,6 @@ use egg::{
 };
 use log::debug;
 use rustc_hash::FxHashMap;
-use std::collections::HashSet;
 use std::{
   cmp::Ordering,
   collections::{BinaryHeap, HashMap, hash_map::Entry},
@@ -948,19 +948,7 @@ where
 
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> f32 {
-    let mut used_lib: HashSet<LibId> = HashSet::new();
-    let mut latency_gain: usize = 0;
-    let mut area: usize = 0;
-    for node in expr.iter() {
-      if let Some(BindingExpr::Lib(lid, _, _, gain, cost)) =
-        node.as_binding_expr()
-      {
-        latency_gain += gain;
-        if used_lib.insert(lid) {
-          area += cost;
-        }
-      }
-    }
+    let (latency_gain, area) = rec_cost(expr);
     // println!("used {}ms to get the cost", start.elapsed().as_millis());
     (1.0 - self.strategy) * (area as f32)
       - self.strategy * (latency_gain as f32)

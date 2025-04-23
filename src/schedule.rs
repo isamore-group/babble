@@ -1,9 +1,13 @@
 //! A simple HLS scheduler used for estimating the area and latency of the
 //! learned libraries.
 
-use std::{cmp, collections::HashMap, hash::Hash};
+use std::{
+  cmp,
+  collections::{HashMap, HashSet},
+  hash::Hash,
+};
 
-use crate::ast_node::AstNode;
+use crate::{BindingExpr, LibId, Teachable, ast_node::AstNode};
 use egg::RecExpr;
 
 /// A trait for languages that support HLS scheduling.
@@ -199,4 +203,21 @@ impl Scheduler {
     }
     (latency_cpu - latency_accelerator, area)
   }
+}
+
+pub fn rec_cost<Op: Teachable>(expr: &RecExpr<AstNode<Op>>) -> (usize, usize) {
+  let mut used_lib: HashSet<LibId> = HashSet::new();
+  let mut latency_gain: usize = 0;
+  let mut area: usize = 0;
+  for node in expr.iter() {
+    if let Some(BindingExpr::Lib(lid, _, _, gain, cost)) =
+      node.as_binding_expr()
+    {
+      latency_gain += gain;
+      if used_lib.insert(lid) {
+        area += cost;
+      }
+    }
+  }
+  (latency_gain, area)
 }
