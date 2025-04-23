@@ -14,7 +14,7 @@ use log::debug;
 use rustc_hash::FxHashMap;
 use std::{
   cmp::Ordering,
-  collections::{BinaryHeap, HashMap, hash_map::Entry},
+  collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
   fmt::Debug,
   hash::{DefaultHasher, Hash, Hasher},
 };
@@ -83,6 +83,9 @@ impl CostSet {
         match ls1.combine(ls2, lps, strategy) {
           None => continue,
           Some(ls) => {
+            // println!("ls1: {:?}", ls1);
+            // println!("ls2: {:?}", ls2);
+            // println!("ls: {:?}", ls);
             if let Err(pos) = set.binary_search(&ls) {
               set.insert(pos, ls);
             }
@@ -140,17 +143,17 @@ impl CostSet {
     lib: LibId,
     gain: usize,
     cost: usize,
+    id: Id,
     nested_libs: &CostSet,
     lps: usize,
     strategy: f32,
   ) -> CostSet {
-    // println!("add_lib");
     // To add a lib, we do a modified cross.
     let mut set = Vec::new();
 
     for ls1 in &nested_libs.set {
       for ls2 in &self.set {
-        match ls2.add_lib(lib, gain, cost, ls1, lps, strategy) {
+        match ls2.add_lib(lib, gain, cost, id, ls1, lps, strategy) {
           None => continue,
           Some(ls) => {
             if let Err(pos) = set.binary_search(&ls) {
@@ -255,8 +258,8 @@ pub struct LibSel {
   /// cost.
   pub full_cost: f32,
   /// The libraries used in this expression. Each library is binded with its
-  /// gain, cost and its times being used.
-  pub libs: HashMap<LibId, (usize, usize, usize)>,
+  /// gain, cost and the instances.
+  pub libs: HashMap<LibId, (usize, usize, HashSet<Id>)>,
 }
 
 impl Eq for LibSel {}
@@ -317,14 +320,16 @@ impl LibSel {
     for (lib_id, lib_info) in &other.libs {
       match res.libs.entry(*lib_id) {
         Entry::Occupied(mut entry) => {
-          let (_, _, times) = entry.get_mut();
-          *times += lib_info.2;
-          res.full_cost -= lib_info.2 as f32 * lib_info.0 as f32 * strategy;
+          let (_, _, set) = entry.get_mut();
+          let count = set.len();
+          set.extend(lib_info.2.clone());
+          let count_inc = set.len() - count;
+          res.full_cost -= count_inc as f32 * lib_info.0 as f32 * strategy;
         }
         Entry::Vacant(entry) => {
-          entry.insert(*lib_info);
+          entry.insert(lib_info.clone());
           res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
-            - lib_info.2 as f32 * lib_info.0 as f32 * strategy;
+            - lib_info.2.len() as f32 * lib_info.0 as f32 * strategy;
           if res.libs.len() > lps {
             return None;
           }
@@ -341,6 +346,7 @@ impl LibSel {
     lib: LibId,
     gain: usize,
     cost: usize,
+    id: Id,
     nested_libs: &LibSel,
     lps: usize,
     strategy: f32,
@@ -351,14 +357,16 @@ impl LibSel {
     for (nested_lib, lib_info) in &nested_libs.libs {
       match res.libs.entry(*nested_lib) {
         Entry::Occupied(mut entry) => {
-          let (_, _, times) = entry.get_mut();
-          *times += lib_info.2;
-          res.full_cost -= lib_info.2 as f32 * lib_info.0 as f32 * strategy;
+          let (_, _, set) = entry.get_mut();
+          let count = set.len();
+          set.extend(lib_info.2.clone());
+          let count_inc = set.len() - count;
+          res.full_cost -= count_inc as f32 * lib_info.0 as f32 * strategy;
         }
         Entry::Vacant(entry) => {
-          entry.insert(*lib_info);
+          entry.insert(lib_info.clone());
           res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
-            - lib_info.2 as f32 * lib_info.0 as f32 * strategy;
+            - lib_info.2.len() as f32 * lib_info.0 as f32 * strategy;
           if res.libs.len() > lps {
             return None;
           }
@@ -368,12 +376,14 @@ impl LibSel {
 
     match res.libs.entry(lib) {
       Entry::Occupied(mut entry) => {
-        let (_, _, times) = entry.get_mut();
-        *times += 1;
+        let (_, _, set) = entry.get_mut();
+        set.insert(id);
         res.full_cost -= gain as f32 * strategy;
       }
       Entry::Vacant(entry) => {
-        entry.insert((gain, cost, 1));
+        let mut set = HashSet::new();
+        set.insert(id);
+        entry.insert((gain, cost, set));
         res.full_cost +=
           cost as f32 * (1.0 - strategy) - gain as f32 * strategy;
         if res.libs.len() > lps {
@@ -714,8 +724,15 @@ where
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
-        let mut e =
-          x(b).add_lib(id, gain, cost, x(f), self_ref.lps, self_ref.strategy);
+        let mut e = x(b).add_lib(
+          id,
+          gain,
+          cost,
+          *b,
+          x(f),
+          self_ref.lps,
+          self_ref.strategy,
+        );
         // println!("new cost set: {:#?}", e);
         e.unify();
         e.prune(self_ref.beam_size, self_ref.lps);
