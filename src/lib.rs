@@ -26,6 +26,7 @@ pub mod learn;
 pub mod rewrites;
 pub mod runner;
 pub mod schedule;
+pub mod bb_query;
 pub mod sexp;
 pub mod simple_lang;
 pub mod teachable;
