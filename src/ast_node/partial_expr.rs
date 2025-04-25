@@ -75,16 +75,15 @@ where
     let mut node_delay: Vec<usize> = Vec::new();
     for node in &rec_expr {
       let op_delay = node.op_delay();
-      let args_max_delay = node
+      let args_sum_delay = node
         .args()
         .iter()
         .map(|id| {
           let idx: usize = (*id).into();
           node_delay[idx]
         })
-        .max()
-        .unwrap_or(0);
-      node_delay.push(op_delay + args_max_delay);
+        .sum::<usize>();
+      node_delay.push(op_delay + args_sum_delay);
     }
     *node_delay.last().unwrap_or(&0)
   }

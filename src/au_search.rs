@@ -55,12 +55,12 @@ impl<Op: Eq> PartialOrd for VecPE<Op> {
           other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
         Some(self_matched.cmp(&other_matched))
       }
-      LiblearnCost::Size => {
+      LiblearnCost::Delay => {
         let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
         let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
         Some(self_delay.cmp(&other_delay))
       }
-      LiblearnCost::Delay => {
+      LiblearnCost::Size => {
         let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
         let other_size =
           other.aus.iter().map(|x| x.expr().size()).sum::<usize>();

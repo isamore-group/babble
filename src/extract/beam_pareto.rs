@@ -934,6 +934,9 @@ where
     // 如果val不为None,取出RecExpr
     let timeout = std::time::Duration::from_millis(60);
     let expr = val.clone().unwrap();
+    let mut egraph = EGraph::new(EmptyAnalysis::default());
+    egraph.add_expr(&expr);
+    egraph.rebuild();
     let runner = Runner::<_, _, ()>::new(EmptyAnalysis::default())
       .with_expr(&expr)
       .with_time_limit(timeout)

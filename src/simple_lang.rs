@@ -324,6 +324,10 @@ impl OperationInfo for SimpleOp {
   fn make_const(const_value: (i64, u32)) -> Self {
     Self::Const(const_value.0)
   }
+
+  fn is_dummy(&self) -> bool {
+    false
+  }
 }
 
 #[derive(Debug, Clone, Hash, PartialOrd, Ord, Display, Copy)]

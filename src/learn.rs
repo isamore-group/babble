@@ -14,7 +14,9 @@
 //! add the partial expression op(z1, ..., zn) to the set AU(a, b).
 //! If the set AU(a, b) is empty, we add to it the partial expression (a, b).
 // 使用随机数
-use crate::runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost};
+use crate::runner::{
+  AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
+};
 use crate::{
   COBuilder,
   ast_node::{Arity, AstNode, Expr, PartialExpr},
@@ -414,7 +416,7 @@ where
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
     AstNode<Op>: Language,
     <AstNode<Op> as Language>::Discriminant: Sync + Send,
-    Op: crate::ast_node::Printable,
+    Op: crate::ast_node::Printable + OperationInfo,
   {
     let roots = &self.roots;
     debug!("Computing co-occurences");
@@ -516,7 +518,8 @@ where
     + std::hash::Hash
     + Teachable
     + Schedulable
-    + 'static,
+    + 'static
+    + OperationInfo,
   AstNode<Op>: Language,
 {
   /// Constructs a [`LearnedLibrary`] from an [`EGraph`] by antiunifying pairs
@@ -882,7 +885,6 @@ where
     //   let aus = aus.into_iter().take(500).collect::<BTreeSet<_>>();
     //   learned_lib.aus = aus;
     // }
-
     if learned_lib.aus.len() > 500 {
       let aus = learned_lib.aus.iter().collect::<Vec<_>>();
       let mut sampled_aus = BTreeSet::new();
@@ -911,7 +913,8 @@ where
     + DiscriminantEq
     + 'static
     + Hash
-    + Schedulable,
+    + Schedulable
+    + OperationInfo,
   AstNode<Op>: Language,
 {
   /// Returns an iterator over rewrite rules that replace expressions with
@@ -1076,7 +1079,7 @@ where
     // info!("cache.size: {}", self.pattern_cache.len());
     // 遍历所有候选的模式
     for au in candidates {
-      if au.size() > 400 {
+      if au.size() > 500 {
         continue;
       }
       let pattern: Pattern<_> = normalize(au.clone()).0.into();
@@ -1138,7 +1141,8 @@ where
     + Display
     + 'static
     + Teachable
-    + Schedulable,
+    + Schedulable
+    + OperationInfo,
 {
   /// Computes the antiunifications of `state` in the DFTA `dfta`.
   fn enumerate_over_dfta(
@@ -1313,7 +1317,13 @@ where
     let ops2 = egraph[state.1].nodes.iter().map(AstNode::as_parts);
 
     for (op1, args1) in ops1 {
+      if op1.is_dummy() {
+        continue;
+      }
       for (op2, args2) in ops2.clone() {
+        if op2.is_dummy() {
+          continue;
+        }
         if op1 == op2 {
           same = true;
           if args1.is_empty() && args2.is_empty() {

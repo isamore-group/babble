@@ -19,7 +19,10 @@ use log::{debug, info};
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
   Printable, Teachable,
-  extract::beam_pareto::{ISAXAnalysis, LibExtractor, TypeInfo},
+  extract::{
+    self,
+    beam_pareto::{ISAXAnalysis, LibExtractor, TypeInfo},
+  },
   schedule::Schedulable,
 };
 
@@ -33,6 +36,8 @@ pub trait OperationInfo {
   fn get_const(&self) -> Option<(i64, u32)>;
   /// Make an AST node for type-awared Const
   fn make_const(const_value: (i64, u32)) -> Self;
+  /// judge whether a node is dummy
+  fn is_dummy(&self) -> bool;
 }
 
 /// A trait for running library learning experiments with Pareto optimization
@@ -92,6 +97,8 @@ where
   pub final_cost: f32,
   /// The time taken to run the experiment
   pub run_time: Duration,
+  /// the learned lib
+  pub learned_lib: Vec<egg::Pattern<AstNode<Op>>>,
 }
 
 impl<Op, T> std::fmt::Debug for ParetoResult<Op, T>
@@ -407,11 +414,7 @@ where
       dedup_time.elapsed().as_millis()
     );
 
-    // println!("learned {} libs", learned_lib.size());
-    // for lib in &learned_lib.libs().collect::<Vec<_>>() {
-    //   println!("{}", lib);
-    // }
-
+    println!("learned {} libs", learned_lib.size());
     println!("Adding libs and running beam search... ");
     let extract_time = Instant::now();
     let lib_rewrite_time = Instant::now();
@@ -433,7 +436,7 @@ where
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
-    println!("cs: {:#?}", isax_cost.cs.set[0]);
+    // println!("cs: {:#?}", isax_cost.cs.set[0]);
     isax_cost
       .cs
       .set
@@ -451,6 +454,7 @@ where
     // let all_libs: Vec<_> = learned_lib.libs().collect();
     // println!("cs: {:#?}", isax_cost.cs);
     let mut chosen_rewrites = Vec::new();
+    let mut learned_libs = Vec::new();
     let mut rewrites_map = HashMap::new();
     for lib in &isax_cost.cs.set[0].libs {
       if lib.0.0 < max_lib_id {
@@ -463,6 +467,8 @@ where
       } else {
         let new_lib = lib.0.0 - max_lib_id;
         chosen_rewrites.push(lib_rewrites[new_lib].clone());
+        learned_libs
+          .push(learned_lib.libs().collect::<Vec<_>>()[new_lib].clone());
         rewrites_map.insert(lib.0.0, lib_rewrites[new_lib].clone());
       }
     }
@@ -471,6 +477,23 @@ where
       "upper bound ('full') cost: {}",
       isax_cost.cs.set[0].full_cost
     );
+
+    // for (id, rewrite) in lib_rewrites.clone().iter().enumerate() {
+    //   println!("lib{}", id);
+    //   let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
+    //     .with_egraph(aeg.clone())
+    //     .with_iter_limit(1)
+    //     .with_time_limit(timeout)
+    //     .with_node_limit(1_000_000)
+    //     .run(&[rewrite.clone()])
+    //     .egraph;
+    //   let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+    //   let mut extractor =
+    //     LibExtractor::new(&egraph, self.config.strategy);
+    //   let best = extractor.best(root);
+    //   let final_cost = extractor.cost(&best);
+    //   println!("final cost: {}", final_cost);
+    // }
 
     let ex_time = Instant::now();
     println!("Rewriting");
@@ -505,6 +528,7 @@ where
       rewrites: rewrites_map,
       final_cost: final_cost,
       run_time: start_time.elapsed(),
+      learned_lib: learned_libs,
     }
   }
 }
