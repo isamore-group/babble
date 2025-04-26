@@ -25,6 +25,8 @@ anyhow = "1"
 thiserror = "2.0.11"
 babble-macros = { path = "babble-macros" }
 nom = "7"
+toml = "0.7"
+csv = "1.2"
 
 [dependencies]
 egg.workspace = true
@@ -46,6 +48,7 @@ seahash = "4.1"
 bitvec = "1.0"
 rayon = "1.8"
 strum = { version = "0.27", features = ["derive"] }
+csv = "1.2"
 
 [profile.release]
 debug = true

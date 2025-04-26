@@ -751,31 +751,6 @@ where
         }
         ranges
       }
-      // 初始化AU计算日志
-      let file = match liblearn_config.init_log() {
-        Ok(file) => file,
-        Err(_) => {
-          // 创建必要的目录
-          if let Some(parent) =
-            std::path::Path::new(&liblearn_config.log_file).parent()
-          {
-            if !parent.exists() {
-              if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("Unable to create log directory: {}", e);
-              }
-            }
-          }
-
-          match std::fs::File::create(&liblearn_config.log_file) {
-            Ok(file) => file,
-            Err(e) => {
-              eprintln!("Unable to create log file {}", e);
-              panic!("Failed to create log file");
-            }
-          }
-        }
-      };
-      let mut file = file;
       match liblearn_config.enum_mode {
         EnumMode::All => {
           // 计算所有pair
@@ -789,14 +764,6 @@ where
             learned_lib.enumerate_over_egraph(egraph, pair);
           }
           let elapsed = start.elapsed();
-          let _ = liblearn_config.write_log(
-            &mut file,
-            "Not need to calculate pruned pairs, so use 0s",
-          );
-          let _ = liblearn_config.write_log(
-            &mut file,
-            format!("Enumerate over dfta takes {:?}", elapsed).as_str(),
-          );
         }
         EnumMode::PruningVanilla => {
           // 无剪枝优化+并行处理+模块分组，仅有针对pair的筛选
@@ -900,19 +867,11 @@ where
             })
             .collect();
           let eclass_pairs = all_pairs.clone();
-          let _ = liblearn_config.write_log(
-            &mut file,
-            format!("use {:?} to collect pairs", enum_start.elapsed()).as_str(),
-          );
           let start = Instant::now();
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph(egraph, pair);
           }
           let elapsed = start.elapsed();
-          let _ = liblearn_config.write_log(
-            &mut file,
-            format!("enumerate over dfta takes {:?}", elapsed).as_str(),
-          );
         }
         EnumMode::ClusterTest => {
           let mut eclass_pairs = vec![];
@@ -992,20 +951,10 @@ where
             // println!("matched patterns: {:?}",
             // matched_patterns.get(pattern));
           }
-          let _ = liblearn_config.write_log(
-            &mut file,
-            format!("use {:?} to collect pairs", prune_start.elapsed())
-              .as_str(),
-          );
           let enum_start = Instant::now();
           for (ecls1, ecls2) in eclass_pairs {
             learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
           }
-          let _ = liblearn_config.write_log(
-            &mut file,
-            format!("enumerate over dfta takes {:?}", enum_start.elapsed())
-              .as_str(),
-          );
         }
       };
       println!(
@@ -1548,7 +1497,7 @@ where
               AUMergeMod::Random => get_random_aus(au_range, 1000),
               AUMergeMod::Kd => kd_random_aus(au_range, 1000),
               AUMergeMod::Greedy => greedy_aus(au_range),
-              AUMergeMod::Catesian => {
+              AUMergeMod::Cartesian => {
                 // 笛卡尔积
                 // 首先取出所有的expr
                 let new_exprs = au_range.into_iter().map(|inputs| {

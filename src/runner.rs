@@ -3,19 +3,20 @@
 //! This module provides functionality for running library learning experiments
 //! using either regular beam search or Pareto-optimal beam search.
 
+use serde_json::json;
 use std::{
   collections::{HashMap, HashSet},
   fmt::{Debug, Display},
   fs::File,
   hash::Hash,
   io::{self, Write},
+  path::{Path, PathBuf},
   str::FromStr,
   sync::Arc,
-  time::{Duration, Instant},
+  time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use egg::{EGraph, Id, RecExpr, Rewrite, Runner as EggRunner};
-use log::{debug, info};
+use serde::Deserialize;
 
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
@@ -27,6 +28,8 @@ use crate::{
   rewrites::TypeMatch,
   schedule::Schedulable,
 };
+use egg::{EGraph, Id, RecExpr, Rewrite, Runner as EggRunner};
+use log::{debug, info};
 
 /// 定义一个trait名为OperationInfo,其中有两个函数，分别为get_libid,
 /// change_libid, get_const
@@ -102,6 +105,8 @@ where
   pub run_time: Duration,
   /// the learned lib
   pub learned_lib: Vec<egg::Pattern<AstNode<Op>>>,
+  /// message map to record the message
+  pub message: HashMap<String, String>,
 }
 
 impl<Op, T> std::fmt::Debug for ParetoResult<Op, T>
@@ -170,9 +175,11 @@ impl Default for ParetoConfig {
 }
 
 /// Config for Learning Library
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LiblearnCost {
   /// type of cost : "delay", "Match", "size"
+  #[serde(rename = "match")]
   Match,
   Delay,
   Size,
@@ -182,15 +189,18 @@ impl Default for LiblearnCost {
     Self::Delay
   }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AUMergeMod {
-  /// type of AU merge : "random", "kd", "greedy", "catesian"
+  /// type of AU merge : "random", "kd", "greedy", "cartesian"
   Random,
   Kd,
   Greedy,
-  Catesian,
+  #[serde(rename = "cartesian")]
+  Cartesian,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnumMode {
   /// enumerate mode: "all", "pruning vanilla", "pruning gold", "cluster test"
   All,
@@ -199,7 +209,7 @@ pub enum EnumMode {
   ClusterTest,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LiblearnConfig {
   /// type of cost : "delay", "Match", "size"
   pub cost: LiblearnCost,
@@ -207,8 +217,6 @@ pub struct LiblearnConfig {
   pub au_merge_mod: AUMergeMod,
   /// enumerate mode: "all", "pruning vanilla", "pruning gold"
   pub enum_mode: EnumMode,
-  /// file to log the liblearn time
-  pub log_file: String,
 }
 
 impl Default for LiblearnConfig {
@@ -217,7 +225,6 @@ impl Default for LiblearnConfig {
       cost: LiblearnCost::Delay,
       au_merge_mod: AUMergeMod::Greedy,
       enum_mode: EnumMode::All,
-      log_file: "result/liblearn.log".to_string(),
     }
   }
 }
@@ -228,29 +235,12 @@ impl LiblearnConfig {
     cost: LiblearnCost,
     au_merge_mod: AUMergeMod,
     enum_mode: EnumMode,
-    log_file: String,
   ) -> Self {
     Self {
       cost,
       au_merge_mod,
       enum_mode,
-      log_file,
     }
-  }
-
-  /// 初始化log文件
-  pub fn init_log(&self) -> io::Result<File> {
-    let mut file = File::create(&self.log_file)?;
-    writeln!(file, "liblearn log")?;
-    writeln!(file, "cost: {:?}", self.cost)?;
-    writeln!(file, "au_merge_mod: {:?}", self.au_merge_mod)?;
-    writeln!(file, "enum_mode: {:?}", self.enum_mode)?;
-    Ok(file)
-  }
-  /// Write a log entry to the log file
-  pub fn write_log(&self, file: &mut File, message: &str) -> io::Result<()> {
-    writeln!(file, "{}", message)?;
-    Ok(())
   }
 }
 
@@ -342,6 +332,7 @@ where
     roots: &[Id],
     egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   ) -> ParetoResult<Op, T> {
+    let mut message = HashMap::new();
     let start_time = Instant::now();
     let timeout = Duration::from_secs(60 * 100_000);
 
@@ -349,6 +340,10 @@ where
       "Initial egraph size: {}, eclasses: {}",
       egraph.total_size(),
       egraph.classes().len()
+    );
+    message.insert(
+      "initial_eclass_size".to_string(),
+      format!("{}", egraph.classes().len()).to_string(),
     );
     println!("Running {} DSRs... ", self.dsrs.len());
 
@@ -364,6 +359,16 @@ where
       "Final egraph size: {}, eclasses: {}",
       aeg.total_size(),
       aeg.classes().len()
+    );
+
+    message.insert(
+      "final_eclass_size".to_string(),
+      format!("{}", aeg.classes().len()).to_string(),
+    );
+
+    message.insert(
+      "running_dsr_time".to_string(),
+      format!("{}ms", start_time.elapsed().as_millis()).to_string(),
     );
 
     info!(
@@ -405,6 +410,11 @@ where
       au_time.elapsed().as_millis()
     );
 
+    message.insert(
+      "au_time".to_string(),
+      format!("{}ms", au_time.elapsed().as_millis()).to_string(),
+    );
+
     info!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
     learned_lib.deduplicate(&aeg);
@@ -425,7 +435,18 @@ where
       dedup_time.elapsed().as_millis()
     );
 
+    message.insert(
+      "dedup_time".to_string(),
+      format!("{}ms", dedup_time.elapsed().as_millis()).to_string(),
+    );
+
     println!("learned {} libs", learned_lib.size());
+
+    message.insert(
+      "learned_libs".to_string(),
+      format!("{}", learned_lib.size()).to_string(),
+    );
+
     println!("Adding libs and running beam search... ");
     let extract_time = Instant::now();
     let lib_rewrite_time = Instant::now();
@@ -552,6 +573,16 @@ where
     debug!("{}", Pretty::new(Arc::new(Expr::from(best.clone()))));
     info!("round time: {}ms", start_time.elapsed().as_millis());
 
+    message.insert(
+      "final_cost".to_string(),
+      format!("{}", final_cost).to_string(),
+    );
+
+    message.insert(
+      "extract_time".to_string(),
+      format!("{}ms", ex_time.elapsed().as_millis()).to_string(),
+    );
+
     ParetoResult {
       final_expr: best.into(),
       num_libs: chosen_rewrites.len(),
@@ -559,6 +590,7 @@ where
       final_cost: final_cost,
       run_time: start_time.elapsed(),
       learned_lib: learned_libs,
+      message,
     }
   }
 }
