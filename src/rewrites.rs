@@ -167,7 +167,7 @@ where
 }
 
 // Condition
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeMatch<T> {
   pub type_map: HashMap<Var, Vec<T>>,
 }

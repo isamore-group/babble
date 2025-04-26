@@ -15,24 +15,50 @@ use rustc_hash::FxHashMap;
 use std::{
   cmp::Ordering,
   collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
-  fmt::Debug,
+  fmt::{Debug, Display},
   hash::{DefaultHasher, Hash, Hasher},
 };
 
-/// 实现一个非常简单的没有实际意义的Analysis
-/// 这个Analysis只用于LibExtractor
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeSet<T: Debug + Default + Clone + PartialEq + Ord + Hash> {
+  pub set: HashSet<T>,
+}
+
+impl<T> ClassMatch for TypeSet<T>
+where
+  T: Debug + Default + Clone + PartialEq + Ord + Hash + Display,
+{
+  fn get_type(&self) -> Vec<String> {
+    self.set.iter().map(|t| t.to_string()).collect()
+  }
+}
+
+impl<T> PartialEq<T> for TypeSet<T>
+where
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+{
+  fn eq(&self, other: &T) -> bool {
+    self.set.contains(other)
+  }
+}
+/// 实现一个非常简单的Analysis,
+/// 只包含了类型分析信息，但是此处的类型分析信息更加细节，
+/// 使用了Vec<T>直接存储了enode中可能含有的所有type
+/// 这个Analysis只用于LibExtractor和learn
 #[derive(Debug, Clone)]
-pub struct EmptyAnalysis<Op> {
+pub struct EmptyAnalysis<Op, T> {
+  type_info_map: HashMap<(String, Vec<T>), T>,
   _phantom: PhantomData<Op>,
 }
-impl<Op> Default for EmptyAnalysis<Op> {
+impl<Op, T> Default for EmptyAnalysis<Op, T> {
   fn default() -> Self {
     EmptyAnalysis {
+      type_info_map: HashMap::new(),
       _phantom: PhantomData,
     }
   }
 }
-impl<Op> Analysis<AstNode<Op>> for EmptyAnalysis<Op>
+impl<Op, T> Analysis<AstNode<Op>> for EmptyAnalysis<Op, T>
 where
   Op: Clone
     + std::fmt::Debug
@@ -40,13 +66,44 @@ where
     + Ord
     + Teachable
     + std::fmt::Display,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
-  type Data = ();
-  fn merge(&mut self, _: &mut Self::Data, _: Self::Data) -> DidMerge {
-    DidMerge(false, false)
+  type Data = TypeSet<T>;
+  fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
+    let a0 = to.clone();
+    to.set.extend(from.set.clone());
+    DidMerge(&a0 != to, to != &from)
   }
-  fn make(_: &mut EGraph<AstNode<Op>, Self>, _: &AstNode<Op>) -> Self::Data {
-    ()
+  fn make(
+    egraph: &mut EGraph<AstNode<Op>, Self>,
+    enode: &AstNode<Op>,
+  ) -> Self::Data {
+    let child_types: Vec<T> = enode
+      .children()
+      .iter()
+      .map(|&child| {
+        let tys = egraph[child]
+          .data
+          .set
+          .clone()
+          .into_iter()
+          .collect::<Vec<_>>();
+        if tys.len() == 1 {
+          tys[0].clone()
+        } else {
+          let mut merged_ty = tys[0].clone();
+          for i in 1..tys.len() {
+            merged_ty = AstNode::merge_types(&merged_ty, &tys[i]);
+          }
+          merged_ty
+        }
+      })
+      .collect();
+    let ty = enode.get_rtype(&egraph.analysis.type_info_map, &child_types);
+    let mut set = HashSet::new();
+    set.insert(ty.clone());
+    TypeSet { set }
   }
 }
 
@@ -846,7 +903,10 @@ pub struct LibExtractor<
     + Teachable
     + std::fmt::Display,
   N: Analysis<AstNode<Op>>,
-> {
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+> where
+  AstNode<Op>: TypeInfo<T>,
+{
   /// Remembers the best expression so far for each pair of class id and lib
   /// context; if an entry is absent, we haven't visited this class in this
   /// context yet; if an entry is `None`, it's currently under processing,
@@ -866,9 +926,10 @@ pub struct LibExtractor<
   /// The relative weight of area cost and delay cost, from 0.0 (all areaa) to
   /// 1.0 (all delay)
   strategy: f32,
+  _phantom: PhantomData<T>,
 }
 
-impl<'a, Op, N> LibExtractor<'a, Op, N>
+impl<'a, Op, N, T> LibExtractor<'a, Op, N, T>
 where
   Op: Clone
     + std::fmt::Debug
@@ -878,6 +939,8 @@ where
     + std::fmt::Display
     + Arity,
   N: Analysis<AstNode<Op>> + Clone,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   /// Create a lib extractor for the given egraph
   pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, strategy: f32) -> Self {
@@ -889,6 +952,7 @@ where
       egraph,
       indent: 0,
       strategy,
+      _phantom: PhantomData,
     }
   }
 
@@ -1215,8 +1279,8 @@ pub trait TypeInfo<T> {
 
 // 定义GetType trait
 pub trait ClassMatch {
-  fn get_type(&self) -> String {
-    "".to_string()
+  fn get_type(&self) -> Vec<String> {
+    vec!["".to_string()]
   }
   fn get_cls_hash(&self) -> u64 {
     0
@@ -1245,8 +1309,8 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash + ToString> ClassMatch
   //       > 0.67;
   //   hash_similar && subtree_similar
   // }
-  fn get_type(&self) -> String {
-    self.ty.to_string()
+  fn get_type(&self) -> Vec<String> {
+    vec![self.ty.to_string()]
   }
   fn get_cls_hash(&self) -> u64 {
     self.hash.cls_hash

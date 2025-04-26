@@ -1,4 +1,5 @@
 use crate::extract::beam_pareto::EmptyAnalysis;
+use crate::extract::beam_pareto::TypeInfo;
 use crate::teachable::BindingExpr;
 
 use super::{super::teachable::Teachable, AstNode, Expr};
@@ -44,10 +45,14 @@ where
   AstNode<Op>: Language,
   T: Eq + Clone + Hash + Debug + Default + Ord,
 {
-  pub fn get_match(
+  pub fn get_match<Type>(
     self,
-    egraph: &EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
-  ) -> Vec<Match> {
+    egraph: &EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
+  ) -> Vec<Match>
+  where
+    Type: Debug + Default + Clone + Ord + Hash,
+    AstNode<Op>: TypeInfo<Type>,
+  {
     let pattern: Pattern<_> = normalize(self.clone()).0.into();
     // A key in `cache` is a set of matches
     // represented as a sorted vector.

@@ -13,6 +13,8 @@
 //! expressions (z1, ..., zn) with z1 \in AU(x1, y1), ..., zn \in AU(xn, yn), we
 //! add the partial expression op(z1, ..., zn) to the set AU(a, b).
 //! If the set AU(a, b) is empty, we add to it the partial expression (a, b).
+use crate::extract::beam_pareto::{TypeInfo, TypeSet};
+use crate::rewrites::TypeMatch;
 // 使用随机数
 use crate::runner::{
   AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
@@ -28,11 +30,13 @@ use crate::{
 };
 use bitvec::prelude::*;
 use egg::{
-  Analysis, EGraph, Id, Language, Pattern, RecExpr, Rewrite, Searcher, Var,
+  Analysis, ConditionalApplier, EGraph, Id, Language, Pattern, RecExpr,
+  Rewrite, Searcher, Var,
 };
 use itertools::Itertools;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::{
   collections::{BTreeMap, BTreeSet, HashMap},
   fmt::{Debug, Display},
@@ -109,8 +113,8 @@ impl Match {
   }
 }
 // 用来保存AU和其对应的Match
-#[derive(PartialEq, Eq, Debug, Clone, Hash)]
-pub struct AU<Op, T> {
+#[derive(Debug, Clone)]
+pub struct AU<Op, T, Type> {
   /// The anti-unification
   expr: PartialExpr<Op, T>,
   /// The matches
@@ -119,9 +123,40 @@ pub struct AU<Op, T> {
   delay: usize,
   /// strategy for sort
   liblearn_cost: LiblearnCost,
+  /// Type info
+  _phantom: std::marker::PhantomData<Type>,
 }
 
-impl<Op, T> AU<Op, T> {
+impl<Op: PartialEq, T: PartialEq, Type> PartialEq for AU<Op, T, Type> {
+  fn eq(&self, other: &Self) -> bool {
+    self.expr == other.expr
+  }
+}
+
+impl<Op: Eq, T: Eq, Type> Eq for AU<Op, T, Type> {}
+
+impl<Op: Hash, T: Hash, Type> Hash for AU<Op, T, Type> {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    self.expr.hash(state);
+  }
+}
+
+impl<Op, T, Type> AU<Op, T, Type>
+where
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
+{
   pub fn new(
     expr: PartialExpr<Op, T>,
     matches: Vec<Match>,
@@ -133,11 +168,12 @@ impl<Op, T> AU<Op, T> {
       matches,
       delay,
       liblearn_cost,
+      _phantom: std::marker::PhantomData,
     }
   }
   pub fn new_with_expr(
     expr: PartialExpr<Op, T>,
-    egraph: &EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
+    egraph: &EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
     liblearn_cost: LiblearnCost,
   ) -> Self
   where
@@ -163,9 +199,12 @@ impl<Op, T> AU<Op, T> {
       matches,
       delay,
       liblearn_cost,
+      _phantom: std::marker::PhantomData,
     }
   }
+}
 
+impl<Op, T, Type> AU<Op, T, Type> {
   pub fn expr(&self) -> &PartialExpr<Op, T> {
     &self.expr
   }
@@ -183,7 +222,7 @@ impl<Op, T> AU<Op, T> {
   }
 }
 // 为AU实现Ord，只对比matches的大小
-impl<Op: Eq, T: Eq> PartialOrd for AU<Op, T> {
+impl<Op: Eq, T: Eq, Type> PartialOrd for AU<Op, T, Type> {
   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
     // Some(self.matches.cmp(&other.matches))
     // Some(self.expr.size().cmp(&other.expr.size()))
@@ -196,7 +235,7 @@ impl<Op: Eq, T: Eq> PartialOrd for AU<Op, T> {
   }
 }
 
-impl<Op: Eq, T: Eq> Ord for AU<Op, T> {
+impl<Op: Eq, T: Eq, Type> Ord for AU<Op, T, Type> {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     // self.matches.cmp(&other.matches)
     // self.expr.size().cmp(&other.expr.size())
@@ -210,7 +249,7 @@ impl<Op: Eq, T: Eq> Ord for AU<Op, T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct LearnedLibraryBuilder<Op>
+pub struct LearnedLibraryBuilder<Op, Type>
 where
   Op: Arity
     + Clone
@@ -224,8 +263,19 @@ where
     + 'static
     + Teachable
     + Schedulable,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display,
+  AstNode<Op>: TypeInfo<Type>,
 {
-  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
+  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
   learn_trivial: bool,
   learn_constants: bool,
   max_arity: Option<usize>,
@@ -238,7 +288,7 @@ where
   liblearn_config: LiblearnConfig,
 }
 
-impl<Op> Default for LearnedLibraryBuilder<Op>
+impl<Op, Type> Default for LearnedLibraryBuilder<Op, Type>
 where
   Op: Arity
     + Clone
@@ -252,6 +302,17 @@ where
     + 'static
     + Teachable
     + Schedulable,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display,
+  AstNode<Op>: TypeInfo<Type>,
 {
   fn default() -> Self {
     Self {
@@ -286,7 +347,7 @@ where
 // }
 
 // 为 LearnedLibraryBuilder 实现自定义的构造函数make_with_egraph
-impl<Op> LearnedLibraryBuilder<Op>
+impl<Op, Type> LearnedLibraryBuilder<Op, Type>
 where
   Op: Arity
     + Clone
@@ -301,9 +362,22 @@ where
     + Teachable
     + Schedulable,
   AstNode<Op>: Language,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
 {
   pub fn make_with_egraph_ld(
-    egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
+    egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
   ) -> Self {
     Self {
       egraph,
@@ -321,7 +395,7 @@ where
   }
 }
 
-impl<Op> LearnedLibraryBuilder<Op>
+impl<Op, Type> LearnedLibraryBuilder<Op, Type>
 where
   Op: Arity
     + Clone
@@ -337,6 +411,19 @@ where
     + Teachable
     + Schedulable,
   AstNode<Op>: Language,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
 {
   #[must_use]
   pub fn learn_trivial(mut self, trivial: bool) -> Self {
@@ -410,7 +497,7 @@ where
   pub fn build<A>(
     self,
     egraph: &EGraph<AstNode<Op>, A>,
-  ) -> LearnedLibrary<Op, (Id, Id)>
+  ) -> LearnedLibrary<Op, (Id, Id), Type>
   where
     A: Analysis<AstNode<Op>> + Clone + Sync + Send + 'static,
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
@@ -446,6 +533,29 @@ pub trait DiscriminantEq {
   fn discriminant_eq(&self, other: &Self) -> bool;
 }
 
+#[derive(Debug, Clone)]
+pub struct AUWithType<Op, Type> {
+  pub au: AU<Op, Var, Type>,
+  pub ty_map: HashMap<Var, Vec<Type>>,
+}
+impl<Op: PartialEq + Eq, Type> PartialEq for AUWithType<Op, Type> {
+  fn eq(&self, other: &Self) -> bool {
+    self.au == other.au
+  }
+}
+impl<Op: Eq, Type> Eq for AUWithType<Op, Type> {}
+
+impl<Op: Eq, Type> PartialOrd for AUWithType<Op, Type> {
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    Some(self.au.cmp(&other.au))
+  }
+}
+impl<Op: Eq, Type> Ord for AUWithType<Op, Type> {
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    self.au.cmp(&other.au)
+  }
+}
+
 /// A `LearnedLibrary<Op>` is a collection of functions learned from an
 /// [`EGraph<AstNode<Op>, _>`] by antiunifying pairs of enodes to find their
 /// common structure.
@@ -453,7 +563,7 @@ pub trait DiscriminantEq {
 /// You can create a `LearnedLibrary` using
 /// [`LearnedLibrary::from(&your_egraph)`].
 #[derive(Debug, Clone)]
-pub struct LearnedLibrary<Op, T>
+pub struct LearnedLibrary<Op, T, Type>
 where
   Op: Arity
     + Clone
@@ -466,12 +576,25 @@ where
     + Hash
     + 'static
     + Teachable,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
 {
-  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
+  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
   /// A map from DFTA states (i.e. pairs of enodes) to their antiunifications.
-  aus_by_state: BTreeMap<T, BTreeSet<AU<Op, T>>>,
+  aus_by_state: BTreeMap<T, BTreeSet<AU<Op, T, Type>>>,
   /// A set of all the antiunifications discovered.
-  aus: BTreeSet<AU<Op, Var>>,
+  aus: BTreeSet<AUWithType<Op, Type>>,
   /// Whether to learn "trivial" anti-unifications.
   learn_trivial: bool,
   /// Whether to also learn "library functions" which take no arguments.
@@ -504,7 +627,7 @@ where
   (x, after_mem - before_mem)
 }
 
-impl<'a, Op> LearnedLibrary<Op, (Id, Id)>
+impl<'a, Op, Type> LearnedLibrary<Op, (Id, Id), Type>
 where
   Op: Arity
     + Clone
@@ -521,12 +644,25 @@ where
     + 'static
     + OperationInfo,
   AstNode<Op>: Language,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
 {
   /// Constructs a [`LearnedLibrary`] from an [`EGraph`] by antiunifying pairs
   /// of enodes to find their common structure.
   fn new<A: Analysis<AstNode<Op>> + Clone>(
     egraph: &'a EGraph<AstNode<Op>, A>,
-    my_egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
+    my_egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
     learn_trivial: bool,
     learn_constants: bool,
     max_arity: Option<usize>,
@@ -564,9 +700,9 @@ where
       // println!("there are {} output states",
       // dfta.output_states().cloned().count());
 
-      for &state in dfta.output_states() {
-        learned_lib.enumerate_over_dfta(&dfta, state);
-      }
+      // for &state in dfta.output_states() {
+      //   learned_lib.enumerate_over_dfta(&dfta, state);
+      // }
     } else {
       let classes: Vec<_> = egraph.classes().map(|cls| cls.id).collect();
 
@@ -668,7 +804,7 @@ where
           let mut class_data: Vec<_> = classes
             .iter()
             .map(|cls| {
-              let ty = egraph[*cls].data.get_type();
+              let ty = egraph[*cls].data.get_type()[0].clone();
               let cls_hash = egraph[*cls].data.get_cls_hash();
               let subtree_levels = egraph[*cls].data.get_subtree_levels();
               (cls, ty, cls_hash, subtree_levels)
@@ -704,7 +840,7 @@ where
           let mut class_data: Vec<_> = classes
             .iter()
             .map(|cls| {
-              let ty = egraph[*cls].data.get_type();
+              let ty = egraph[*cls].data.get_type()[0].clone();
               let cls_hash = egraph[*cls].data.get_cls_hash();
               let subtree_levels = egraph[*cls].data.get_subtree_levels();
               (cls, ty, cls_hash, subtree_levels)
@@ -784,7 +920,7 @@ where
           let mut class_data: Vec<_> = classes
             .iter()
             .map(|cls| {
-              let ty = egraph[*cls].data.get_type();
+              let ty = egraph[*cls].data.get_type()[0].clone();
               let cls_hash = egraph[*cls].data.get_cls_hash();
               let subtree_levels = egraph[*cls].data.get_subtree_levels();
               (cls, ty, cls_hash, subtree_levels)
@@ -899,7 +1035,7 @@ where
   }
 }
 
-impl<Op, T> LearnedLibrary<Op, T>
+impl<Op, T, Type> LearnedLibrary<Op, T, Type>
 where
   Op: Arity
     + Clone
@@ -916,6 +1052,19 @@ where
     + Schedulable
     + OperationInfo,
   AstNode<Op>: Language,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
 {
   /// Returns an iterator over rewrite rules that replace expressions with
   /// equivalent calls to a learned library function.
@@ -940,18 +1089,30 @@ where
   /// ```
   pub fn rewrites<A: Analysis<AstNode<Op>>>(
     &self,
-  ) -> impl Iterator<Item = Rewrite<AstNode<Op>, A>> + '_ {
+  ) -> impl Iterator<Item = Rewrite<AstNode<Op>, A>> + '_
+  where
+    <A as Analysis<AstNode<Op>>>::Data: PartialEq<Type>,
+  {
     self.aus.iter().enumerate().map(|(i, au)| {
       let new_i = i + self.last_lib_id;
-      let searcher: Pattern<_> = au.expr.clone().into();
+      let searcher: Pattern<_> = au.au.expr.clone().into();
       let applier: Pattern<_> =
-        reify(LibId(new_i), au.expr.clone(), self.clock_period).into();
+        reify(LibId(new_i), au.au.expr.clone(), self.clock_period).into();
+      let conditional_applier = ConditionalApplier {
+        condition: TypeMatch::new(au.ty_map.clone()),
+        applier: applier.clone(),
+      };
       let name = format!("anti-unify {i}");
       debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
 
       // Both patterns contain the same variables, so this can never fail.
-      Rewrite::new(name, searcher, applier).unwrap_or_else(|_| unreachable!())
+      Rewrite::new(name, searcher, conditional_applier)
+        .unwrap_or_else(|_| unreachable!())
     })
+  }
+  /// conditions of the rewrites
+  pub fn conditions(&self) -> impl Iterator<Item = TypeMatch<Type>> + '_ {
+    self.aus.iter().map(|au| TypeMatch::new(au.ty_map.clone()))
   }
 
   /// Right-hand sides of library rewrites.
@@ -959,7 +1120,7 @@ where
     self.aus.iter().enumerate().map(|(i, au)| {
       let new_i = i + self.last_lib_id;
       let applier: Pattern<_> =
-        reify(LibId(new_i), au.expr.clone(), self.clock_period).into();
+        reify(LibId(new_i), au.au.expr.clone(), self.clock_period).into();
       applier
     })
   }
@@ -970,13 +1131,16 @@ where
   {
     let mut new_aus = BTreeSet::new();
     for au in &self.aus {
-      let new_au = f(&au.expr);
-      new_aus.insert(AU::new(
-        new_au,
-        au.matches.clone(),
-        au.delay,
-        self.liblearn_config.cost.clone(),
-      ));
+      let new_au = f(&au.au.expr);
+      new_aus.insert(AUWithType {
+        au: AU::new(
+          new_au.clone(),
+          au.au.matches.clone(),
+          au.au.delay,
+          self.liblearn_config.cost.clone(),
+        ),
+        ty_map: au.ty_map.clone(),
+      });
     }
     self.aus = new_aus;
   }
@@ -985,11 +1149,14 @@ where
   pub fn anti_unifications(
     &self,
   ) -> impl Iterator<Item = &PartialExpr<Op, Var>> {
-    self.aus.iter().map(|au| &au.expr)
+    self.aus.iter().map(|au| &au.au.expr)
   }
 
   /// Extend the set of anti-unifications externally
-  pub fn extend(&mut self, aus: impl IntoIterator<Item = AU<Op, Var>>) {
+  pub fn extend(
+    &mut self,
+    aus: impl IntoIterator<Item = AUWithType<Op, Type>>,
+  ) {
     self.aus.extend(aus);
   }
 
@@ -1023,10 +1190,14 @@ where
     // }
     // The algorithm is simply to iterate over all patterns,
     // and save their matches in a dictionary indexed by the match set.
-    let mut cache: BTreeMap<Vec<Match>, PartialExpr<Op, Var>> = BTreeMap::new();
+    let mut cache: BTreeMap<
+      Vec<Match>,
+      (PartialExpr<Op, Var>, HashMap<Var, Vec<Type>>),
+    > = BTreeMap::new();
     let default_delay = 0;
     for au in &self.aus {
-      let au = au.expr.clone();
+      let ty_map = au.ty_map.clone();
+      let au = au.au.expr.clone();
       let pattern: Pattern<_> = au.clone().into();
       // A key in `cache` is a set of matches
       // represented as a sorted vector.
@@ -1043,27 +1214,31 @@ where
 
       key.sort();
       match cache.get(&key) {
-        Some(cached) if cached.size() <= au.clone().size() => {
+        Some(cached) if cached.0.size() <= au.clone().size() => {
           debug!(
             "Pruning pattern {}\n as a duplicate of {}",
             pattern,
-            Pattern::from(cached.clone())
+            Pattern::from(cached.0.clone())
           );
         }
         _ => {
-          cache.insert(key, au.clone());
+          cache.insert(key, (au.clone(), ty_map));
         }
       }
     }
     self.aus = cache
       .into_iter()
-      .map(|(matches, expr)| {
-        AU::new(
-          expr,
-          matches,
-          default_delay,
-          self.liblearn_config.cost.clone(),
-        )
+      .map(|(matches, info)| {
+        let (expr, ty_map) = info;
+        AUWithType {
+          au: AU::new(
+            expr,
+            matches,
+            default_delay,
+            self.liblearn_config.cost.clone(),
+          ),
+          ty_map,
+        }
       })
       .collect();
   }
@@ -1071,7 +1246,7 @@ where
   pub fn deduplicate_from_candidates<A: Analysis<AstNode<Op>>>(
     &mut self,
     candidates: impl IntoIterator<Item = PartialExpr<Op, (Id, Id)>>, /* 修改为 (Id, Id) */
-  ) -> Vec<AU<Op, (Id, Id)>> {
+  ) -> Vec<AU<Op, (Id, Id), Type>> {
     // 修改返回类型
     // 创建一个缓存，用于保存已经遇到的匹配集合与对应的最小模式
     let mut cache: BTreeMap<Vec<Match>, (PartialExpr<Op, (Id, Id)>, usize)> =
@@ -1127,7 +1302,7 @@ where
   }
 }
 
-impl<Op> LearnedLibrary<Op, (Id, Id)>
+impl<Op, Type> LearnedLibrary<Op, (Id, Id), Type>
 where
   Op: Arity
     + Clone
@@ -1143,149 +1318,162 @@ where
     + Teachable
     + Schedulable
     + OperationInfo,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
 {
-  /// Computes the antiunifications of `state` in the DFTA `dfta`.
-  fn enumerate_over_dfta(
-    &mut self,
-    dfta: &Dfta<(Op, Op), (Id, Id)>,
-    state: (Id, Id),
-  ) {
-    if self.aus_by_state.contains_key(&state) {
-      // We've already enumerated this state, so there's nothing to do.
-      return;
-    }
-    info!("Enumerating over state {:?}", state);
-    // We're going to recursively compute the antiunifications of the inputs
-    // of all of the rules leading to this state. Before we do, we need to
-    // mark this state as in progress so that a loop in the rules doesn't
-    // cause infinite recursion.
-    //
-    // By initially setting the antiunifications of this state to empty, we
-    // exclude any antiunifications that would come from looping sequences
-    // of rules.
-    self.aus_by_state.insert(state, BTreeSet::new());
+  // /// Computes the antiunifications of `state` in the DFTA `dfta`.
+  // fn enumerate_over_dfta(
+  //   &mut self,
+  //   dfta: &Dfta<(Op, Op), (Id, Id)>,
+  //   state: (Id, Id),
+  // ) {
+  //   if self.aus_by_state.contains_key(&state) {
+  //     // We've already enumerated this state, so there's nothing to do.
+  //     return;
+  //   }
+  //   info!("Enumerating over state {:?}", state);
+  //   // We're going to recursively compute the antiunifications of the inputs
+  //   // of all of the rules leading to this state. Before we do, we need to
+  //   // mark this state as in progress so that a loop in the rules doesn't
+  //   // cause infinite recursion.
+  //   //
+  //   // By initially setting the antiunifications of this state to empty, we
+  //   // exclude any antiunifications that would come from looping sequences
+  //   // of rules.
+  //   self.aus_by_state.insert(state, BTreeSet::new());
 
-    if !self.co_occurrences.may_co_occur(state.0, state.1) {
-      // a在b的co-occurrence中或者b在a的co-occurrence中
-      return;
-    }
+  //   if !self.co_occurrences.may_co_occur(state.0, state.1) {
+  //     // a在b的co-occurrence中或者b在a的co-occurrence中
+  //     return;
+  //   }
 
-    let mut aus: BTreeSet<AU<Op, (Id, Id)>> = BTreeSet::new();
+  //   let mut aus: BTreeSet<AU<Op, (Id, Id), Type>> = BTreeSet::new();
 
-    let mut same = false;
-    let mut different = false;
+  //   let mut same = false;
+  //   let mut different = false;
 
-    // if there is a rule that produces this state
-    if let Some(rules) = dfta.get_by_output(&state) {
-      // 获得可以产生当前状态的rule(输入状态和op)
-      for ((op1, op2), inputs) in rules {
-        info!(
-          "op1: {:?}, op2: {:?}, input size: {}",
-          op1,
-          op2,
-          inputs.len()
-        );
-        if op1 == op2 {
-          same = true;
-          if inputs.is_empty() {
-            let new_au = PartialExpr::from(AstNode::leaf(op1.clone()));
-            aus.insert(AU::new_with_expr(
-              new_au,
-              &self.egraph,
-              self.liblearn_config.cost.clone(),
-            ));
-          } else {
-            // Recursively enumerate the inputs to this rule.
-            for &input in inputs {
-              self.enumerate_over_dfta(dfta, input);
-            }
+  //   // if there is a rule that produces this state
+  //   if let Some(rules) = dfta.get_by_output(&state) {
+  //     // 获得可以产生当前状态的rule(输入状态和op)
+  //     for ((op1, op2), inputs) in rules {
+  //       info!(
+  //         "op1: {:?}, op2: {:?}, input size: {}",
+  //         op1,
+  //         op2,
+  //         inputs.len()
+  //       );
+  //       if op1 == op2 {
+  //         same = true;
+  //         if inputs.is_empty() {
+  //           let new_au = PartialExpr::from(AstNode::leaf(op1.clone()));
+  //           aus.insert(AU::new_with_expr(
+  //             new_au,
+  //             &self.egraph,
+  //             self.liblearn_config.cost.clone(),
+  //           ));
+  //         } else {
+  //           // Recursively enumerate the inputs to this rule.
+  //           for &input in inputs {
+  //             self.enumerate_over_dfta(dfta, input);
+  //           }
 
-            // For a rule `op(s1, ..., sn) -> state`, we add an
-            // antiunification of the form `(op a1 ... an)` for every
-            // combination `a1, ..., an` of antiunifications of the
-            // input states `s1, ..., sn`, i.e., for every `(a1, ..., an)`
-            // in the cartesian product
-            // `antiunifications_by_state[s1] × ... ×
-            // antiunifications_by_state[sn]`
+  //           // For a rule `op(s1, ..., sn) -> state`, we add an
+  //           // antiunification of the form `(op a1 ... an)` for every
+  //           // combination `a1, ..., an` of antiunifications of the
+  //           // input states `s1, ..., sn`, i.e., for every `(a1, ..., an)`
+  //           // in the cartesian product
+  //           // `antiunifications_by_state[s1] × ... ×
+  //           // antiunifications_by_state[sn]`
 
-            let smax_arity = self.max_arity;
+  //           let smax_arity = self.max_arity;
 
-            let new_aus = {
-              let au_range = inputs.iter().map(|input| {
-                let data: Vec<_> =
-                  self.aus_by_state[input].iter().cloned().collect();
-                data
-              });
-              let au_range: Vec<Vec<AU<Op, (Id, Id)>>> =
-                au_range.collect::<Vec<_>>();
-              let new_au = match self.liblearn_config.au_merge_mod {
-                AUMergeMod::Random => get_random_aus(au_range, 1000),
-                AUMergeMod::Kd => kd_random_aus(au_range, 1000),
-                AUMergeMod::Greedy => greedy_aus(au_range),
-                AUMergeMod::Catesian => greedy_aus(au_range),
-              };
-              // get_random_aus(au_range, 10)
-              //beam_search_aus(au_range, 1000, 2000)
-              // genetic_algorithm_aus(au_range, 1000, 500, 50)
-              // au_range.into_iter().multi_cartesian_product()
-              new_au
-                .into_iter()
-                .map(|inputs| {
-                  // println!("inputs length is {}", inputs.len());
-                  // let inputs = inputs.into_iter().map(|au| au.expr.clone());
-                  let result =
-                    PartialExpr::from(AstNode::new(op1.clone(), inputs));
-                  result
-                })
-                .filter(|au| {
-                  let result = smax_arity.map_or(true, |max_arity| {
-                    au.unique_holes().len() <= max_arity
-                  });
-                  result
-                })
-            };
-            // info!("length: {}",new_aus.clone().count());
-            // let mut new_aus = new_aus.collect::<Vec<_>>();
-            // info!("new_aus is done");
-            // // 如果超过1000个，就随机抽取1000个
-            // if new_aus.len() > 100 {
-            //   let mut new_aus_vec: Vec<PartialExpr<Op, (Id, Id)>> =
-            // new_aus.clone();   let mut rng = rand::thread_rng();
-            //   new_aus_vec.shuffle(&mut rng);
-            //   new_aus = new_aus_vec.into_iter().take(100).collect();
-            // }
-            // // 使用deduplicate_from_candidates去重
-            info!("aus_state.len() is {}", self.aus_by_state.len());
-            info!("deduplicating new_aus last: {} ", new_aus.clone().count());
-            let new_aus_dedu = self
-              .deduplicate_from_candidates::<EmptyAnalysis<Op>>(
-                new_aus.clone(),
-              );
-            info!("now  is {}", new_aus_dedu.len());
-            let start_total = Instant::now(); // 总的执行时间
-            aus.extend(new_aus_dedu);
-            info!(
-              "Total processing time: {:?}, lenth of new_aus and aus is {}",
-              start_total.elapsed(),
-              aus.len()
-            ); // 总的处理时间
-          }
-        } else {
-          different = true;
-        }
-      }
-    }
+  //           let new_aus = {
+  //             let au_range = inputs.iter().map(|input| {
+  //               let data: Vec<_> =
+  //                 self.aus_by_state[input].iter().cloned().collect();
+  //               data
+  //             });
+  //             let au_range: Vec<Vec<AU<Op, (Id, Id), Type>>> =
+  //               au_range.collect::<Vec<_>>();
+  //             let new_au = match self.liblearn_config.au_merge_mod {
+  //               AUMergeMod::Random => get_random_aus(au_range, 1000),
+  //               AUMergeMod::Kd => kd_random_aus(au_range, 1000),
+  //               AUMergeMod::Greedy => greedy_aus(au_range),
+  //               AUMergeMod::Catesian => greedy_aus(au_range),
+  //             };
+  //             // get_random_aus(au_range, 10)
+  //             //beam_search_aus(au_range, 1000, 2000)
+  //             // genetic_algorithm_aus(au_range, 1000, 500, 50)
+  //             // au_range.into_iter().multi_cartesian_product()
+  //             new_au
+  //               .into_iter()
+  //               .map(|inputs| {
+  //                 // println!("inputs length is {}", inputs.len());
+  //                 // let inputs = inputs.into_iter().map(|au|
+  // au.expr.clone());                 let result =
+  //                   PartialExpr::from(AstNode::new(op1.clone(), inputs));
+  //                 result
+  //               })
+  //               .filter(|au| {
+  //                 let result = smax_arity.map_or(true, |max_arity| {
+  //                   au.unique_holes().len() <= max_arity
+  //                 });
+  //                 result
+  //               })
+  //           };
+  //           // info!("length: {}",new_aus.clone().count());
+  //           // let mut new_aus = new_aus.collect::<Vec<_>>();
+  //           // info!("new_aus is done");
+  //           // // 如果超过1000个，就随机抽取1000个
+  //           // if new_aus.len() > 100 {
+  //           //   let mut new_aus_vec: Vec<PartialExpr<Op, (Id, Id)>> =
+  //           // new_aus.clone();   let mut rng = rand::thread_rng();
+  //           //   new_aus_vec.shuffle(&mut rng);
+  //           //   new_aus = new_aus_vec.into_iter().take(100).collect();
+  //           // }
+  //           // // 使用deduplicate_from_candidates去重
+  //           info!("aus_state.len() is {}", self.aus_by_state.len());
+  //           info!("deduplicating new_aus last: {} ",
+  // new_aus.clone().count());           let new_aus_dedu = self
+  //             .deduplicate_from_candidates::<EmptyAnalysis<Op, Type>>(
+  //               new_aus.clone(),
+  //             );
+  //           info!("now  is {}", new_aus_dedu.len());
+  //           let start_total = Instant::now(); // 总的执行时间
+  //           aus.extend(new_aus_dedu);
+  //           info!(
+  //             "Total processing time: {:?}, lenth of new_aus and aus is {}",
+  //             start_total.elapsed(),
+  //             aus.len()
+  //           ); // 总的处理时间
+  //         }
+  //       } else {
+  //         different = true;
+  //       }
+  //     }
+  //   }
 
-    if same && different {
-      let new_expr = PartialExpr::Hole(state);
-      aus.insert(AU::new_with_expr(
-        new_expr,
-        &self.egraph,
-        self.liblearn_config.cost.clone(),
-      ));
-    }
-    self.filter_aus(aus, state);
-  }
+  //   if same && different {
+  //     let new_expr = PartialExpr::Hole(state);
+  //     aus.insert(AU::new_with_expr(
+  //       new_expr,
+  //       &self.egraph,
+  //       self.liblearn_config.cost.clone(),
+  //     ));
+  //   }
+  //   self.filter_aus(aus, state);
+  // }
 
   /// Computes the antiunifications of `state` in the `egraph`.
   /// This avoids computing all of the cross products ahead of time, which is
@@ -1296,7 +1484,9 @@ where
     &mut self,
     egraph: &EGraph<AstNode<Op>, A>,
     state: (Id, Id),
-  ) {
+  ) where
+    <A as Analysis<AstNode<Op>>>::Data: ClassMatch,
+  {
     if self.aus_by_state.contains_key(&state) {
       // we have already enumerated this state
       return;
@@ -1308,7 +1498,7 @@ where
       return;
     }
 
-    let mut aus: BTreeSet<AU<Op, (Id, Id)>> = BTreeSet::new();
+    let mut aus: BTreeSet<AU<Op, (Id, Id), Type>> = BTreeSet::new();
 
     let mut same = false;
     let mut different = false;
@@ -1385,7 +1575,7 @@ where
             info!("deduplicating new_aus last: {} ", new_aus.clone().count());
 
             let new_aus_dedu = self
-              .deduplicate_from_candidates::<EmptyAnalysis<Op>>(
+              .deduplicate_from_candidates::<EmptyAnalysis<Op, Type>>(
                 new_aus.clone(),
               );
             // info!("now  is {}", new_aus_dedu.len());
@@ -1417,14 +1607,17 @@ where
       ));
     }
 
-    self.filter_aus(aus, state);
+    self.filter_aus(aus, state, egraph);
   }
 
-  fn filter_aus(
+  fn filter_aus<A: Analysis<AstNode<Op>> + Clone>(
     &mut self,
-    mut aus: BTreeSet<AU<Op, (Id, Id)>>,
+    mut aus: BTreeSet<AU<Op, (Id, Id), Type>>,
     state: (Id, Id),
-  ) {
+    egraph: &EGraph<AstNode<Op>, A>,
+  ) where
+    <A as Analysis<AstNode<Op>>>::Data: ClassMatch,
+  {
     if aus.is_empty() {
       let new_expr = PartialExpr::Hole(state);
       aus.insert(AU::new_with_expr(
@@ -1455,7 +1648,7 @@ where
             au.delay().clone(),
           )
         })
-        .filter_map(|((au, num_vars), matches, delay)| {
+        .filter_map(|((au, num_vars, var2id), matches, delay)| {
           // Here we filter out rewrites that don't actually simplify
           // anything. We say that an AU rewrite simplifies an
           // expression if it replaces that expression with a function
@@ -1488,17 +1681,37 @@ where
             // println!("learn_trivial: {}, num_vars < au.num_holes(): {},
             // au.num_nodes() > num_vars: {}", learn_trivial, num_vars <
             // au.num_holes(), au.num_nodes() > num_vars);
-            Some(AU::new(
-              au,
-              matches,
-              delay,
-              self.liblearn_config.cost.clone(),
-            ))
+            // 从var2id中取出变量对应的eclassId，
+            // 从Id对应的eclass中拿到data作为变量类型
+            let mut ty_map = HashMap::new();
+            for (k, v) in var2id.iter() {
+              let id = v.clone();
+              let ty_str = egraph[id.0].data.get_type();
+              let tys = ty_str
+                .iter()
+                .map(|s| {
+                  let ty = s.parse::<Type>().unwrap_or_else(|_| {
+                    panic!("parse type error: {}", s);
+                  });
+                  ty
+                })
+                .collect::<Vec<_>>();
+              ty_map.insert(k.clone(), tys);
+            }
+            Some(AUWithType {
+              au: AU::new(
+                au.clone(),
+                matches,
+                delay,
+                self.liblearn_config.cost.clone(),
+              ),
+              ty_map,
+            })
           } else {
             None
           }
         })
-        .filter(|au| match au.expr.clone() {
+        .filter(|au| match au.au.expr.clone() {
           PartialExpr::Node(ast_node) => !banned_ops
             .iter()
             .any(|op| ast_node.operation().discriminant_eq(op)),
@@ -1519,26 +1732,28 @@ where
 /// anti-unifications. Returns a pair of the anti-unification and the number of
 /// unique variables it contains.
 #[must_use]
-pub fn normalize<Op, T: Eq>(
+pub fn normalize<Op, T: Eq + Clone>(
   au: PartialExpr<Op, T>,
-) -> (PartialExpr<Op, Var>, usize) {
+) -> (PartialExpr<Op, Var>, usize, HashMap<Var, T>) {
   let mut metavars = Vec::new();
-  let to_var = |metavar| {
+  let mut var2_id = HashMap::new();
+  let to_var = |metavar: T| {
     let index = metavars
       .iter()
       .position(|other| other == &metavar)
       .unwrap_or_else(|| {
-        metavars.push(metavar);
+        metavars.push(metavar.clone());
         metavars.len() - 1
       });
 
-    let var = format!("?x{index}")
+    let var: Var = format!("?x{index}")
       .parse()
       .unwrap_or_else(|_| unreachable!());
+    var2_id.insert(var.clone(), metavar);
     PartialExpr::Hole(var)
   };
   let normalized = au.fill(to_var);
-  (normalized, metavars.len())
+  (normalized, metavars.len(), var2_id)
 }
 
 #[allow(dead_code)]

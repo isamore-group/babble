@@ -2,7 +2,7 @@
 //! babble.
 
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   convert::Infallible,
   fmt::{self, Display, Formatter},
   str::FromStr,
@@ -15,7 +15,7 @@ use strum::Display;
 use crate::{
   DiscriminantEq, Expr, Precedence, Printer,
   ast_node::{Arity, AstNode, Memoize, Printable},
-  extract::beam_pareto::TypeInfo,
+  extract::beam_pareto::{ClassMatch, TypeInfo, TypeSet},
   learn::LibId,
   runner::OperationInfo,
   schedule::Schedulable,
@@ -335,6 +335,18 @@ pub enum SimpleType {
   #[strum(to_string = "int<{0}>")]
   IntT(usize),
   Unknown,
+}
+
+impl FromStr for SimpleType {
+  type Err = Infallible;
+
+  fn from_str(input: &str) -> Result<Self, Self::Err> {
+    let op: SimpleType = match input {
+      "int" => Self::IntT(0),
+      _ => Self::Unknown,
+    };
+    Ok(op)
+  }
 }
 
 impl Eq for SimpleType {}

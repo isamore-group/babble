@@ -9,6 +9,7 @@ use std::{
   fs::File,
   hash::Hash,
   io::{self, Write},
+  str::FromStr,
   sync::Arc,
   time::{Duration, Instant},
 };
@@ -21,8 +22,9 @@ use crate::{
   Printable, Teachable,
   extract::{
     self,
-    beam_pareto::{ISAXAnalysis, LibExtractor, TypeInfo},
+    beam_pareto::{ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet},
   },
+  rewrites::TypeMatch,
   schedule::Schedulable,
 };
 
@@ -92,7 +94,8 @@ where
   /// The number of libraries learned
   pub num_libs: usize,
   /// The rewrites representing the learned libraries
-  pub rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  pub rewrites_with_conditon:
+    HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
   /// The final cost of the expression
   pub final_cost: f32,
   /// The time taken to run the experiment
@@ -265,12 +268,14 @@ where
     + Debug
     + 'static,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  TypeSet<T>: ClassMatch,
   AstNode<Op>: TypeInfo<T>,
 {
   /// The domain-specific rewrites to apply
   dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   /// lib rewrites
-  lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  lib_rewrites_with_condition:
+    HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
   /// Configuration for the beam search
   config: ParetoConfig,
   type_info_map: HashMap<(String, Vec<T>), T>,
@@ -302,14 +307,19 @@ where
     + Send
     + Sync
     + 'static
-    + Display,
+    + Display
+    + FromStr,
+  TypeSet<T>: ClassMatch,
   AstNode<Op>: TypeInfo<T>,
 {
   /// Create a new BeamRunner with the given domain-specific rewrites and
   /// configuration
   pub fn new<I>(
     dsrs: I,
-    lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+    lib_rewrites_with_condition: HashMap<
+      usize,
+      (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>),
+    >,
     config: ParetoConfig,
     type_info_map: HashMap<(String, Vec<T>), T>,
   ) -> Self
@@ -320,7 +330,7 @@ where
     let dsrs = dsrs.into_iter().collect();
     Self {
       dsrs,
-      lib_rewrites,
+      lib_rewrites_with_condition,
       config,
       type_info_map,
     }
@@ -399,6 +409,7 @@ where
     let dedup_time = Instant::now();
     learned_lib.deduplicate(&aeg);
     let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
+    let rewrite_conditions: Vec<_> = learned_lib.conditions().collect();
     // let first_rewrite = lib_rewrites[0].clone();
     // println!(
     //   "first rewrite: {:?}",
@@ -460,16 +471,35 @@ where
       if lib.0.0 < max_lib_id {
         // 从self.lib_rewrites中取出
         // 打印self.lib_rewrites
-        println!("{}: {:?}", lib.0.0, self.lib_rewrites);
-        chosen_rewrites.push(self.lib_rewrites.get(&lib.0.0).unwrap().clone());
-        rewrites_map
-          .insert(lib.0.0, self.lib_rewrites.get(&lib.0.0).unwrap().clone());
+        // println!("{}: {:?}", lib.0.0, self.lib_rewrites_with_condition);
+        chosen_rewrites.push(
+          self
+            .lib_rewrites_with_condition
+            .get(&lib.0.0)
+            .unwrap()
+            .0
+            .clone(),
+        );
+        rewrites_map.insert(
+          lib.0.0,
+          self
+            .lib_rewrites_with_condition
+            .get(&lib.0.0)
+            .unwrap()
+            .clone(),
+        );
       } else {
         let new_lib = lib.0.0 - max_lib_id;
         chosen_rewrites.push(lib_rewrites[new_lib].clone());
         learned_libs
           .push(learned_lib.libs().collect::<Vec<_>>()[new_lib].clone());
-        rewrites_map.insert(lib.0.0, lib_rewrites[new_lib].clone());
+        rewrites_map.insert(
+          lib.0.0,
+          (
+            lib_rewrites[new_lib].clone(),
+            rewrite_conditions[new_lib].clone(),
+          ),
+        );
       }
     }
 
@@ -525,7 +555,7 @@ where
     ParetoResult {
       final_expr: best.into(),
       num_libs: chosen_rewrites.len(),
-      rewrites: rewrites_map,
+      rewrites_with_conditon: rewrites_map,
       final_cost: final_cost,
       run_time: start_time.elapsed(),
       learned_lib: learned_libs,
@@ -559,7 +589,9 @@ where
     + Send
     + Sync
     + 'static
-    + Display,
+    + Display
+    + FromStr,
+  TypeSet<T>: ClassMatch,
   AstNode<Op>: TypeInfo<T>,
 {
   fn run(&self, expr: Expr<Op>) -> ParetoResult<Op, T> {
@@ -684,6 +716,7 @@ where
     + Debug
     + 'static,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  TypeSet<T>: ClassMatch,
   AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

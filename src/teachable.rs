@@ -210,6 +210,10 @@ pub enum ShieldingOp {
   Function(String),
   Dummy(String),
   RulerVar,
+  IOBarrier,
+  ZExt,
+  FPTrunc,
+  FPExt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
@@ -252,5 +256,14 @@ pub enum ShieldingBop {
 pub enum ShieldingUop {
   Abs,
   Not,
-  Cast,
+  Cast(CastOp),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
+pub enum CastOp {
+  ZExt,
+  SExt,
+  Trunc,
+  FPTrunc,
+  FPExt,
 }

@@ -18,13 +18,26 @@ use std::{hash::Hash, time::Instant};
 
 /// 定义Vec<PatialExpr<Op, Var>>的类型
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VecPE<Op> {
-  aus: Vec<AU<Op, (Id, Id)>>,
+pub struct VecPE<Op, Type> {
+  aus: Vec<AU<Op, (Id, Id), Type>>,
   cost_config: LiblearnCost,
 }
 /// 为VecPE实现new_with_egraph
-impl<Op> VecPE<Op> {
-  pub fn new(aus: Vec<AU<Op, (Id, Id)>>) -> Self {
+impl<Op, Type> VecPE<Op, Type>
+where
+  Op: Clone
+    + Debug
+    + Hash
+    + Ord
+    + Display
+    + Arity
+    + Teachable
+    + Sync
+    + Send
+    + 'static,
+  Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
+{
+  pub fn new(aus: Vec<AU<Op, (Id, Id), Type>>) -> Self {
     let cost_config = if aus.len() > 0 {
       aus[0].liblearn_cost()
     } else {
@@ -35,7 +48,7 @@ impl<Op> VecPE<Op> {
 }
 
 /// 为VecPE实现PartialOrd
-impl<Op: Eq> PartialOrd for VecPE<Op> {
+impl<Op: Eq, Type: Eq> PartialOrd for VecPE<Op, Type> {
   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
     // Some(self.matches.cmp(&other.matches))
     // 计算exprs中每个au的expr()的size的和
@@ -71,7 +84,7 @@ impl<Op: Eq> PartialOrd for VecPE<Op> {
 }
 
 /// 为VecPE实现Ord
-impl<Op: Eq> Ord for VecPE<Op> {
+impl<Op: Eq, Type: Eq> Ord for VecPE<Op, Type> {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     // self.matches.cmp(&other.matches)
     // let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
@@ -109,8 +122,8 @@ impl<Op: Eq> Ord for VecPE<Op> {
 
 /// 从指定的集合中随机抽取K个特征解
 
-pub fn get_random_aus<Op>(
-  aus: Vec<Vec<AU<Op, (Id, Id)>>>,
+pub fn get_random_aus<Op, Type>(
+  aus: Vec<Vec<AU<Op, (Id, Id), Type>>>,
   m: usize,
 ) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
 where
@@ -124,6 +137,7 @@ where
     + Sync
     + Send
     + 'static,
+  Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
 {
   // 如果aus是空的或者aus中的元素是空的，直接返回空
   if aus.is_empty() || aus.iter().any(|x| x.is_empty()) {
@@ -141,7 +155,7 @@ where
   let cartesian_product = if cal_cartesian_flag {
     info!("cal_cartesian");
     // 计算aus中每个Vec的size的乘积
-    let cartesian_product: Vec<Vec<AU<Op, (Id, Id)>>> = aus
+    let cartesian_product: Vec<Vec<AU<Op, (Id, Id), Type>>> = aus
       .iter()
       .multi_cartesian_product()
       .map(|x| x.into_iter().cloned().collect())
@@ -160,7 +174,7 @@ where
       .collect();
   }
   // 定义一个闭包，用于将Vec<AU<Op, (Id, Id)>>组成VecPE
-  let au2pe = |vec: Vec<AU<Op, (Id, Id)>>| VecPE::new(vec);
+  let au2pe = |vec: Vec<AU<Op, (Id, Id), Type>>| VecPE::new(vec);
   let mut lower_bound = Vec::new();
   let mut upper_bound = Vec::new();
   for i in 0..aus.len() {
@@ -190,7 +204,7 @@ where
     // 从每个集合中随机抽样获得range个样本集
     let mut rng = rand::thread_rng();
     for _ in 0..range {
-      let sample_aus: Vec<AU<_, _>> = aus
+      let sample_aus: Vec<AU<_, _, _>> = aus
         .iter()
         .filter_map(|vec| vec.choose(&mut rng).cloned()) // 从每个 `aus[i]` 里随机选一个
         .collect();
@@ -351,8 +365,8 @@ fn binary_split(m: usize, n: usize) -> Vec<Vec<usize>> {
   segments
 }
 
-pub fn kd_random_aus<Op>(
-  aus: Vec<Vec<AU<Op, (Id, Id)>>>,
+pub fn kd_random_aus<Op, Type>(
+  aus: Vec<Vec<AU<Op, (Id, Id), Type>>>,
   m: usize,
 ) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
 where
@@ -366,6 +380,7 @@ where
     + Sync
     + Send
     + 'static,
+  Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
 {
   // 如果aus是空的或者aus中的元素是空的，直接返回空
   if aus.is_empty() || aus.iter().any(|x| x.is_empty()) {
@@ -380,7 +395,7 @@ where
   let cartesian_product = if cal_cartesian_flag {
     info!("cal_cartesian");
     // 计算aus中每个Vec的size的乘积
-    let cartesian_product: Vec<Vec<AU<Op, (Id, Id)>>> = aus
+    let cartesian_product: Vec<Vec<AU<Op, (Id, Id), Type>>> = aus
       .iter()
       .multi_cartesian_product()
       .map(|x| x.into_iter().cloned().collect())
@@ -400,7 +415,7 @@ where
   }
   // 定义一个闭包，用于将Vec<AU<Op, (Id,
   // Id)>>中的PE和matches分别对应收集起来，组成VecPE
-  let au2pe = |vec: Vec<AU<Op, (Id, Id)>>| VecPE::new(vec);
+  let au2pe = |vec: Vec<AU<Op, (Id, Id), Type>>| VecPE::new(vec);
   let candidates = if cal_cartesian_flag {
     info!("insert into BTreeSet");
     info!("cartesian_product.size: {}", cartesian_product.len());
@@ -532,8 +547,8 @@ where
 
 // 一个小测试，因为实验中发现好像采样方法改变好像对于结果影响不大，
 // 所以此处写一个greedy_aus,对于给定的aus，只只取最大值和最小值
-pub fn greedy_aus<Op>(
-  aus: Vec<Vec<AU<Op, (Id, Id)>>>,
+pub fn greedy_aus<Op, Type>(
+  aus: Vec<Vec<AU<Op, (Id, Id), Type>>>,
 ) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
 where
   Op: Clone
@@ -546,6 +561,7 @@ where
     + Sync
     + Send
     + 'static,
+  Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
 {
   // 如果aus是空的或者aus中的元素是空的，直接返回空
   if aus.is_empty() || aus.iter().any(|x| x.is_empty()) {
