@@ -27,8 +27,12 @@ use crate::{
   },
   rewrites::TypeMatch,
   schedule::Schedulable,
+  vectorize::{VectorCF, vectorize},
 };
-use egg::{EGraph, Id, RecExpr, Rewrite, Runner as EggRunner};
+use egg::{
+  AstSize, EGraph, Extractor, Id, Language, RecExpr, Rewrite,
+  Runner as EggRunner,
+};
 use log::{debug, info};
 
 /// 定义一个trait名为OperationInfo,其中有两个函数，分别为get_libid,
@@ -37,12 +41,41 @@ pub trait OperationInfo {
   fn is_lib(&self) -> bool;
   /// Get the library ID of the operation
   fn get_libid(&self) -> usize;
+  /// make a list op
+  fn make_vec(result_tys: Vec<String>) -> Self;
+  /// make a get op
+  fn make_get(id: usize, result_tys: Vec<String>) -> Self;
   /// Get the constant value of the operation
   fn get_const(&self) -> Option<(i64, u32)>;
   /// Make an AST node for type-awared Const
   fn make_const(const_value: (i64, u32)) -> Self;
   /// judge whether a node is dummy
   fn is_dummy(&self) -> bool;
+  /// judge whether a node is a vector op
+  fn is_vector_op(&self) -> bool;
+  /// get_simple_cost
+  fn get_simple_cost(&self) -> usize;
+  /// For List and Vec, though args may have different order , but they are the
+  /// sam, this function is used to judge
+  fn is_vec(&self) -> bool {
+    false
+  }
+  /// make gather node
+  fn make_gather(indices: &Vec<usize>) -> Self;
+  /// make shuffle node
+  fn make_shuffle(indices: &Vec<usize>) -> Self;
+  /// get_bbs_info: will be used in vectorization
+  fn get_bbs_info(&self) -> Vec<String> {
+    vec![]
+  }
+  /// 为每个Operation设置返回类型
+  fn set_result_type(&mut self, result_ty: Vec<String>) {
+    // do nothing
+  }
+  /// get_vec_len
+  fn get_vec_len(&self) -> usize {
+    1
+  }
 }
 
 /// A trait for running library learning experiments with Pareto optimization
@@ -89,7 +122,8 @@ where
     + Arity
     + Debug
     + Schedulable
-    + 'static,
+    + 'static
+    + OperationInfo,
   T: Debug,
 {
   /// The final expression after library learning and application
@@ -119,7 +153,8 @@ where
     + Arity
     + Debug
     + Schedulable
-    + 'static,
+    + 'static
+    + OperationInfo,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
 {
@@ -335,6 +370,22 @@ where
     let mut message = HashMap::new();
     let start_time = Instant::now();
     let timeout = Duration::from_secs(60 * 100_000);
+    // let mut egraph = egraph.clone();
+    // let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+    let vectorized_egraph = vectorize(
+      egraph.clone(),
+      roots,
+      self.dsrs.clone(),
+      self.config.clone(),
+    );
+    let (cost, expr) =
+      Extractor::new(&vectorized_egraph, VectorCF).find_best(roots[0]);
+    println!("cost: {:?}", cost);
+    let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
+    println!("pretty expr: {}", pretty_expr);
+    for (id, node) in expr.into_iter().enumerate() {
+      println!("{}: {:?}", id, node);
+    }
 
     println!(
       "Initial egraph size: {}, eclasses: {}",
@@ -396,7 +447,7 @@ where
       }
     }
     max_lib_id = if max_lib_id == 0 { 0 } else { max_lib_id + 1 };
-    let mut learned_lib = LearnedLibraryBuilder::default()
+    let learned_lib = LearnedLibraryBuilder::default()
       .learn_constants(self.config.learn_constants)
       .max_arity(self.config.max_arity)
       // .with_co_occurs(co_occurs)
@@ -415,11 +466,12 @@ where
       format!("{}ms", au_time.elapsed().as_millis()).to_string(),
     );
 
-    info!("Deduplicating patterns... ");
+    // info!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
-    learned_lib.deduplicate(&aeg);
+    // learned_lib.deduplicate(&aeg);
     let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
     let rewrite_conditions: Vec<_> = learned_lib.conditions().collect();
+
     // let first_rewrite = lib_rewrites[0].clone();
     // println!(
     //   "first rewrite: {:?}",

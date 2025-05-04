@@ -1,6 +1,6 @@
 //! ycy：实现不使用笛卡尔积的au选择算法
 use crate::learn::AU;
-use crate::runner::LiblearnCost;
+use crate::runner::{LiblearnCost, OperationInfo};
 use crate::{
   ast_node::{Arity, PartialExpr},
   teachable::Teachable,
@@ -18,7 +18,7 @@ use std::{hash::Hash, time::Instant};
 
 /// 定义Vec<PatialExpr<Op, Var>>的类型
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VecPE<Op, Type> {
+pub struct VecPE<Op: OperationInfo + Clone + Ord, Type> {
   aus: Vec<AU<Op, (Id, Id), Type>>,
   cost_config: LiblearnCost,
 }
@@ -34,7 +34,8 @@ where
     + Teachable
     + Sync
     + Send
-    + 'static,
+    + 'static
+    + OperationInfo,
   Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
 {
   pub fn new(aus: Vec<AU<Op, (Id, Id), Type>>) -> Self {
@@ -48,7 +49,9 @@ where
 }
 
 /// 为VecPE实现PartialOrd
-impl<Op: Eq, Type: Eq> PartialOrd for VecPE<Op, Type> {
+impl<Op: Eq + OperationInfo + Clone + Ord, Type: Eq> PartialOrd
+  for VecPE<Op, Type>
+{
   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
     // Some(self.matches.cmp(&other.matches))
     // 计算exprs中每个au的expr()的size的和
@@ -84,7 +87,7 @@ impl<Op: Eq, Type: Eq> PartialOrd for VecPE<Op, Type> {
 }
 
 /// 为VecPE实现Ord
-impl<Op: Eq, Type: Eq> Ord for VecPE<Op, Type> {
+impl<Op: Eq + OperationInfo + Clone + Ord, Type: Eq> Ord for VecPE<Op, Type> {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     // self.matches.cmp(&other.matches)
     // let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
@@ -136,7 +139,8 @@ where
     + Teachable
     + Sync
     + Send
-    + 'static,
+    + 'static
+    + OperationInfo,
   Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
 {
   // 如果aus是空的或者aus中的元素是空的，直接返回空
@@ -240,8 +244,8 @@ where
   selected_elements
     .push(upper_bound.iter().map(|x| x.expr().clone()).collect());
   // 加入下界
-  selected_elements
-    .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
+  // selected_elements
+  //   .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
   selected_elements
 }
 
@@ -379,7 +383,8 @@ where
     + Teachable
     + Sync
     + Send
-    + 'static,
+    + 'static
+    + OperationInfo,
   Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
 {
   // 如果aus是空的或者aus中的元素是空的，直接返回空
@@ -540,8 +545,8 @@ where
   }
   selected_elements
     .push(upper_bound.iter().map(|x| x.expr().clone()).collect());
-  selected_elements
-    .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
+  // selected_elements
+  //   .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
   selected_elements
 }
 
@@ -560,7 +565,8 @@ where
     + Teachable
     + Sync
     + Send
-    + 'static,
+    + 'static
+    + OperationInfo,
   Type: Clone + Debug + Hash + Ord + Display + Sync + Send + 'static,
 {
   // 如果aus是空的或者aus中的元素是空的，直接返回空

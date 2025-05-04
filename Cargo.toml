@@ -49,6 +49,8 @@ bitvec = "1.0"
 rayon = "1.8"
 strum = { version = "0.27", features = ["derive"] }
 csv = "1.2"
+lexpr = "0.2.7"
+indexmap = "1.9"
 
 [profile.release]
 debug = true

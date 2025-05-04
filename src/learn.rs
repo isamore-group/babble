@@ -21,10 +21,11 @@ use crate::runner::{
 };
 use crate::{
   COBuilder,
+  analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode, Expr, PartialExpr},
   co_occurrence::CoOccurrences,
   dfta::Dfta,
-  extract::beam_pareto::{ClassMatch, EmptyAnalysis},
+  extract::beam_pareto::ClassMatch,
   schedule::{Schedulable, Scheduler},
   teachable::{BindingExpr, Teachable},
 };
@@ -114,7 +115,7 @@ impl Match {
 }
 // 用来保存AU和其对应的Match
 #[derive(Debug, Clone)]
-pub struct AU<Op, T, Type> {
+pub struct AU<Op: OperationInfo + Clone + Ord, T: Clone + Ord, Type> {
   /// The anti-unification
   expr: PartialExpr<Op, T>,
   /// The matches
@@ -127,21 +128,31 @@ pub struct AU<Op, T, Type> {
   _phantom: std::marker::PhantomData<Type>,
 }
 
-impl<Op: PartialEq, T: PartialEq, Type> PartialEq for AU<Op, T, Type> {
+impl<
+  Op: PartialEq + OperationInfo + Clone + Ord,
+  T: PartialEq + Clone + Ord,
+  Type,
+> PartialEq for AU<Op, T, Type>
+{
   fn eq(&self, other: &Self) -> bool {
     self.expr == other.expr
   }
 }
 
-impl<Op: Eq, T: Eq, Type> Eq for AU<Op, T, Type> {}
+impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> Eq
+  for AU<Op, T, Type>
+{
+}
 
-impl<Op: Hash, T: Hash, Type> Hash for AU<Op, T, Type> {
+impl<Op: Hash + OperationInfo + Clone + Ord, T: Hash + Clone + Ord, Type> Hash
+  for AU<Op, T, Type>
+{
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.expr.hash(state);
   }
 }
 
-impl<Op, T, Type> AU<Op, T, Type>
+impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord, Type> AU<Op, T, Type>
 where
   Type: Debug
     + Default
@@ -173,7 +184,7 @@ where
   }
   pub fn new_with_expr(
     expr: PartialExpr<Op, T>,
-    egraph: &EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
+    egraph: &EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
     liblearn_cost: LiblearnCost,
   ) -> Self
   where
@@ -204,7 +215,7 @@ where
   }
 }
 
-impl<Op, T, Type> AU<Op, T, Type> {
+impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord, Type> AU<Op, T, Type> {
   pub fn expr(&self) -> &PartialExpr<Op, T> {
     &self.expr
   }
@@ -222,7 +233,9 @@ impl<Op, T, Type> AU<Op, T, Type> {
   }
 }
 // 为AU实现Ord，只对比matches的大小
-impl<Op: Eq, T: Eq, Type> PartialOrd for AU<Op, T, Type> {
+impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> PartialOrd
+  for AU<Op, T, Type>
+{
   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
     // Some(self.matches.cmp(&other.matches))
     // Some(self.expr.size().cmp(&other.expr.size()))
@@ -235,7 +248,9 @@ impl<Op: Eq, T: Eq, Type> PartialOrd for AU<Op, T, Type> {
   }
 }
 
-impl<Op: Eq, T: Eq, Type> Ord for AU<Op, T, Type> {
+impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> Ord
+  for AU<Op, T, Type>
+{
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     // self.matches.cmp(&other.matches)
     // self.expr.size().cmp(&other.expr.size())
@@ -262,7 +277,8 @@ where
     + DiscriminantEq
     + 'static
     + Teachable
-    + Schedulable,
+    + Schedulable
+    + OperationInfo,
   Type: Debug
     + Default
     + Clone
@@ -275,7 +291,7 @@ where
     + Display,
   AstNode<Op>: TypeInfo<Type>,
 {
-  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
+  egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
   learn_trivial: bool,
   learn_constants: bool,
   max_arity: Option<usize>,
@@ -301,7 +317,8 @@ where
     + DiscriminantEq
     + 'static
     + Teachable
-    + Schedulable,
+    + Schedulable
+    + OperationInfo,
   Type: Debug
     + Default
     + Clone
@@ -360,7 +377,8 @@ where
     + DiscriminantEq
     + 'static
     + Teachable
-    + Schedulable,
+    + Schedulable
+    + OperationInfo,
   AstNode<Op>: Language,
   Type: Debug
     + Default
@@ -377,7 +395,7 @@ where
   AstNode<Op>: TypeInfo<Type>,
 {
   pub fn make_with_egraph_ld(
-    egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
+    egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
   ) -> Self {
     Self {
       egraph,
@@ -409,7 +427,8 @@ where
     + DiscriminantEq
     + 'static
     + Teachable
-    + Schedulable,
+    + Schedulable
+    + OperationInfo,
   AstNode<Op>: Language,
   Type: Debug
     + Default
@@ -534,23 +553,27 @@ pub trait DiscriminantEq {
 }
 
 #[derive(Debug, Clone)]
-pub struct AUWithType<Op, Type> {
+pub struct AUWithType<Op: OperationInfo + Clone + Ord, Type> {
   pub au: AU<Op, Var, Type>,
   pub ty_map: HashMap<Var, Vec<Type>>,
 }
-impl<Op: PartialEq + Eq, Type> PartialEq for AUWithType<Op, Type> {
+impl<Op: PartialEq + Eq + OperationInfo + Clone + Ord, Type> PartialEq
+  for AUWithType<Op, Type>
+{
   fn eq(&self, other: &Self) -> bool {
     self.au == other.au
   }
 }
-impl<Op: Eq, Type> Eq for AUWithType<Op, Type> {}
+impl<Op: Eq + OperationInfo + Clone + Ord, Type> Eq for AUWithType<Op, Type> {}
 
-impl<Op: Eq, Type> PartialOrd for AUWithType<Op, Type> {
+impl<Op: Eq + OperationInfo + Clone + Ord, Type> PartialOrd
+  for AUWithType<Op, Type>
+{
   fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
     Some(self.au.cmp(&other.au))
   }
 }
-impl<Op: Eq, Type> Ord for AUWithType<Op, Type> {
+impl<Op: Eq + OperationInfo + Clone + Ord, Type> Ord for AUWithType<Op, Type> {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
     self.au.cmp(&other.au)
   }
@@ -575,7 +598,8 @@ where
     + DiscriminantEq
     + Hash
     + 'static
-    + Teachable,
+    + Teachable
+    + OperationInfo,
   Type: Debug
     + Default
     + Clone
@@ -589,8 +613,9 @@ where
     + FromStr,
   TypeSet<Type>: ClassMatch,
   AstNode<Op>: TypeInfo<Type>,
+  T: Clone + Ord,
 {
-  egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
+  egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
   /// A map from DFTA states (i.e. pairs of enodes) to their antiunifications.
   aus_by_state: BTreeMap<T, BTreeSet<AU<Op, T, Type>>>,
   /// A set of all the antiunifications discovered.
@@ -662,7 +687,7 @@ where
   /// of enodes to find their common structure.
   fn new<A: Analysis<AstNode<Op>> + Clone>(
     egraph: &'a EGraph<AstNode<Op>, A>,
-    my_egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op, Type>>,
+    my_egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
     learn_trivial: bool,
     learn_constants: bool,
     max_arity: Option<usize>,
@@ -1014,6 +1039,7 @@ where
     + FromStr,
   TypeSet<Type>: ClassMatch,
   AstNode<Op>: TypeInfo<Type>,
+  T: Clone + Ord,
 {
   /// Returns an iterator over rewrite rules that replace expressions with
   /// equivalent calls to a learned library function.
@@ -1395,7 +1421,7 @@ where
   //           info!("aus_state.len() is {}", self.aus_by_state.len());
   //           info!("deduplicating new_aus last: {} ",
   // new_aus.clone().count());           let new_aus_dedu = self
-  //             .deduplicate_from_candidates::<EmptyAnalysis<Op, Type>>(
+  //             .deduplicate_from_candidates::<SimpleAnalysis<Op, Type>>(
   //               new_aus.clone(),
   //             );
   //           info!("now  is {}", new_aus_dedu.len());
@@ -1524,14 +1550,17 @@ where
             info!("deduplicating new_aus last: {} ", new_aus.clone().count());
 
             let new_aus_dedu = self
-              .deduplicate_from_candidates::<EmptyAnalysis<Op, Type>>(
-                new_aus.clone(),
-              );
+              .deduplicate_from_candidates::<SimpleAnalysis<Op, Type>>(new_aus);
             // info!("now  is {}", new_aus_dedu.len());
             let start_total = Instant::now(); // 总的执行时间
             // 为每一个新的模式生成一个AU
-            // aus.extend(new_aus.map(|au| AU::new_cal_matches(au,
-            // &self.egraph)));
+            // aus.extend(new_aus.map(|au| {
+            //   AU::new_with_expr(
+            //     au,
+            //     &self.egraph,
+            //     self.liblearn_config.cost.clone(),
+            //   )
+            // }));
             // println!("aus_size: {}", aus.len());
             // println!("{:?}", new_aus_dedu);
             aus.extend(new_aus_dedu);
@@ -1681,7 +1710,7 @@ where
 /// anti-unifications. Returns a pair of the anti-unification and the number of
 /// unique variables it contains.
 #[must_use]
-pub fn normalize<Op, T: Eq + Clone>(
+pub fn normalize<Op: OperationInfo + Clone + Ord, T: Eq + Clone + Ord>(
   au: PartialExpr<Op, T>,
 ) -> (PartialExpr<Op, Var>, usize, HashMap<Var, T>) {
   let mut metavars = Vec::new();
@@ -1708,7 +1737,7 @@ pub fn normalize<Op, T: Eq + Clone>(
 #[allow(dead_code)]
 fn patternize<Op>(au: &PartialExpr<Op, (Id, Id)>) -> Pattern<AstNode<Op>>
 where
-  Op: Arity + Clone + Display + Ord + Send + Sync + 'static,
+  Op: Arity + Clone + Display + Ord + Send + Sync + 'static + OperationInfo,
   AstNode<Op>: Language,
 {
   let au = au.clone();
@@ -1758,9 +1787,10 @@ where
     + Teachable
     + 'static
     + Hash
-    + Schedulable,
+    + Schedulable
+    + OperationInfo,
   AstNode<Op>: Language,
-  T: Eq + Clone + Hash + Debug,
+  T: Eq + Clone + Hash + Debug + Ord,
 {
   let mut metavars = Vec::new();
 

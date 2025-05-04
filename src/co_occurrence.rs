@@ -2,6 +2,7 @@
 //! Determines whether (the nodes from) two e-classes can co-occur in any
 //! extracted expression.
 use crate::ast_node::{Arity, AstNode};
+use crate::runner::OperationInfo;
 use egg::{Analysis, EGraph, Id, Language};
 use std::{
   collections::{HashMap, HashSet},
@@ -37,7 +38,12 @@ impl CoOccurrences {
 #[derive(Debug, Clone)]
 pub struct COBuilder<
   'a,
-  Op: Clone + std::fmt::Debug + std::hash::Hash + Ord + std::fmt::Display,
+  Op: Clone
+    + std::fmt::Debug
+    + std::hash::Hash
+    + Ord
+    + std::fmt::Display
+    + OperationInfo,
   N: Analysis<AstNode<Op>>,
 > {
   /// The egraph to analyze
@@ -52,8 +58,13 @@ pub struct COBuilder<
 
 impl<'a, Op, N> COBuilder<'a, Op, N>
 where
-  Op:
-    Clone + std::fmt::Debug + std::hash::Hash + Ord + std::fmt::Display + Arity,
+  Op: Clone
+    + std::fmt::Debug
+    + std::hash::Hash
+    + Ord
+    + std::fmt::Display
+    + Arity
+    + OperationInfo,
   N: Analysis<AstNode<Op>> + Clone,
 {
   /// Initialize a builder

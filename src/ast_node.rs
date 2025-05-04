@@ -1,7 +1,9 @@
 //! Abstract syntax trees.
+use crate::runner::OperationInfo;
 use egg::{FromOp, Id, Language};
 use serde::{Deserialize, Serialize};
 use std::{
+  collections::HashSet,
   error::Error,
   fmt::{self, Debug, Display, Formatter},
   hash::Hash,
@@ -15,17 +17,81 @@ use thiserror::Error;
 /// to arguments of type `T`.
 ///
 /// This type implements [`Language`] for arguments of type [`Id`].
-#[derive(
-  Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AstNode<Op, T = Id> {
   operation: Op,
   args: Vec<T>,
 }
 
-pub use expr::{combine_exprs, Expr};
+impl<Op: PartialEq + OperationInfo, T: PartialEq + Clone + Ord> PartialEq
+  for AstNode<Op, T>
+{
+  fn eq(&self, other: &Self) -> bool {
+    // if the operation is list or vec , the args can be equai when they have
+    // different order but the same element
+    if self.operation.is_vec() && other.operation.is_vec() {
+      let mut self_args = self.args.clone();
+      let mut other_args = other.args.clone();
+      self_args.sort();
+      other_args.sort();
+      return self.operation == other.operation && self_args == other_args;
+    } else {
+      return self.operation == other.operation && self.args == other.args;
+    }
+  }
+}
+
+impl<Op: Eq + OperationInfo, T: Eq + Clone + Ord> Eq for AstNode<Op, T> {}
+
+// 实现默认的PartialOrd和Ord
+impl<Op: OperationInfo, T> PartialOrd for AstNode<Op, T>
+where
+  Op: PartialOrd,
+  T: PartialOrd + Ord + Clone,
+{
+  fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    match self.operation.partial_cmp(&other.operation) {
+      Some(std::cmp::Ordering::Equal) => self.args.partial_cmp(&other.args),
+      ord => ord,
+    }
+  }
+}
+
+impl<Op: OperationInfo, T> Ord for AstNode<Op, T>
+where
+  Op: Ord,
+  T: Ord + Clone,
+{
+  fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    match self.operation.cmp(&other.operation) {
+      std::cmp::Ordering::Equal => self.args.cmp(&other.args),
+      ord => ord,
+    }
+  }
+}
+
+impl<Op, T> Hash for AstNode<Op, T>
+where
+  Op: Hash + OperationInfo,
+  T: Hash + Ord + Clone,
+{
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    // if the operation is list or vec , the args can be equai when they have
+    // different order but the same element
+    self.operation.hash(state);
+    if self.operation.is_vec() {
+      let mut args = self.args.clone();
+      args.sort();
+      args.hash(state);
+    } else {
+      self.args.hash(state);
+    }
+  }
+}
+
+pub use expr::{Expr, combine_exprs};
 pub use partial_expr::PartialExpr;
-pub use pretty::{Precedence, Pretty, Printable, Printer, Memoize};
+pub use pretty::{Memoize, Precedence, Pretty, Printable, Printer};
 
 mod expr;
 mod partial_expr;
@@ -137,7 +203,8 @@ impl<Op, T> AstNode<Op, T> {
     self.into_iter()
   }
 
-  /// Returns a reference to the node's operation and a slice of the operation's arguments.
+  /// Returns a reference to the node's operation and a slice of the operation's
+  /// arguments.
   #[must_use]
   pub fn as_parts(&self) -> (&Op, &[T]) {
     (&self.operation, &self.args)
@@ -197,7 +264,12 @@ impl<Op: Arity, T> AstNode<Op, T> {
       Ok(Self { operation, args })
     } else {
       let (min, max) = (operation.min_arity(), operation.max_arity());
-      Err(ArityError { operation, args, min, max })
+      Err(ArityError {
+        operation,
+        args,
+        min,
+        max,
+      })
     }
   }
 }
@@ -256,7 +328,7 @@ impl<Op, T> IntoIterator for AstNode<Op, T> {
 
 impl<Op> Language for AstNode<Op>
 where
-  Op: Ord + Debug + Clone + Hash,
+  Op: Ord + Debug + Clone + Hash + OperationInfo,
 {
   type Discriminant = Op;
 
@@ -337,7 +409,7 @@ pub enum ParseNodeError<Op, T, E> {
 
 impl<Op> FromOp for AstNode<Op>
 where
-  Op: Debug + Arity + FromStr + Clone + Ord + Hash + 'static,
+  Op: Debug + Arity + FromStr + Clone + Ord + Hash + 'static + OperationInfo,
   <Op as FromStr>::Err: Error,
 {
   type Error = ParseNodeError<Op, Id, <Op as FromStr>::Err>;

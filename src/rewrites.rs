@@ -14,6 +14,7 @@ use egg::{
   Analysis, Condition, ConditionalApplier, EGraph, FromOp, Id, Language,
   Pattern, Rewrite, Subst, Var,
 };
+use itertools::Itertools;
 use std::{
   collections::HashMap, error::Error, fmt::Debug, fs, io::ErrorKind,
   path::Path, str::FromStr,
@@ -93,16 +94,30 @@ where
   {
     // 使用字符串"where"分割
     let (rewrite, condition) = line.split_once("where").unwrap_or((line, ""));
-    let (lhs, rhs) =
-      rewrite.split_once("==>").ok_or(anyhow!("missing arrow"))?;
+    let ac_flag = rewrite.contains("<==>");
+    let (lhs, rhs) = rewrite
+      .split_once("==>")
+      .or_else(|| rewrite.split_once("<==>"))
+      .ok_or(anyhow!("missing '==>' or '<==>'"))?;
     let name = line;
     let lhs = lhs.trim();
     let rhs = rhs.trim();
+
     let lhs: Pattern<L> = lhs.parse()?;
     let rhs: Pattern<L> = rhs.parse()?;
     if condition == "" {
-      rewrites
-        .push(Rewrite::new(name, lhs, rhs).map_err(|e| anyhow!("{}", e))?);
+      rewrites.push(
+        Rewrite::new(name, lhs.clone(), rhs.clone())
+          .map_err(|e| anyhow!("{}", e))?,
+      );
+      if ac_flag {
+        // 如果是ac_flag，就需要添加一个反向的Rewrite
+        let lhs = rhs.clone();
+        let rhs = lhs.clone();
+        let name = format!("{}_reverse", line);
+        rewrites
+          .push(Rewrite::new(name, lhs, rhs).map_err(|e| anyhow!("{}", e))?);
+      }
       continue;
     } else {
       let condition = {
@@ -154,13 +169,28 @@ where
       };
       // 针对使用
       let conditional_applier = ConditionalApplier {
-        condition: condition,
-        applier: rhs,
+        condition: condition.clone(),
+        applier: rhs.clone(),
       };
       rewrites.push(
-        Rewrite::new(name, lhs, conditional_applier)
+        Rewrite::new(name, lhs.clone(), conditional_applier)
           .map_err(|e| anyhow!("{}", e))?,
       );
+      if ac_flag {
+        // 如果是ac_flag，就需要添加一个反向的Rewrite
+        let lhs = rhs.clone();
+        let rhs = lhs.clone();
+        let name = format!("{}_reverse", line);
+        // 针对使用
+        let conditional_applier = ConditionalApplier {
+          condition: condition,
+          applier: rhs.clone(),
+        };
+        rewrites.push(
+          Rewrite::new(name, lhs, conditional_applier)
+            .map_err(|e| anyhow!("{}", e))?,
+        );
+      }
     }
   }
   Ok(rewrites)

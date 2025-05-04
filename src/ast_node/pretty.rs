@@ -9,6 +9,7 @@ use itertools::Itertools;
 
 use crate::{
   ast_node::Expr,
+  runner::OperationInfo,
   teachable::{BindingExpr, Teachable},
 };
 
@@ -16,17 +17,17 @@ const LINE_LENGTH: usize = 80;
 /// A wrapper around [`&'a Expr<Op>`] whose [`Display`] impl pretty-prints the
 /// expression.
 #[derive(Debug, Clone)]
-pub struct Pretty<Op> {
+pub struct Pretty<Op: OperationInfo + Clone + Ord> {
   expr: Arc<Expr<Op>>,
 }
 
-impl<Op> Pretty<Op> {
+impl<Op: OperationInfo + Clone + Ord> Pretty<Op> {
   pub fn new(expr: Arc<Expr<Op>>) -> Self {
     Self { expr }
   }
 }
 
-impl<Op> Display for Pretty<Op>
+impl<Op: OperationInfo + Clone + Ord> Display for Pretty<Op>
 where
   Op: Printable + Teachable + Display,
 {
@@ -60,13 +61,13 @@ pub trait Memoize {
 }
 
 #[derive(Debug, Clone)]
-struct ExprMemoizer<Op> {
+struct ExprMemoizer<Op: OperationInfo + Clone + Ord> {
   memo: HashMap<*const Expr<Op>, usize>,
   next_id: usize,
   checkpoints: Vec<HashMap<*const Expr<Op>, usize>>,
 }
 
-impl<Op> ExprMemoizer<Op> {
+impl<Op: OperationInfo + Clone + Ord> ExprMemoizer<Op> {
   fn new() -> Self {
     Self {
       memo: HashMap::new(),
@@ -75,7 +76,7 @@ impl<Op> ExprMemoizer<Op> {
     }
   }
 }
-impl<Op> Memoize for ExprMemoizer<Op> {
+impl<Op: OperationInfo + Clone + Ord> Memoize for ExprMemoizer<Op> {
   type Key = *const Expr<Op>;
   fn register(&mut self, key: Self::Key) -> usize {
     assert!(self.memo.get(&key).is_none(), "key already registered");
@@ -111,7 +112,7 @@ pub type Precedence = u8;
 /// whereas the printing of binding expressions is implemented inside Printer.
 pub trait Printable
 where
-  Self: Sized,
+  Self: Sized + OperationInfo + Clone + Ord,
 {
   /// Operator precedence:
   /// determines whether the expression with head `op` will be parenthesized
@@ -383,7 +384,7 @@ impl<W: Write + Clone + Default + ToString + Clone + Default + ToString>
   /// if the original printing is too long or multi-lined, add newline
   /// adaptably.
   pub fn sep_adaptable<
-    Op,
+    Op: OperationInfo + Ord + Clone,
     T: FnMut(
       &mut Self,
       usize,

@@ -214,6 +214,13 @@ pub enum ShieldingOp {
   ZExt,
   FPTrunc,
   FPExt,
+  VectorOp(VectorOp),
+}
+
+impl Default for ShieldingOp {
+  fn default() -> Self {
+    ShieldingOp::Const(ShieldingConst::Int(0))
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
@@ -266,4 +273,22 @@ pub enum CastOp {
   Trunc,
   FPTrunc,
   FPExt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VectorOp {
+  Vec,
+  VecAdd,
+  VecSub,
+  VecMul,
+  VecDiv,
+  VecMac,
+  VecNeg,
+  VecSgn,
+  VecSext,
+  VecLoad,
+  VecStore,
+  Concat,
+  Gather,
+  Shuffle,
 }

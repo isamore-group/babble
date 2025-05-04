@@ -1,8 +1,10 @@
 //! `extract::partial` implements a non-ILP-based extractor based on partial
 //! orderings of learned library sets.
 use crate::{
+  analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode},
   learn::LibId,
+  runner::OperationInfo,
   schedule::rec_cost,
   teachable::{BindingExpr, Teachable},
 };
@@ -39,71 +41,6 @@ where
 {
   fn eq(&self, other: &T) -> bool {
     self.set.contains(other)
-  }
-}
-/// 实现一个非常简单的Analysis,
-/// 只包含了类型分析信息，但是此处的类型分析信息更加细节，
-/// 使用了Vec<T>直接存储了enode中可能含有的所有type
-/// 这个Analysis只用于LibExtractor和learn
-#[derive(Debug, Clone)]
-pub struct EmptyAnalysis<Op, T> {
-  type_info_map: HashMap<(String, Vec<T>), T>,
-  _phantom: PhantomData<Op>,
-}
-impl<Op, T> Default for EmptyAnalysis<Op, T> {
-  fn default() -> Self {
-    EmptyAnalysis {
-      type_info_map: HashMap::new(),
-      _phantom: PhantomData,
-    }
-  }
-}
-impl<Op, T> Analysis<AstNode<Op>> for EmptyAnalysis<Op, T>
-where
-  Op: Clone
-    + std::fmt::Debug
-    + std::hash::Hash
-    + Ord
-    + Teachable
-    + std::fmt::Display,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
-  AstNode<Op>: TypeInfo<T>,
-{
-  type Data = TypeSet<T>;
-  fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-    let a0 = to.clone();
-    to.set.extend(from.set.clone());
-    DidMerge(&a0 != to, to != &from)
-  }
-  fn make(
-    egraph: &mut EGraph<AstNode<Op>, Self>,
-    enode: &AstNode<Op>,
-  ) -> Self::Data {
-    let child_types: Vec<T> = enode
-      .children()
-      .iter()
-      .map(|&child| {
-        let tys = egraph[child]
-          .data
-          .set
-          .clone()
-          .into_iter()
-          .collect::<Vec<_>>();
-        if tys.len() == 1 {
-          tys[0].clone()
-        } else {
-          let mut merged_ty = tys[0].clone();
-          for i in 1..tys.len() {
-            merged_ty = AstNode::merge_types(&merged_ty, &tys[i]);
-          }
-          merged_ty
-        }
-      })
-      .collect();
-    let ty = enode.get_rtype(&egraph.analysis.type_info_map, &child_types);
-    let mut set = HashSet::new();
-    set.insert(ty.clone());
-    TypeSet { set }
   }
 }
 
@@ -705,7 +642,8 @@ where
     + Clone
     + Send
     + Sync
-    + 'static,
+    + 'static
+    + OperationInfo,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
 {
@@ -901,7 +839,8 @@ pub struct LibExtractor<
     + std::hash::Hash
     + Ord
     + Teachable
-    + std::fmt::Display,
+    + std::fmt::Display
+    + OperationInfo,
   N: Analysis<AstNode<Op>>,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
 > where
@@ -937,7 +876,8 @@ where
     + Ord
     + Teachable
     + std::fmt::Display
-    + Arity,
+    + Arity
+    + OperationInfo,
   N: Analysis<AstNode<Op>> + Clone,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
@@ -998,10 +938,10 @@ where
     // 如果val不为None,取出RecExpr
     let timeout = std::time::Duration::from_millis(60);
     let expr = val.clone().unwrap();
-    let mut egraph = EGraph::new(EmptyAnalysis::default());
+    let mut egraph = EGraph::new(SimpleAnalysis::default());
     egraph.add_expr(&expr);
     egraph.rebuild();
-    let runner = Runner::<_, _, ()>::new(EmptyAnalysis::default())
+    let runner = Runner::<_, _, ()>::new(SimpleAnalysis::default())
       .with_expr(&expr)
       .with_time_limit(timeout)
       .with_iter_limit(4)

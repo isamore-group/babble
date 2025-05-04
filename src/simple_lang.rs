@@ -4,7 +4,7 @@
 use std::{
   collections::{HashMap, HashSet},
   convert::Infallible,
-  fmt::{self, Display, Formatter},
+  fmt::{self, Debug, Display, Formatter},
   str::FromStr,
   sync::Arc,
 };
@@ -314,6 +314,13 @@ impl OperationInfo for SimpleOp {
     }
   }
 
+  fn make_vec(result_tys: Vec<String>) -> Self {
+    Self::List
+  }
+  fn make_get(id: usize, result_tys: Vec<String>) -> Self {
+    Self::LibVar(LibId(id))
+  }
+
   fn get_const(&self) -> Option<(i64, u32)> {
     match self {
       Self::Const(c) => Some((*c, 0)),
@@ -327,6 +334,22 @@ impl OperationInfo for SimpleOp {
 
   fn is_dummy(&self) -> bool {
     false
+  }
+
+  fn is_vector_op(&self) -> bool {
+    false
+  }
+
+  fn get_simple_cost(&self) -> usize {
+    0
+  }
+
+  fn make_gather(_: &Vec<usize>) -> Self {
+    Self::List
+  }
+
+  fn make_shuffle(_: &Vec<usize>) -> Self {
+    Self::List
   }
 }
 

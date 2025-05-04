@@ -15,6 +15,7 @@
 #![allow(clippy::non_ascii_literal)]
 #![allow(clippy::non_canonical_partial_ord_impl)]
 
+pub mod analysis;
 pub mod ast_node;
 pub mod au_search;
 #[cfg(test)]
@@ -30,6 +31,7 @@ pub mod sexp;
 pub mod simple_lang;
 pub mod teachable;
 pub mod util;
+pub mod vectorize;
 
 pub use ast_node::{
   Arity, AstNode, Expr, PartialExpr, Precedence, Pretty, Printable, Printer,
