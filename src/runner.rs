@@ -190,6 +190,8 @@ pub struct ParetoConfig {
   pub add_all_types: bool,
   /// liblearn config
   pub liblearn_config: LiblearnConfig,
+  /// vectorize config
+  pub vectorize_config: VectorConfig,
 }
 
 impl Default for ParetoConfig {
@@ -205,6 +207,7 @@ impl Default for ParetoConfig {
       clock_period: 100,
       add_all_types: false,
       liblearn_config: LiblearnConfig::default(),
+      vectorize_config: VectorConfig::default(),
     }
   }
 }
@@ -275,6 +278,50 @@ impl LiblearnConfig {
       cost,
       au_merge_mod,
       enum_mode,
+    }
+  }
+}
+
+/// 用于进行向量化的config
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct VectorConfig {
+  /// 是否进行向量化
+  pub vectorize: bool,
+  /// 是否启用gather节点(gather节点搜索数目较少， 对整体速度的影响不是很大，
+  /// 默认为true)
+  pub enable_gather: bool,
+  /// 是否启用shuffle节点(shuffle节点搜索数目很大， 对整体速度的影响较大，
+  /// 默认为false， 但是加入shuffle节点之后， 向量化的性能会很高)
+  pub enable_shuffle: bool,
+  /// 是否启用post-check(在预处理阶段，
+  /// 对于store和load节点的深嵌套进行了解耦，但是可能导致错误的结果)
+  pub enable_post_check: bool,
+}
+
+impl Default for VectorConfig {
+  fn default() -> Self {
+    Self {
+      vectorize: false,
+      enable_gather: true,
+      enable_shuffle: false,
+      enable_post_check: false,
+    }
+  }
+}
+
+impl VectorConfig {
+  /// Create a new VectorConfig with the given parameters
+  pub fn new(
+    vectorize: bool,
+    enable_gather: bool,
+    enable_shuffle: bool,
+    enable_post_check: bool,
+  ) -> Self {
+    Self {
+      vectorize,
+      enable_gather,
+      enable_shuffle,
+      enable_post_check,
     }
   }
 }
@@ -368,23 +415,46 @@ where
     egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   ) -> ParetoResult<Op, T> {
     let mut message = HashMap::new();
-    let start_time = Instant::now();
     let timeout = Duration::from_secs(60 * 100_000);
     // let mut egraph = egraph.clone();
     // let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
-    let vectorized_egraph = vectorize(
-      egraph.clone(),
-      roots,
-      self.dsrs.clone(),
-      self.config.clone(),
-    );
-    let (cost, expr) =
-      Extractor::new(&vectorized_egraph, VectorCF).find_best(roots[0]);
-    println!("cost: {:?}", cost);
-    let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
-    println!("pretty expr: {}", pretty_expr);
-    for (id, node) in expr.into_iter().enumerate() {
-      println!("{}: {:?}", id, node);
+    if self.config.vectorize_config.vectorize {
+      let vectorize_time = Instant::now();
+      let vectorized_egraph = vectorize(
+        egraph.clone(),
+        roots,
+        self.dsrs.clone(),
+        self.config.clone(),
+      );
+      let (cost, expr) =
+        Extractor::new(&vectorized_egraph, VectorCF).find_best(roots[0]);
+      debug!("cost: {:?}", cost);
+      let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
+      debug!("pretty expr: {}", pretty_expr);
+      println!("Expression: ");
+      for (id, node) in expr.into_iter().enumerate() {
+        // 如果node是vecop，输出
+        if node.operation().is_vector_op() {
+          debug!("{}: {:?}", id, node);
+        }
+      }
+      println!(
+        "Vectorized egraph size: {}, eclasses: {}",
+        egraph.total_size(),
+        egraph.classes().len()
+      );
+      message.insert(
+        "vectorized_eclass_size".to_string(),
+        format!("{}", egraph.classes().len()).to_string(),
+      );
+      message.insert(
+        "vectorized_egraph_size".to_string(),
+        format!("{}", egraph.total_size()).to_string(),
+      );
+      message.insert(
+        "vectorized_time".to_string(),
+        format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
+      );
     }
 
     println!(
@@ -397,7 +467,7 @@ where
       format!("{}", egraph.classes().len()).to_string(),
     );
     println!("Running {} DSRs... ", self.dsrs.len());
-
+    let start_time = Instant::now();
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
       .with_egraph(egraph)
       .with_time_limit(timeout)

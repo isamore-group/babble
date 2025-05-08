@@ -19,6 +19,7 @@ use crate::rewrites::TypeMatch;
 use crate::runner::{
   AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
 };
+use crate::vectorize;
 use crate::{
   COBuilder,
   analysis::SimpleAnalysis,
@@ -302,6 +303,7 @@ where
   last_lib_id: usize,
   clock_period: usize,
   liblearn_config: LiblearnConfig,
+  vectorize: bool,
 }
 
 impl<Op, Type> Default for LearnedLibraryBuilder<Op, Type>
@@ -344,6 +346,7 @@ where
       last_lib_id: 0,
       clock_period: 3,
       liblearn_config: LiblearnConfig::default(),
+      vectorize: false,
     }
   }
 }
@@ -409,6 +412,7 @@ where
       last_lib_id: 0,
       clock_period: 3,
       liblearn_config: LiblearnConfig::default(),
+      vectorize: false,
     }
   }
 }
@@ -512,6 +516,11 @@ where
     self.liblearn_config = liblearn_config;
     self
   }
+  #[must_use]
+  pub fn vectorize(mut self) -> Self {
+    self.vectorize = true;
+    self
+  }
 
   pub fn build<A>(
     self,
@@ -544,6 +553,7 @@ where
       self.last_lib_id,
       self.clock_period,
       self.liblearn_config,
+      self.vectorize,
     )
   }
 }
@@ -637,6 +647,8 @@ where
   clock_period: usize,
   /// config for liblearn
   liblearn_config: LiblearnConfig,
+  /// Whether to vectorize the library
+  vectorize: bool,
 }
 
 #[allow(unused)]
@@ -697,6 +709,7 @@ where
     last_lib_id: usize,
     clock_period: usize,
     liblearn_config: LiblearnConfig,
+    vectorize: bool,
   ) -> Self
   where
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
@@ -716,6 +729,7 @@ where
       last_lib_id,
       clock_period,
       liblearn_config: liblearn_config.clone(),
+      vectorize,
     };
 
     if !dfta {
@@ -1489,6 +1503,15 @@ where
         if op2.is_dummy() {
           continue;
         }
+        // 在vectorize条件下，两个op的bbs也必须要相同，
+        // 而在其他情况下的PartialEq没有考虑这一点
+        // FIXME:加入下面的条件之后，会导致问题，vec太少
+        // if self.vectorize {
+        //   if op1.get_bbs_info() != op2.get_bbs_info() {
+        //     different = true;
+        //     continue;
+        //   }
+        // }
         if op1 == op2 {
           same = true;
           if args1.is_empty() && args2.is_empty() {
@@ -1651,11 +1674,15 @@ where
           // if size(e[x_1/e_1, ..., x_n/e_n]) > 2n + 1. This
           // corresponds to an anti-unification containing at least n
           // + 1 nodes.
-          if learn_trivial
-            || num_vars < au.num_holes() // 原来是num_vars < au.num_holes()
-            || au.num_nodes() > 1 + num_vars
-          // FIXME:num_vars + 1, 这里改为2*num_vars是为了减少重复的模式
-          {
+          let condition = if self.vectorize {
+            // 在vectorize条件下，各种模式都是需要的，不需要严格进行过滤
+            true
+          } else {
+            learn_trivial
+              || num_vars < au.num_holes()
+              || au.num_nodes() > 1 + num_vars
+          };
+          if condition {
             // println!("learn_trivial: {}, num_vars < au.num_holes(): {},
             // au.num_nodes() > num_vars: {}", learn_trivial, num_vars <
             // au.num_holes(), au.num_nodes() > num_vars);

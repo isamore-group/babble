@@ -121,13 +121,14 @@ where
     let class_id = egraph.find(class_id);
 
     // 如果已经处理过，直接返回组代表
-    if let Some(_sig) = self.signature_cache.get(&class_id) {
-      return self.union_find[&class_id];
-    }
-
+    // if let Some(_sig) = self.signature_cache.get(&class_id) {
+    //   return self.union_find[&class_id];
+    // }
+    // println!("Processing class {}", class_id);
     // 获取所有可能的节点结构
     let mut signatures = Vec::new();
     for node in &egraph[class_id].nodes {
+      // println!("Processing node {:?}", node);
       // 递归处理子节点并获取其组代表
       let child_groups: Vec<u64> = node
         .children()
@@ -159,6 +160,7 @@ where
       signatures.iter().cloned().min().unwrap_or_else(|| {
         panic!("No signatures found for class {}", class_id)
       });
+    // println!("Class {} has signature hash {}", class_id, min_sig);
     // 缓存签名并尝试合并组
     self.signature_cache.insert(class_id, min_sig.clone());
 
@@ -185,7 +187,6 @@ where
       let rep = self.union_find[&class.id];
       temp_groups.entry(rep).or_default().push(class.id);
     }
-
     // 过滤和整理
     temp_groups
       .into_iter()
@@ -490,6 +491,7 @@ where
   (shuffle_pairs, shuffle_map)
 }
 
+/// 目前向量化直接使用liblearn中的au-search进行向量化
 pub fn vectorize<Op, T>(
   egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   roots: &[Id],
@@ -537,92 +539,100 @@ where
     AUMergeMod::Greedy,
     EnumMode::PruningGold,
   );
-  let mut vec_finder = VecGroupFinder::<Op, T>::new(&[]);
-  // 进行向量化组发现
+  // let mut vec_finder = VecGroupFinder::<Op, T>::new(&[]);
 
-  let vec_groups = vec_finder.find_groups(&egraph, roots);
-  println!("vec_groups size: {}", vec_groups.len());
-  for group in vec_groups {
-    // 向量包为空
-    if group.is_empty() {
-      continue;
-    }
-    // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
-    if group.len() > 8 {
-      continue;
-    }
-    let mut tys = Vec::new();
-    let mut vec_ids = Vec::new();
-    for id in group.iter() {
-      let eclass = egraph.find(*id);
-      let ty = egraph[eclass].data.get_type()[0].clone();
-      tys.push(ty.clone());
-      vec_ids.push(eclass);
-    }
-    // 首先加入Vec节点
-    let vec_node = AstNode::new(Op::make_vec(tys.clone()), vec_ids.clone());
-    let list_id = egraph.add(vec_node);
-    // 针对每个id，构造一个get节点
-    for i in 0..vec_ids.len() {
-      let get_node =
-        AstNode::new(Op::make_get(i, vec![tys[i].clone()]), vec![list_id]);
-      let get_id = egraph.add(get_node);
-      // 进行替换
-      egraph.union(vec_ids[i], get_id);
-    }
-    // 重建egraph
-    egraph.rebuild();
-  }
-
-  // 进行库学习
-  // let learned_lib = LearnedLibraryBuilder::default()
-  //   .learn_constants(config.learn_constants)
-  //   .max_arity(config.max_arity)
-  //   // .with_co_occurs(co_occurs)
-  //   .with_last_lib_id(0)
-  //   .with_liblearn_config(vetorize_lib_config)
-  //   .with_clock_period(config.clock_period)
-  //   .build(&egraph);
-  // let lib_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>> =
-  //   learned_lib.rewrites().collect::<Vec<_>>();
-  // println!("learned {} libs", lib_rewrites.len());
-  // for rewrite in lib_rewrites {
-  //   let results = rewrite.search(&egraph);
-  //   if results.is_empty() {
+  // let vec_groups = vec_finder.find_groups(&egraph, roots);
+  // println!("vec_groups size: {}", vec_groups.len());
+  // for group in vec_groups {
+  //   println!("vec size: {}", group.len());
+  //   // 向量包为空
+  //   if group.is_empty() {
   //     continue;
   //   }
   //   // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
-  //   if results.len() > 8 {
+  //   if group.len() > 8 {
   //     continue;
   //   }
-  //   // println!("found {} matches for {:?}", results.len(), rewrite);
+  //   println!("vec_node: {:?}", egraph[group[0]].nodes[0]);
   //   let mut tys = Vec::new();
-  //   let matched_eclass_id = results
-  //     .iter()
-  //     .map(|x| {
-  //       let eclass = x.eclass;
-  //       let ty = egraph[eclass].data.get_type()[0].clone();
-  //       tys.push(ty.clone());
-  //       eclass
-  //     })
-  //     .collect::<Vec<_>>();
+  //   let mut vec_ids = Vec::new();
+  //   for id in group.iter() {
+  //     let eclass = egraph.find(*id);
+  //     let ty = egraph[eclass].data.get_type()[0].clone();
+  //     tys.push(ty.clone());
+  //     vec_ids.push(eclass);
+  //   }
   //   // 首先加入Vec节点
-  //   let vec_node =
-  //     AstNode::new(Op::make_vec(tys.clone()), matched_eclass_id.clone());
+  //   let vec_node = AstNode::new(Op::make_vec(tys.clone()), vec_ids.clone());
   //   let list_id = egraph.add(vec_node);
   //   // 针对每个id，构造一个get节点
-  //   for i in 0..matched_eclass_id.len() {
+  //   for i in 0..vec_ids.len() {
   //     let get_node =
   //       AstNode::new(Op::make_get(i, vec![tys[i].clone()]), vec![list_id]);
   //     let get_id = egraph.add(get_node);
   //     // 进行替换
-  //     egraph.union(matched_eclass_id[i], get_id);
+  //     egraph.union(vec_ids[i], get_id);
   //   }
   //   // 重建egraph
   //   egraph.rebuild();
   // }
-  egraph.dot().to_png("target/foo2.png").unwrap();
 
+  // // 进行向量化组发现
+
+  // 进行库学习
+  let learned_lib = LearnedLibraryBuilder::default()
+    .learn_constants(config.learn_constants)
+    .max_arity(config.max_arity)
+    // .with_co_occurs(co_occurs)
+    .with_last_lib_id(0)
+    .with_liblearn_config(vetorize_lib_config)
+    .with_clock_period(config.clock_period)
+    .vectorize()
+    .build(&egraph);
+  let lib_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>> =
+    learned_lib.rewrites().collect::<Vec<_>>();
+  println!("learned {} libs", lib_rewrites.len());
+  for rewrite in lib_rewrites {
+    // println!("rewrite: {:?}", rewrite);
+    let results = rewrite.search(&egraph);
+    // println!("length of results: {}", results.len());
+    if results.is_empty() {
+      continue;
+    }
+    // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
+    if results.len() > 8 {
+      continue;
+    }
+    // println!("found {} matches for {:?}", results.len(), rewrite);
+    let mut tys = Vec::new();
+    let matched_eclass_id = results
+      .iter()
+      .map(|x| {
+        let eclass = x.eclass;
+        let ty = egraph[eclass].data.get_type()[0].clone();
+        tys.push(ty.clone());
+        eclass
+      })
+      .collect::<Vec<_>>();
+    // 首先加入Vec节点
+    let vec_node =
+      AstNode::new(Op::make_vec(tys.clone()), matched_eclass_id.clone());
+    let list_id = egraph.add(vec_node);
+    // 针对每个id，构造一个get节点
+    for i in 0..matched_eclass_id.len() {
+      let get_node =
+        AstNode::new(Op::make_get(i, vec![tys[i].clone()]), vec![list_id]);
+      // println!("tys[i]: {:?}", tys[i]);
+      let get_id = egraph.add(get_node);
+      // println!("get_eclass: {:?}", egraph[get_id]);
+      // 进行替换
+      egraph.union(matched_eclass_id[i], get_id);
+      // println!("success union");
+    }
+    // 重建egraph
+    egraph.rebuild();
+  }
+  // egraph.dot().to_png("target/foo2.png").unwrap();
   println!(
     "after add list, egraph size: {}, class size: {}",
     egraph.total_size(),
@@ -639,51 +649,56 @@ where
   // 目前已经实现了各类vec的构建，现在需要去寻找egraph中含有的vec
   // enode，然后加入gather节点
   let mut egraph = runner.egraph.clone();
-
-  let (vec_containments, vec_gathers) =
-    find_vec_containments_and_gathers(&egraph);
-  println!("size of vec_containments: {}", vec_containments.len());
-  // 根据包含关系加入gather节点
-  for (i, (id, fathers)) in vec_containments.into_iter().enumerate() {
-    for father in fathers {
-      let gather_op = Op::make_gather(&vec_gathers[&(id, father)]);
-      let cani_father = egraph.find(father);
-      let gather_node = AstNode::new(gather_op.clone(), vec![cani_father]);
-      let gather_id = egraph.add(gather_node);
-      // 进行替换
-      let cani_id = egraph.find(id);
-      egraph.union(cani_id, gather_id);
-      egraph.rebuild();
+  if config.vectorize_config.enable_gather {
+    let (vec_containments, vec_gathers) =
+      find_vec_containments_and_gathers(&egraph);
+    println!("size of vec_containments: {}", vec_containments.len());
+    // 根据包含关系加入gather节点
+    for (i, (id, fathers)) in vec_containments.into_iter().enumerate() {
+      for father in fathers {
+        let gather_op = Op::make_gather(&vec_gathers[&(id, father)]);
+        let cani_father = egraph.find(father);
+        let gather_node = AstNode::new(gather_op.clone(), vec![cani_father]);
+        let gather_id = egraph.add(gather_node);
+        // 进行替换
+        let cani_id = egraph.find(id);
+        egraph.union(cani_id, gather_id);
+        egraph.rebuild();
+      }
     }
   }
-  // 除此之外，还需要加入shuffle节点
-  let (shuffle_pairs, shuffle_map) = find_vec_shuffles_and_indices(&egraph);
-  println!("size of shuffle_pairs: {}", shuffle_pairs.len());
-  // egraph.dot().to_png("target/foo1.png").unwrap();
-  // 根据 shuffle 关系加入 shuffle 节点
-  for (c_id, pairs) in shuffle_pairs.into_iter() {
-    for (a_id, b_id) in pairs {
-      // 从 shuffle_map 中获取 (C, A, B) 对应的 gather 索引
-      let indices = &shuffle_map[&(c_id, a_id, b_id)];
+  if config.vectorize_config.enable_shuffle {
+    // 除此之外，还需要加入shuffle节点
+    let (shuffle_pairs, shuffle_map) = find_vec_shuffles_and_indices(&egraph);
+    println!("size of shuffle_pairs: {}", shuffle_pairs.len());
+    // egraph.dot().to_png("target/foo1.png").unwrap();
+    // 根据 shuffle 关系加入 shuffle 节点
+    for (c_id, pairs) in shuffle_pairs.into_iter() {
+      // println!("c_id: {}, pairs: {}", c_id, pairs.len());
+      for (a_id, b_id) in pairs {
+        // 从 shuffle_map 中获取 (C, A, B) 对应的 gather 索引
+        let indices = &shuffle_map[&(c_id, a_id, b_id)];
 
-      // 查找 A 和 B 的父节点
-      let a_parent = egraph.find(a_id);
-      let b_parent = egraph.find(b_id);
+        // 查找 A 和 B 的父节点
+        let a_parent = egraph.find(a_id);
+        let b_parent = egraph.find(b_id);
 
-      // 创建 shuffle 操作节点
-      let shuffle_op = Op::make_shuffle(indices); // 这里假设 `make_shuffle` 是定义的函数
-      let shuffle_node =
-        AstNode::new(shuffle_op.clone(), vec![a_parent, b_parent]);
+        // 创建 shuffle 操作节点
+        let shuffle_op = Op::make_shuffle(indices); // 这里假设 `make_shuffle`
+        // 是定义的函数
+        let shuffle_node =
+          AstNode::new(shuffle_op.clone(), vec![a_parent, b_parent]);
 
-      // 添加 shuffle 节点到 egraph
-      let shuffle_id = egraph.add(shuffle_node);
+        // 添加 shuffle 节点到 egraph
+        let shuffle_id = egraph.add(shuffle_node);
 
-      // 进行替换
-      let cani_id = egraph.find(c_id);
-      egraph.union(cani_id, shuffle_id);
+        // 进行替换
+        let cani_id = egraph.find(c_id);
+        egraph.union(cani_id, shuffle_id);
 
-      // 重新构建 egraph
-      egraph.rebuild();
+        // 重新构建 egraph
+        egraph.rebuild();
+      }
     }
   }
 

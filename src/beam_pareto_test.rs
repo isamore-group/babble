@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::ast_node::{AstNode, Expr, Pretty};
 use crate::extract::beam_pareto::ISAXAnalysis;
 use crate::runner::{
-  BabbleParetoRunner, LiblearnConfig, ParetoConfig, ParetoRunner,
+  BabbleParetoRunner, LiblearnConfig, ParetoConfig, ParetoRunner, VectorConfig,
 };
 use crate::simple_lang::{SimpleOp, SimpleType};
 use egg::{RecExpr, Rewrite};
@@ -43,6 +43,7 @@ fn beam_pareto_test() {
     clock_period: 10,
     add_all_types: false,
     liblearn_config: LiblearnConfig::default(),
+    vectorize_config: VectorConfig::default(),
   };
 
   let exprs = vec![create_expr(1, 2), create_expr(3, 4)];
