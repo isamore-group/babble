@@ -283,7 +283,7 @@ impl LiblearnConfig {
 }
 
 /// 用于进行向量化的config
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct VectorConfig {
   /// 是否进行向量化
   pub vectorize: bool,
@@ -296,6 +296,10 @@ pub struct VectorConfig {
   /// 是否启用post-check(在预处理阶段，
   /// 对于store和load节点的深嵌套进行了解耦，但是可能导致错误的结果)
   pub enable_post_check: bool,
+  /// lift-rules的文件名
+  pub lift_rules: Option<String>,
+  /// transfrom-rules的文件名
+  pub transform_rules: Option<String>,
 }
 
 impl Default for VectorConfig {
@@ -305,6 +309,8 @@ impl Default for VectorConfig {
       enable_gather: true,
       enable_shuffle: false,
       enable_post_check: false,
+      lift_rules: None,
+      transform_rules: None,
     }
   }
 }
@@ -316,12 +322,16 @@ impl VectorConfig {
     enable_gather: bool,
     enable_shuffle: bool,
     enable_post_check: bool,
+    lift_rules: Option<String>,
+    transform_rules: Option<String>,
   ) -> Self {
     Self {
       vectorize,
       enable_gather,
       enable_shuffle,
       enable_post_check,
+      lift_rules,
+      transform_rules,
     }
   }
 }
@@ -351,6 +361,10 @@ where
   /// Configuration for the beam search
   config: ParetoConfig,
   type_info_map: HashMap<(String, Vec<T>), T>,
+  /// lift_dsrs
+  lift_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  /// transform_dsrs
+  transform_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
 }
 
 impl<Op, T> ParetoRunner<Op, T>
@@ -405,7 +419,18 @@ where
       lib_rewrites_with_condition,
       config,
       type_info_map,
+      lift_dsrs: vec![],
+      transform_dsrs: vec![],
     }
+  }
+
+  pub fn with_vectorize_dsrs(
+    &mut self,
+    lift_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+    transform_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  ) {
+    self.lift_dsrs = lift_dsrs;
+    self.transform_dsrs = transform_dsrs;
   }
 
   /// Run the e-graph and library learning process
@@ -423,7 +448,8 @@ where
       let vectorized_egraph = vectorize(
         egraph.clone(),
         roots,
-        self.dsrs.clone(),
+        &self.lift_dsrs,
+        &self.transform_dsrs,
         self.config.clone(),
       );
       let (cost, expr) =
@@ -431,13 +457,14 @@ where
       debug!("cost: {:?}", cost);
       let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
       debug!("pretty expr: {}", pretty_expr);
-      println!("Expression: ");
-      for (id, node) in expr.into_iter().enumerate() {
-        // 如果node是vecop，输出
+      // println!("Expression: ");
+      let mut vecop_cnt = 0;
+      for node in expr {
         if node.operation().is_vector_op() {
-          debug!("{}: {:?}", id, node);
+          vecop_cnt += 1;
         }
       }
+      println!("Vectorized Nodes: {}", vecop_cnt);
       println!(
         "Vectorized egraph size: {}, eclasses: {}",
         egraph.total_size(),

@@ -102,7 +102,6 @@ where
     let name = line;
     let lhs = lhs.trim();
     let rhs = rhs.trim();
-
     let lhs: Pattern<L> = lhs.parse()?;
     let rhs: Pattern<L> = rhs.parse()?;
     if condition == "" {

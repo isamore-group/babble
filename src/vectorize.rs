@@ -23,6 +23,7 @@ use std::{
   fmt::{Debug, Display},
   hash::{Hash, Hasher},
   ops::Deref,
+  path::PathBuf,
   str::FromStr,
   sync::Arc,
   time::Duration,
@@ -495,7 +496,8 @@ where
 pub fn vectorize<Op, T>(
   egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   roots: &[Id],
-  dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  lift_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  transfrom_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   config: ParetoConfig,
 ) -> EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>
 where
@@ -527,6 +529,8 @@ where
     + 'static,
   AstNode<Op>: TypeInfo<T>,
 {
+  println!("there are {} lift dsrs", lift_dsrs.len());
+  println!("there are {} transfrom dsrs", transfrom_dsrs.len());
   let timeout = Duration::from_secs(60 * 100_000);
   let runner = Runner::<_, _, ()>::new(ISAXAnalysis::default())
     .with_egraph(egraph)
@@ -644,7 +648,7 @@ where
     .with_egraph(egraph)
     .with_time_limit(timeout)
     .with_iter_limit(10)
-    .run(&dsrs);
+    .run(lift_dsrs);
 
   // 目前已经实现了各类vec的构建，现在需要去寻找egraph中含有的vec
   // enode，然后加入gather节点
@@ -709,7 +713,15 @@ where
     egraph.classes().len()
   );
 
+  // 使用transform_dsrs进行重写
+  let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
+    .with_egraph(egraph)
+    .with_time_limit(timeout)
+    .with_iter_limit(10)
+    .run(transfrom_dsrs);
+  egraph = runner.egraph.clone();
   // 恢复类型信息，将每个eclass的类型信息传给里面的enode
+
   let cloned_egraph = egraph.clone();
   for class in egraph.classes_mut() {
     for node in class.nodes.iter_mut() {
@@ -717,5 +729,6 @@ where
       node.operation_mut().set_result_type(tys.clone());
     }
   }
+
   egraph
 }

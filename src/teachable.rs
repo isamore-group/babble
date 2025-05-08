@@ -226,7 +226,8 @@ impl Default for ShieldingOp {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 pub enum ShieldingConst {
   Int(u32),
-  Float(u32), //后面的参数都是用来表示位宽
+  Float(u32),       //后面的参数都是用来表示位宽
+  VecInt(u32, u32), // 前者表示长度，后者表示位宽
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
@@ -284,8 +285,16 @@ pub enum VectorOp {
   VecDiv,
   VecMac,
   VecNeg,
-  VecSgn,
   VecSext,
+  VecZext,
+  VecTrunc,
+  VecFPTrunc,
+  VecFPExt,
+  VecAbs,
+  VecRem,
+  VecAnd,
+  VecOr,
+  VecXor,
   VecLoad,
   VecStore,
   Concat,
