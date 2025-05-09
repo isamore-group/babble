@@ -73,7 +73,7 @@ where
         }
       })
       .collect();
-    let ty = enode.get_rtype(&egraph.analysis.type_info_map, &child_types);
+    let ty = enode.get_rtype(&child_types);
     let mut set = HashSet::new();
     set.insert(ty.clone());
     TypeSet { set }

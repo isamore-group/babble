@@ -56,7 +56,7 @@ fn beam_pareto_test() {
   > = vec![];
   let lib_rewrites = HashMap::new();
 
-  let runner = ParetoRunner::new(dsrs, lib_rewrites, config, HashMap::new());
+  let runner = ParetoRunner::new(dsrs, lib_rewrites, config);
   let result = runner.run_multi(exprs);
   println!("Final cost: {:#?}", result.final_cost);
   // println!("Compression ratio: {:.2}", result.compression_ratio());

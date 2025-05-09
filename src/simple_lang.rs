@@ -391,15 +391,8 @@ impl Default for SimpleType {
 }
 
 impl TypeInfo<SimpleType> for AstNode<SimpleOp> {
-  fn get_rtype(
-    &self,
-    type_info_map: &HashMap<(String, Vec<SimpleType>), SimpleType>,
-    child_types: &Vec<SimpleType>,
-  ) -> SimpleType {
-    type_info_map
-      .get(&(self.operation().to_string(), child_types.clone()))
-      .cloned()
-      .unwrap_or_else(|| SimpleType::Unknown)
+  fn get_rtype(&self, child_types: &Vec<SimpleType>) -> SimpleType {
+    SimpleType::Unknown
   }
 
   fn merge_types(a: &SimpleType, b: &SimpleType) -> SimpleType {

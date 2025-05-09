@@ -83,113 +83,129 @@ where
   T: FromStr + Send + Sync + 'static + Debug + Clone,
   <T as FromStr>::Err: std::error::Error + Send + Sync + 'static,
 {
-  let mut rewrites = Vec::new();
-  for line in file
+  file
     .lines()
-    .map(|line| {
-      let line = line.split_once("//").map_or(line, |(line, _comment)| line);
-      line.trim()
+    .filter_map(|line| {
+      let line = line.split_once("//").map(|(l, _)| l).unwrap_or(line).trim();
+      (!line.is_empty()).then_some(line)
     })
-    .filter(|line| !line.is_empty())
-  {
-    // 使用字符串"where"分割
-    let (rewrite, condition) = line.split_once("where").unwrap_or((line, ""));
-    let ac_flag = rewrite.contains("<==>");
-    let (lhs, rhs) = rewrite
-      .split_once("==>")
-      .or_else(|| rewrite.split_once("<==>"))
-      .ok_or(anyhow!("missing '==>' or '<==>'"))?;
-    let name = line;
-    let lhs = lhs.trim();
-    let rhs = rhs.trim();
-    let lhs: Pattern<L> = lhs.parse()?;
-    let rhs: Pattern<L> = rhs.parse()?;
-    if condition == "" {
+    .map(|line| {
+      let (name, (lhs, rhs, ac_flag)) = parse_rewrite_line::<T>(line)?;
+
+      let (lhs_pat, rhs_pat) = (lhs.parse()?, rhs.parse()?);
+      let condition = if let Some(cond_str) =
+        line.split_once("where").map(|(_, c)| c.trim())
+      {
+        parse_condition::<T>(cond_str, &lhs_pat)?
+      } else {
+        TypeMatch::default()
+      };
+      let rewrites =
+        build_rewrites(name, &lhs_pat, &rhs_pat, &condition, ac_flag)?;
+      Ok(rewrites)
+    })
+    .collect::<Result<Vec<_>, _>>()
+    .map(|v| v.into_iter().flatten().collect())
+}
+
+// 辅助函数 1: 解析重写行
+fn parse_rewrite_line<T>(
+  line: &str,
+) -> anyhow::Result<(&str, (&str, &str, bool))> {
+  let (rewrite, condition) = line.split_once("where").unwrap_or((line, ""));
+  let ac_flag = rewrite.contains("<==>");
+  let split_char = if ac_flag { "<==>" } else { "==>" };
+
+  let (lhs, rhs) = rewrite
+    .split_once(split_char)
+    .ok_or_else(|| anyhow!("Missing '{}' in: {}", split_char, rewrite))?;
+  Ok((line, (lhs.trim(), rhs.trim(), ac_flag)))
+}
+
+// 辅助函数 2: 解析条件
+fn parse_condition<T>(
+  cond_str: &str,
+  lhs_pat: &Pattern<impl Language>,
+) -> anyhow::Result<TypeMatch<T>>
+where
+  T: FromStr + Clone + 'static + Send + Debug,
+  <T as FromStr>::Err: std::error::Error + Send + Sync + 'static,
+{
+  if cond_str.contains("all") {
+    let types = cond_str
+      .trim_start_matches("all")
+      .trim_matches(|c| c == '(' || c == ')')
+      .split(':')
+      .nth(1)
+      .ok_or_else(|| anyhow!("Invalid all condition format"))?
+      .trim();
+    let type_list = types
+      .strip_prefix('[')
+      .and_then(|s| s.strip_suffix(']'))
+      .map(|s| s.split('|'))
+      .unwrap_or_else(|| types.split('|'))
+      .map(|s| s.trim().parse())
+      .collect::<Result<Vec<T>, _>>()?;
+    Ok(TypeMatch::from_vars(lhs_pat.vars().into_iter(), type_list))
+  } else {
+    cond_str
+      .parse::<TypeMatch<T>>()
+      .map_err(|e| anyhow!("Failed to parse condition: {}", e))
+  }
+}
+
+// 修正后的 build_rewrites 函数
+fn build_rewrites<L, A, T>(
+  name: &str,
+  lhs: &Pattern<L>,
+  rhs: &Pattern<L>,
+  condition: &TypeMatch<T>,
+  ac_flag: bool,
+) -> anyhow::Result<Vec<Rewrite<L, A>>>
+where
+  L: Language + FromOp + Sync + Send + 'static + TypeInfo<T>,
+  T: Debug + Clone + Send + Sync + 'static,
+  A: Analysis<L>,
+  <A as Analysis<L>>::Data: PartialEq<T>,
+{
+  let mut rewrites = Vec::new();
+  // 始终添加正向规则
+  if condition.is_empty() {
+    rewrites.push(
+      Rewrite::new(name, lhs.clone(), rhs.clone())
+        .map_err(|e| anyhow!("Rewrite creation failed: {}", e))?,
+    );
+  } else {
+    let conditional_applier = ConditionalApplier {
+      condition: condition.clone(),
+      applier: rhs.clone(),
+    };
+    rewrites.push(
+      Rewrite::new(name, lhs.clone(), conditional_applier)
+        .map_err(|e| anyhow!("Rewrite creation failed: {}", e))?,
+    );
+  }
+
+  // AC标志为真时添加反向规则
+  if ac_flag {
+    if condition.is_empty() {
       rewrites.push(
-        Rewrite::new(name, lhs.clone(), rhs.clone())
-          .map_err(|e| anyhow!("{}", e))?,
+        Rewrite::new(&format!("{}_reverse", name), rhs.clone(), lhs.clone())
+          .map_err(|e| anyhow!("Reverse rewrite creation failed: {}", e))?,
       );
-      if ac_flag {
-        // 如果是ac_flag，就需要添加一个反向的Rewrite
-        let lhs = rhs.clone();
-        let rhs = lhs.clone();
-        let name = format!("{}_reverse", line);
-        rewrites
-          .push(Rewrite::new(name, lhs, rhs).map_err(|e| anyhow!("{}", e))?);
-      }
-      continue;
     } else {
-      let condition = {
-        // 查询是否有all关键字，如果存在，就用:进行分割
-        if condition.contains("all") {
-          // 首先去掉"()",然后用:分割
-          let condition = condition
-            .strip_prefix("(")
-            .ok_or(anyhow!("missing '('"))?
-            .strip_suffix(")")
-            .ok_or(anyhow!("missing ')')"))?;
-          let (_, ty) =
-            condition.split_once(":").ok_or(anyhow!("missing ':'"))?;
-          // 去除可能的空格
-          let ty = ty.trim();
-          if ty.contains("[") {
-            // 去除[]，并用,分割
-            let ty = ty
-              .strip_prefix("[")
-              .ok_or(anyhow!("missing '['"))?
-              .strip_suffix("]")
-              .ok_or(anyhow!("missing ']'"))?;
-            let ty = ty.split(",").map(|s| s.trim()).collect::<Vec<_>>();
-            // 解析成Vec<T>
-            let mut type_map = HashMap::new();
-            for var in lhs.vars() {
-              let mut egg_type = Vec::new();
-              for t in &ty {
-                egg_type.push(t.parse::<T>()?);
-              }
-              type_map.insert(var, egg_type);
-            }
-            TypeMatch::new(type_map)
-          }
-          // 解析成单个类型
-          else {
-            let egg_type = vec![ty.parse::<T>()?];
-            let mut type_map = HashMap::new();
-            for var in lhs.vars() {
-              type_map.insert(var, egg_type.clone());
-            }
-            TypeMatch::new(type_map)
-          }
-        }
-        // 使用parse函数解析condition
-        else {
-          condition.parse::<TypeMatch<T>>()?
-        }
-      };
-      // 针对使用
-      let conditional_applier = ConditionalApplier {
+      let reverse_conditional_applier = ConditionalApplier {
         condition: condition.clone(),
-        applier: rhs.clone(),
+        applier: lhs.clone(),
       };
       rewrites.push(
-        Rewrite::new(name, lhs.clone(), conditional_applier)
-          .map_err(|e| anyhow!("{}", e))?,
+        Rewrite::new(
+          &format!("{}_reverse", name),
+          rhs.clone(),
+          reverse_conditional_applier,
+        )
+        .map_err(|e| anyhow!("Reverse rewrite creation failed: {}", e))?,
       );
-      if ac_flag {
-        // 如果是ac_flag，就需要添加一个反向的Rewrite
-        let lhs = rhs.clone();
-        let rhs = lhs.clone();
-        let name = format!("{}_reverse", line);
-        // 针对使用
-        let conditional_applier = ConditionalApplier {
-          condition: condition,
-          applier: rhs.clone(),
-        };
-        rewrites.push(
-          Rewrite::new(name, lhs, conditional_applier)
-            .map_err(|e| anyhow!("{}", e))?,
-        );
-      }
     }
   }
   Ok(rewrites)
@@ -205,6 +221,30 @@ impl<T> TypeMatch<T> {
   pub fn new(type_map: HashMap<Var, Vec<T>>) -> Self {
     TypeMatch { type_map }
   }
+
+  pub fn is_empty(&self) -> bool {
+    self.type_map.is_empty()
+  }
+
+  pub fn from_vars<I>(vars: I, types: Vec<T>) -> Self
+  where
+    I: IntoIterator<Item = Var>,
+    T: Clone,
+  {
+    let mut type_map = HashMap::new();
+    for var in vars {
+      type_map.insert(var, types.clone());
+    }
+    TypeMatch { type_map }
+  }
+}
+
+impl<T> Default for TypeMatch<T> {
+  fn default() -> Self {
+    TypeMatch {
+      type_map: HashMap::new(),
+    }
+  }
 }
 
 impl<T: FromStr + Send + Debug> FromStr for TypeMatch<T>
@@ -213,13 +253,12 @@ where
 {
   type Err = anyhow::Error;
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    // Remove "where(" and ")"
+    // Remove "(" and ")"
     let s = s
       .strip_prefix("(")
       .ok_or(anyhow!("Missing '('"))?
       .strip_suffix(")")
       .ok_or(anyhow!("Missing ')')"))?;
-
     // Split by commas
     let pairs = s.split(',').collect::<Vec<&str>>();
     let mut type_map = HashMap::new();
@@ -230,7 +269,7 @@ where
         return Err(anyhow!("Invalid format"));
       }
       // 如果含有[], 那么说明有多个可能的类型
-      let rparts = parts[1];
+      let rparts = parts[1].trim();
       if rparts.contains("[") {
         let rparts = rparts
           .strip_prefix("[")
@@ -238,10 +277,12 @@ where
           .strip_suffix("]")
           .ok_or(anyhow!("Missing ']'"))?;
         let rparts = rparts
-          .split(',')
+          .split('|')
           .map(|s| s.trim().parse::<T>())
           .collect::<Result<Vec<T>, _>>()?;
+        println!("rparts: {:?}", rparts);
         type_map.insert(parts[0].trim().parse::<Var>()?, rparts);
+
         continue;
       } else {
         // Parse Var and  T

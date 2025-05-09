@@ -872,11 +872,14 @@ where
                 let subtree_cnt1 = subtree_levels1.count_ones();
                 for j in i..end {
                   let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
+                  if vectorize {
+                    // 不进行后面的检查，直接插入
+                    local_pairs.push((**ecls1, **ecls2));
+                  }
                   let popcount2 = cls_hash2.count_ones();
                   if (popcount1 as i32 - popcount2 as i32).abs() >= 36 {
                     continue; // 汉明距离不可能<36
                   }
-
                   let subtree_cnt2 = subtree_levels2.count_ones();
                   let all_one = (subtree_levels1.clone()
                     | subtree_levels2.clone())
@@ -1726,10 +1729,110 @@ where
         "length of nontrivial_aus is {}",
         nontrivial_aus.clone().count()
       );
+      let nontrivial_aus = nontrivial_aus.map(|au| {
+        let mut new_au = au.clone();
+        // 完善类型
+        new_au = au_type_complete(&new_au);
+        new_au
+      });
       self.aus.extend(nontrivial_aus);
     }
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
   }
+}
+
+pub fn au_type_complete<Op, Type>(
+  au_with_type: &AUWithType<Op, Type>,
+) -> AUWithType<Op, Type>
+where
+  Op: Arity
+    + Clone
+    + Debug
+    + Default
+    + Ord
+    + DiscriminantEq
+    + Hash
+    + Sync
+    + Send
+    + Display
+    + 'static
+    + Teachable
+    + Schedulable
+    + OperationInfo,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  TypeSet<Type>: ClassMatch,
+  AstNode<Op>: TypeInfo<Type>,
+{
+  // 针对每个au, 使用OperationInfo中的get_rtypes方法来完善类型
+  let mut new_au_with_type = au_with_type.clone();
+  let type_map = au_with_type.ty_map.clone();
+  let mut pe = au_with_type.au.expr.clone();
+  fn visit<
+    Op: OperationInfo + Clone + Ord + Arity + Debug,
+    Type: FromStr + Clone + Display,
+  >(
+    pe: &mut PartialExpr<Op, Var>,
+    type_map: &HashMap<Var, Vec<Type>>,
+  ) where
+    AstNode<Op>: TypeInfo<Type>,
+  {
+    match pe {
+      PartialExpr::Node(node) => {
+        let ty_str = node.operation().get_result_type();
+        if ty_str.is_empty() {
+          // 如果没有类型，那么就需要进行类型推断
+          // 首先visit子节点
+          for arg in node.args_mut() {
+            visit(arg, type_map);
+          }
+          // 然后取出每个子节点的类型
+          let mut types = vec![];
+          for arg in node.args() {
+            if let PartialExpr::Hole(var) = arg {
+              // 如果是变量，就取出类型
+              if let Some(ty) = type_map.get(var) {
+                types.push(ty[0].clone());
+              }
+            } else {
+              // 如果不是变量，就取出类型
+              let ty =
+                arg.clone().node().unwrap().operation().get_result_type()[0]
+                  .clone()
+                  .parse::<Type>()
+                  .unwrap_or_else(|_| {
+                    panic!("parse type error");
+                  });
+              types.push(ty);
+            }
+          }
+          // 之后计算类型
+          // 用一个伪Id作为args
+          let args = node
+            .args()
+            .iter()
+            .enumerate()
+            .map(|(i, _)| Id::from(i as usize))
+            .collect::<Vec<_>>();
+          let normal_astnode = AstNode::new(node.operation().clone(), args);
+          let ty = normal_astnode.get_rtype(&types).to_string();
+          node.operation_mut().set_result_type(vec![ty]);
+        }
+      }
+      PartialExpr::Hole(_) => {}
+    }
+  }
+  visit(&mut pe, &type_map);
+  new_au_with_type
 }
 
 /// Replaces the metavariables in an anti-unification with pattern variables.

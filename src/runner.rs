@@ -68,6 +68,10 @@ pub trait OperationInfo {
   fn get_bbs_info(&self) -> Vec<String> {
     vec![]
   }
+  /// 获得当前操作符的类型
+  fn get_result_type(&self) -> Vec<String> {
+    vec![]
+  }
   /// 为每个Operation设置返回类型
   fn set_result_type(&mut self, result_ty: Vec<String>) {
     // do nothing
@@ -138,7 +142,7 @@ where
   /// The time taken to run the experiment
   pub run_time: Duration,
   /// the learned lib
-  pub learned_lib: Vec<egg::Pattern<AstNode<Op>>>,
+  pub learned_lib: Vec<(usize, egg::Pattern<AstNode<Op>>)>,
   /// message map to record the message
   pub message: HashMap<String, String>,
 }
@@ -360,7 +364,6 @@ where
     HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
   /// Configuration for the beam search
   config: ParetoConfig,
-  type_info_map: HashMap<(String, Vec<T>), T>,
   /// lift_dsrs
   lift_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   /// transform_dsrs
@@ -407,7 +410,6 @@ where
       (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>),
     >,
     config: ParetoConfig,
-    type_info_map: HashMap<(String, Vec<T>), T>,
   ) -> Self
   where
     I: IntoIterator<Item = Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
@@ -418,7 +420,6 @@ where
       dsrs,
       lib_rewrites_with_condition,
       config,
-      type_info_map,
       lift_dsrs: vec![],
       transform_dsrs: vec![],
     }
@@ -459,7 +460,8 @@ where
       debug!("pretty expr: {}", pretty_expr);
       // println!("Expression: ");
       let mut vecop_cnt = 0;
-      for node in expr {
+      for (id, node) in expr.iter().enumerate() {
+        debug!("{}: {:?}", id, node);
         if node.operation().is_vector_op() {
           vecop_cnt += 1;
         }
@@ -501,7 +503,7 @@ where
       .with_iter_limit(3)
       .run(&self.dsrs);
 
-    let aeg = runner.egraph;
+    let mut aeg = runner.egraph;
 
     println!(
       "Final egraph size: {}, eclasses: {}",
@@ -604,7 +606,6 @@ where
       self.config.inter_beams,
       self.config.lps,
       self.config.strategy,
-      self.type_info_map.clone(),
     ))
     .with_egraph(aeg.clone())
     .with_iter_limit(self.config.lib_iter_limit)
@@ -661,8 +662,10 @@ where
       } else {
         let new_lib = lib.0.0 - max_lib_id;
         chosen_rewrites.push(lib_rewrites[new_lib].clone());
-        learned_libs
-          .push(learned_lib.libs().collect::<Vec<_>>()[new_lib].clone());
+        learned_libs.push((
+          lib.0.0,
+          learned_lib.libs().collect::<Vec<_>>()[new_lib].clone(),
+        ));
         rewrites_map.insert(
           lib.0.0,
           (
@@ -788,7 +791,6 @@ where
       self.config.inter_beams,
       self.config.lps,
       self.config.strategy,
-      self.type_info_map.clone(),
     ));
     let roots = recexprs
       .iter()
@@ -862,7 +864,6 @@ where
       self.config.inter_beams,
       self.config.lps,
       self.config.strategy,
-      self.type_info_map.clone(),
     ));
 
     let roots: Vec<_> = recexpr_groups
