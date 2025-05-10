@@ -1506,15 +1506,6 @@ where
         if op2.is_dummy() {
           continue;
         }
-        // 在vectorize条件下，两个op的bbs也必须要相同，
-        // 而在其他情况下的PartialEq没有考虑这一点
-        // FIXME:加入下面的条件之后，会导致问题，vec太少
-        // if self.vectorize {
-        //   if op1.get_bbs_info() != op2.get_bbs_info() {
-        //     different = true;
-        //     continue;
-        //   }
-        // }
         if op1 == op2 {
           same = true;
           if args1.is_empty() && args2.is_empty() {
@@ -1729,12 +1720,19 @@ where
         "length of nontrivial_aus is {}",
         nontrivial_aus.clone().count()
       );
-      let nontrivial_aus = nontrivial_aus.map(|au| {
-        let mut new_au = au.clone();
-        // 完善类型
-        new_au = au_type_complete(&new_au);
-        new_au
-      });
+      let nontrivial_aus = if self.vectorize {
+        // 不需要完善类型
+        nontrivial_aus.collect::<Vec<_>>()
+      } else {
+        nontrivial_aus
+          .map(|au| {
+            let mut new_au = au.clone();
+            // 完善类型
+            new_au = au_type_complete(&new_au);
+            new_au
+          })
+          .collect::<Vec<_>>()
+      };
       self.aus.extend(nontrivial_aus);
     }
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
