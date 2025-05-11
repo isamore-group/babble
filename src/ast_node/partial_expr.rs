@@ -39,8 +39,7 @@ where
     + Sync
     + Teachable
     + 'static
-    + Hash
-    + Schedulable,
+    + Hash,
   AstNode<Op>: Language,
   T: Eq + Clone + Hash + Debug + Default + Ord,
 {
@@ -74,7 +73,7 @@ where
     // 计算delay
     let mut node_delay: Vec<usize> = Vec::new();
     for node in &rec_expr {
-      let op_delay = node.op_delay();
+      let op_delay = 1;
       let args_max_delay = node
         .args()
         .iter()

@@ -1,24 +1,23 @@
 //! A simple HLS scheduler used for estimating the area and latency of the
 //! learned libraries.
 
-use std::{
-  cmp,
-  collections::{HashMap, HashSet},
-  hash::Hash,
-};
+use std::{cmp, collections::HashSet, hash::Hash};
 
 use crate::{BindingExpr, LibId, Teachable, ast_node::AstNode};
 use egg::RecExpr;
 
 /// A trait for languages that support HLS scheduling.
-pub trait Schedulable {
+pub trait Schedulable<LA, LD>
+where
+  Self: Sized,
+{
   /// Returns the delay of the operation.
   #[must_use]
-  fn op_delay(&self) -> usize;
+  fn op_delay(&self, ld: &LD, args: Vec<Self>) -> usize;
 
   /// Returns the area of the operation.
   #[must_use]
-  fn op_area(&self) -> usize;
+  fn op_area(&self, la: &LA, args: Vec<Self>) -> usize;
 
   /// Returns the latency of the operation.
   #[must_use]
@@ -35,47 +34,32 @@ pub trait Schedulable {
   fn op_latency_cpu(&self) -> usize;
 }
 
-impl<Op, T> AstNode<Op, T>
+impl<Op> AstNode<Op>
 where
-  Op: Schedulable,
+  Op: Clone,
 {
-  /// Returns the delay of the operation.
-  #[must_use]
-  pub fn op_delay(&self) -> usize {
-    self.operation().op_delay()
-  }
-
-  /// Returns the area of the operation.
-  #[must_use]
-  pub fn op_area(&self) -> usize {
-    self.operation().op_area()
-  }
-
-  /// Returns the latency of the operation.
-  #[must_use]
-  pub fn op_latency(&self) -> usize {
-    self.operation().op_latency()
-  }
-
-  /// Returns if the operation is sequential.
-  #[must_use]
-  pub fn is_sequential(&self) -> bool {
-    self.operation().is_sequential()
-  }
-
-  /// Returns the latency of the operation in the case of running on cpu
-  #[must_use]
-  fn op_latency_cpu(&self) -> usize {
-    self.operation().op_latency_cpu()
+  pub fn get_op_args(&self, expr: &RecExpr<Self>) -> Vec<Self> {
+    self
+      .args()
+      .iter()
+      .map(|id| {
+        let idx: usize = (*id).into();
+        expr[idx].clone()
+      })
+      .collect::<Vec<Self>>()
   }
 }
 
 /// A struct representing a scheduler which used to estimate the area and
 /// latency of the learned libraries.
 #[derive(Clone, Copy)]
-pub struct Scheduler {
+pub struct Scheduler<LA, LD> {
   /// The clock period of timing scheduling.
   clock_period: usize,
+  /// The area estimator.
+  area_estimator: LA,
+  /// The delay estimator.
+  delay_estimator: LD,
   // Maybe more parameters in the future.
 }
 
@@ -83,15 +67,25 @@ pub struct Scheduler {
 /// gain = latency_cpu - latency_accelerator, cost = area.
 pub type ScheduleResult = (usize, usize);
 
-impl Scheduler {
-  pub fn new(clock_period: usize) -> Self {
-    Self { clock_period }
+impl<LA, LD> Scheduler<LA, LD> {
+  pub fn new(
+    clock_period: usize,
+    area_estimator: LA,
+    delay_estimator: LD,
+  ) -> Self {
+    Self {
+      clock_period,
+      area_estimator,
+      delay_estimator,
+    }
   }
 
-  pub fn asap_schedule<Op: Schedulable + Eq + Hash + Clone>(
-    &self,
-    expr: &RecExpr<AstNode<Op>>,
-  ) -> ScheduleResult {
+  pub fn asap_schedule<Op>(&self, expr: &RecExpr<AstNode<Op>>) -> ScheduleResult
+  where
+    Op: Eq + Hash + Clone + Teachable,
+    AstNode<Op>: Schedulable<LA, LD>,
+  {
+    // println!("Scheduling...");
     // Start cycle of each AST node
     let mut sc: Vec<usize> = vec![0; expr.len()];
     // Start time in the cycle of each AST node
@@ -116,24 +110,35 @@ impl Scheduler {
               break;
             } else {
               let dep = &expr[idx];
-              if dep.is_sequential() {
+              let mut delay =
+                dep.op_delay(&self.delay_estimator, dep.get_op_args(expr));
+              let mut latency = dep.op_latency();
+              latency += delay / self.clock_period;
+              delay %= self.clock_period;
+              let is_sequential = latency > 0;
+              if is_sequential {
                 // Check if the dependent operation is ready
-                if sc[idx] + dep.op_latency() > cycle {
+                if sc[idx] + latency > cycle {
                   ready = false;
                   break;
-                } else if sc[idx] + dep.op_latency() == cycle {
-                  earlist_stic = cmp::max(earlist_stic, dep.op_delay());
+                } else if sc[idx] + latency == cycle {
+                  earlist_stic = cmp::max(earlist_stic, delay);
                 }
               } else {
                 if sc[idx] == cycle {
-                  earlist_stic =
-                    cmp::max(earlist_stic, stic[idx] + dep.op_delay());
+                  earlist_stic = cmp::max(earlist_stic, stic[idx] + delay);
                 }
               }
             }
           }
           if ready {
-            match node.is_sequential() {
+            let mut delay =
+              node.op_delay(&self.delay_estimator, node.get_op_args(expr));
+            let mut latency = node.op_latency();
+            latency += delay / self.clock_period;
+            delay %= self.clock_period;
+            let is_sequential = latency > 0;
+            match is_sequential {
               true => {
                 sc[i] = cycle;
                 stic[i] = earlist_stic;
@@ -141,7 +146,7 @@ impl Scheduler {
                 unscheduled_count -= 1;
               }
               false => {
-                if earlist_stic + node.op_delay() <= self.clock_period {
+                if earlist_stic + delay <= self.clock_period {
                   sc[i] = cycle;
                   stic[i] = earlist_stic;
                   scheduled[i] = true;
@@ -155,6 +160,8 @@ impl Scheduler {
       cycle += 1;
     }
     // Calculate the gain
+    // println!("Scheduling done.");
+    // println!("Calculating gain...");
     let mut latency_accelerator = 0;
     for i in 0..expr.len() {
       let node = &expr[i];
@@ -170,36 +177,10 @@ impl Scheduler {
       latency_cpu += node.op_latency_cpu();
     }
     // Calculate the area
-    // For each type of operation, we record the scheduled cycles of all the AST
-    // nodes with this type. For example, if we have an operations scheduled in
-    // cycles 1, 2, and 3 with a latency of 2, we will record a vector of [(1,
-    // 2), (2, 3), (3, 4)] for the add operation.
-    let mut op_schedule: HashMap<Op, Vec<(usize, usize)>> = HashMap::new();
-    for i in 0..expr.len() {
-      let node = &expr[i];
-      let op = node.operation();
-      let start: usize = sc[i];
-      let end: usize = if node.is_sequential() {
-        sc[i] + node.op_latency() - 1
-      } else {
-        sc[i]
-      };
-      let entry = op_schedule.entry(op.clone()).or_insert(vec![]);
-      entry.push((start, end));
-    }
+    println!("Calculating area...");
     let mut area = 0;
-    for (op, schedule) in op_schedule.iter() {
-      let mut op_count = 0;
-      for i in 0..latency_accelerator {
-        let mut cycle_count = 0;
-        for (start, end) in schedule.iter() {
-          if *start <= i && i <= *end {
-            cycle_count += 1;
-          }
-        }
-        op_count = cmp::max(op_count, cycle_count);
-      }
-      area += op_count * op.op_area();
+    for node in expr {
+      area += node.op_area(&self.area_estimator, node.get_op_args(expr));
     }
     (latency_cpu - latency_accelerator, area)
   }

@@ -49,7 +49,6 @@ where
     + Sync
     + Send
     + DiscriminantEq
-    + Schedulable
     + 'static,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
@@ -71,15 +70,7 @@ where
 #[derive(Clone)]
 pub struct ParetoResult<Op, T>
 where
-  Op: Display
-    + Hash
-    + Clone
-    + Ord
-    + Teachable
-    + Arity
-    + Debug
-    + Schedulable
-    + 'static,
+  Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   T: Debug,
 {
   /// The final expression after library learning and application
@@ -96,15 +87,7 @@ where
 
 impl<Op, T> std::fmt::Debug for ParetoResult<Op, T>
 where
-  Op: Display
-    + Hash
-    + Clone
-    + Ord
-    + Teachable
-    + Arity
-    + Debug
-    + Schedulable
-    + 'static,
+  Op: Display + Hash + Clone + Ord + Teachable + Arity + Debug + 'static,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
 {
@@ -119,7 +102,11 @@ where
 
 /// Configuration for beam search
 #[derive(Debug, Clone)]
-pub struct ParetoConfig {
+pub struct ParetoConfig<LA, LD>
+where
+  LA: Debug + Default + Clone,
+  LD: Debug + Default + Clone,
+{
   /// The final beam size to use
   pub final_beams: usize,
   /// The inter beam size to use
@@ -136,13 +123,21 @@ pub struct ParetoConfig {
   pub strategy: f32,
   /// clock period used for scheduling
   pub clock_period: usize,
+  /// area estimator
+  pub area_estimator: LA,
+  /// delay estimator
+  pub delay_estimator: LD,
   /// whether to add all types
   pub add_all_types: bool,
   /// liblearn config
   pub liblearn_config: LiblearnConfig,
 }
 
-impl Default for ParetoConfig {
+impl<LA, LD> Default for ParetoConfig<LA, LD>
+where
+  LA: Debug + Default + Clone,
+  LD: Debug + Default + Clone,
+{
   fn default() -> Self {
     Self {
       final_beams: 10,
@@ -153,6 +148,8 @@ impl Default for ParetoConfig {
       max_arity: None,
       strategy: 0.8,
       clock_period: 100,
+      area_estimator: LA::default(),
+      delay_estimator: LD::default(),
       add_all_types: false,
       liblearn_config: LiblearnConfig::default(),
     }
@@ -245,7 +242,7 @@ impl LiblearnConfig {
 }
 
 /// A Pareto Runner that uses Pareto optimization with beam search
-pub struct ParetoRunner<Op, T>
+pub struct ParetoRunner<Op, T, LA, LD>
 where
   Op: Display
     + Hash
@@ -257,6 +254,8 @@ where
     + Sync
     + Debug
     + 'static,
+  LA: Debug + Default + Clone,
+  LD: Debug + Default + Clone,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
 {
@@ -265,11 +264,11 @@ where
   /// lib rewrites
   lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   /// Configuration for the beam search
-  config: ParetoConfig,
+  config: ParetoConfig<LA, LD>,
   type_info_map: HashMap<(String, Vec<T>), T>,
 }
 
-impl<Op, T> ParetoRunner<Op, T>
+impl<Op, T, LA, LD> ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + OperationInfo
@@ -284,7 +283,6 @@ where
     + Sync
     + Send
     + DiscriminantEq
-    + Schedulable
     + 'static,
   T: Debug
     + Default
@@ -296,14 +294,16 @@ where
     + Sync
     + 'static
     + Display,
-  AstNode<Op>: TypeInfo<T>,
+  LA: Debug + Default + Clone,
+  LD: Debug + Default + Clone,
+  AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
   /// Create a new BeamRunner with the given domain-specific rewrites and
   /// configuration
   pub fn new<I>(
     dsrs: I,
     lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
-    config: ParetoConfig,
+    config: ParetoConfig<LA, LD>,
     type_info_map: HashMap<(String, Vec<T>), T>,
   ) -> Self
   where
@@ -381,6 +381,8 @@ where
       .with_last_lib_id(max_lib_id)
       .with_liblearn_config(self.config.liblearn_config.clone())
       .with_clock_period(self.config.clock_period)
+      .with_area_estimator(self.config.area_estimator.clone())
+      .with_delay_estimator(self.config.delay_estimator.clone())
       .build(&aeg);
     println!(
       "Found {} patterns in {}ms",
@@ -388,7 +390,7 @@ where
       au_time.elapsed().as_millis()
     );
 
-    info!("Deduplicating patterns... ");
+    println!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
     learned_lib.deduplicate(&aeg);
     let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
@@ -509,7 +511,7 @@ where
   }
 }
 
-impl<Op, T> BabbleParetoRunner<Op, T> for ParetoRunner<Op, T>
+impl<Op, T, LA, LD> BabbleParetoRunner<Op, T> for ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + OperationInfo
@@ -524,7 +526,6 @@ where
     + Sync
     + Send
     + DiscriminantEq
-    + Schedulable
     + 'static,
   T: Debug
     + Default
@@ -536,7 +537,9 @@ where
     + Sync
     + 'static
     + Display,
-  AstNode<Op>: TypeInfo<T>,
+  LA: Debug + Default + Clone,
+  LD: Debug + Default + Clone,
+  AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
   fn run(&self, expr: Expr<Op>) -> ParetoResult<Op, T> {
     self.run_multi(vec![expr])
@@ -647,7 +650,7 @@ where
 }
 
 // Implement Debug that doesn't depend on Op being Debug
-impl<Op, T> std::fmt::Debug for ParetoRunner<Op, T>
+impl<Op, T, LA, LD> std::fmt::Debug for ParetoRunner<Op, T, LA, LD>
 where
   Op: Display
     + Hash
@@ -660,6 +663,8 @@ where
     + Debug
     + 'static,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  LA: Debug + Default + Clone,
+  LD: Debug + Default + Clone,
   AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

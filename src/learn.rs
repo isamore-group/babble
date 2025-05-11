@@ -16,9 +16,8 @@
 // 使用随机数
 use crate::runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost};
 use crate::{
-  COBuilder,
   ast_node::{Arity, AstNode, Expr, PartialExpr},
-  co_occurrence::CoOccurrences,
+  co_occurrence::{COBuilder, CoOccurrences},
   dfta::Dfta,
   extract::beam_pareto::{ClassMatch, EmptyAnalysis},
   schedule::{Schedulable, Scheduler},
@@ -149,8 +148,7 @@ impl<Op, T> AU<Op, T> {
       + Sync
       + Teachable
       + 'static
-      + Hash
-      + Schedulable,
+      + Hash,
     AstNode<Op>: Language,
     T: Clone + Debug + Hash + Ord + Default,
   {
@@ -208,7 +206,7 @@ impl<Op: Eq, T: Eq> Ord for AU<Op, T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct LearnedLibraryBuilder<Op>
+pub struct LearnedLibraryBuilder<Op, LA, LD>
 where
   Op: Arity
     + Clone
@@ -220,8 +218,9 @@ where
     + Hash
     + DiscriminantEq
     + 'static
-    + Teachable
-    + Schedulable,
+    + Teachable,
+  LA: Debug + Clone + Default,
+  LD: Debug + Clone + Default,
 {
   egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
   learn_trivial: bool,
@@ -233,10 +232,12 @@ where
   dfta: bool,
   last_lib_id: usize,
   clock_period: usize,
+  area_estimator: LA,
+  delay_estimator: LD,
   liblearn_config: LiblearnConfig,
 }
 
-impl<Op> Default for LearnedLibraryBuilder<Op>
+impl<Op, LA, LD> Default for LearnedLibraryBuilder<Op, LA, LD>
 where
   Op: Arity
     + Clone
@@ -248,8 +249,9 @@ where
     + Hash
     + DiscriminantEq
     + 'static
-    + Teachable
-    + Schedulable,
+    + Teachable,
+  LA: Debug + Clone + Default,
+  LD: Debug + Clone + Default,
 {
   fn default() -> Self {
     Self {
@@ -263,6 +265,8 @@ where
       dfta: true,
       last_lib_id: 0,
       clock_period: 3,
+      area_estimator: LA::default(),
+      delay_estimator: LD::default(),
       liblearn_config: LiblearnConfig::default(),
     }
   }
@@ -284,7 +288,7 @@ where
 // }
 
 // 为 LearnedLibraryBuilder 实现自定义的构造函数make_with_egraph
-impl<Op> LearnedLibraryBuilder<Op>
+impl<Op, LA, LD> LearnedLibraryBuilder<Op, LA, LD>
 where
   Op: Arity
     + Clone
@@ -296,8 +300,9 @@ where
     + std::hash::Hash
     + DiscriminantEq
     + 'static
-    + Teachable
-    + Schedulable,
+    + Teachable,
+  LA: Debug + Clone + Default,
+  LD: Debug + Clone + Default,
   AstNode<Op>: Language,
 {
   pub fn make_with_egraph_ld(
@@ -314,12 +319,14 @@ where
       dfta: true,
       last_lib_id: 0,
       clock_period: 3,
+      area_estimator: LA::default(),
+      delay_estimator: LD::default(),
       liblearn_config: LiblearnConfig::default(),
     }
   }
 }
 
-impl<Op> LearnedLibraryBuilder<Op>
+impl<Op, LA, LD> LearnedLibraryBuilder<Op, LA, LD>
 where
   Op: Arity
     + Clone
@@ -332,9 +339,10 @@ where
     + std::hash::Hash
     + DiscriminantEq
     + 'static
-    + Teachable
-    + Schedulable,
-  AstNode<Op>: Language,
+    + Teachable,
+  LA: Debug + Clone + Default,
+  LD: Debug + Clone + Default,
+  AstNode<Op>: Language + Schedulable<LA, LD>,
 {
   #[must_use]
   pub fn learn_trivial(mut self, trivial: bool) -> Self {
@@ -397,6 +405,18 @@ where
   }
 
   #[must_use]
+  pub fn with_area_estimator(mut self, area_estimator: LA) -> Self {
+    self.area_estimator = area_estimator;
+    self
+  }
+
+  #[must_use]
+  pub fn with_delay_estimator(mut self, delay_estimator: LD) -> Self {
+    self.delay_estimator = delay_estimator;
+    self
+  }
+
+  #[must_use]
   pub fn with_liblearn_config(
     mut self,
     liblearn_config: LiblearnConfig,
@@ -408,7 +428,7 @@ where
   pub fn build<A>(
     self,
     egraph: &EGraph<AstNode<Op>, A>,
-  ) -> LearnedLibrary<Op, (Id, Id)>
+  ) -> LearnedLibrary<Op, (Id, Id), LA, LD>
   where
     A: Analysis<AstNode<Op>> + Clone + Sync + Send + 'static,
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
@@ -435,6 +455,8 @@ where
       self.dfta,
       self.last_lib_id,
       self.clock_period,
+      self.area_estimator,
+      self.delay_estimator,
       self.liblearn_config,
     )
   }
@@ -451,7 +473,7 @@ pub trait DiscriminantEq {
 /// You can create a `LearnedLibrary` using
 /// [`LearnedLibrary::from(&your_egraph)`].
 #[derive(Debug, Clone)]
-pub struct LearnedLibrary<Op, T>
+pub struct LearnedLibrary<Op, T, LA, LD>
 where
   Op: Arity
     + Clone
@@ -464,6 +486,8 @@ where
     + Hash
     + 'static
     + Teachable,
+  LA: Debug + Clone,
+  LD: Debug + Clone,
 {
   egraph: EGraph<AstNode<Op>, EmptyAnalysis<Op>>,
   /// A map from DFTA states (i.e. pairs of enodes) to their antiunifications.
@@ -485,6 +509,10 @@ where
   last_lib_id: usize,
   /// clock period used in scheduling
   clock_period: usize,
+  /// area estimator
+  area_estimator: LA,
+  /// delay estimator
+  delay_estimator: LD,
   /// config for liblearn
   liblearn_config: LiblearnConfig,
 }
@@ -502,7 +530,7 @@ where
   (x, after_mem - before_mem)
 }
 
-impl<'a, Op> LearnedLibrary<Op, (Id, Id)>
+impl<'a, Op, LA, LD> LearnedLibrary<Op, (Id, Id), LA, LD>
 where
   Op: Arity
     + Clone
@@ -515,9 +543,10 @@ where
     + DiscriminantEq
     + std::hash::Hash
     + Teachable
-    + Schedulable
     + 'static,
-  AstNode<Op>: Language,
+  LA: Debug + Clone,
+  LD: Debug + Clone,
+  AstNode<Op>: Language + Schedulable<LA, LD>,
 {
   /// Constructs a [`LearnedLibrary`] from an [`EGraph`] by antiunifying pairs
   /// of enodes to find their common structure.
@@ -532,6 +561,8 @@ where
     dfta: bool,
     last_lib_id: usize,
     clock_period: usize,
+    area_estimator: LA,
+    delay_estimator: LD,
     liblearn_config: LiblearnConfig,
   ) -> Self
   where
@@ -551,6 +582,8 @@ where
       co_occurrences,
       last_lib_id,
       clock_period,
+      area_estimator,
+      delay_estimator,
       liblearn_config: liblearn_config.clone(),
     };
 
@@ -897,7 +930,7 @@ where
   }
 }
 
-impl<Op, T> LearnedLibrary<Op, T>
+impl<Op, T, LA, LD> LearnedLibrary<Op, T, LA, LD>
 where
   Op: Arity
     + Clone
@@ -910,9 +943,10 @@ where
     + Teachable
     + DiscriminantEq
     + 'static
-    + Hash
-    + Schedulable,
-  AstNode<Op>: Language,
+    + Hash,
+  LA: Debug + Clone,
+  LD: Debug + Clone,
+  AstNode<Op>: Language + Schedulable<LA, LD>,
 {
   /// Returns an iterator over rewrite rules that replace expressions with
   /// equivalent calls to a learned library function.
@@ -941,8 +975,14 @@ where
     self.aus.iter().enumerate().map(|(i, au)| {
       let new_i = i + self.last_lib_id;
       let searcher: Pattern<_> = au.expr.clone().into();
-      let applier: Pattern<_> =
-        reify(LibId(new_i), au.expr.clone(), self.clock_period).into();
+      let applier: Pattern<_> = reify(
+        LibId(new_i),
+        au.expr.clone(),
+        self.clock_period,
+        self.area_estimator.clone(),
+        self.delay_estimator.clone(),
+      )
+      .into();
       let name = format!("anti-unify {i}");
       debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
 
@@ -955,8 +995,14 @@ where
   pub fn libs(&self) -> impl Iterator<Item = Pattern<AstNode<Op>>> + '_ {
     self.aus.iter().enumerate().map(|(i, au)| {
       let new_i = i + self.last_lib_id;
-      let applier: Pattern<_> =
-        reify(LibId(new_i), au.expr.clone(), self.clock_period).into();
+      let applier: Pattern<_> = reify(
+        LibId(new_i),
+        au.expr.clone(),
+        self.clock_period,
+        self.area_estimator.clone(),
+        self.delay_estimator.clone(),
+      )
+      .into();
       applier
     })
   }
@@ -1124,7 +1170,7 @@ where
   }
 }
 
-impl<Op> LearnedLibrary<Op, (Id, Id)>
+impl<Op, LA, LD> LearnedLibrary<Op, (Id, Id), LA, LD>
 where
   Op: Arity
     + Clone
@@ -1137,8 +1183,10 @@ where
     + Send
     + Display
     + 'static
-    + Teachable
-    + Schedulable,
+    + Teachable,
+  AstNode<Op>: Schedulable<LA, LD>,
+  LA: Debug + Clone,
+  LD: Debug + Clone,
 {
   /// Computes the antiunifications of `state` in the DFTA `dfta`.
   fn enumerate_over_dfta(
@@ -1567,10 +1615,12 @@ where
 ///
 /// assuming `name` is "foo".
 #[must_use]
-fn reify<Op, T>(
+fn reify<Op, T, LA, LD>(
   ix: LibId,
   au: PartialExpr<Op, T>,
   clock_period: usize,
+  area_estimator: LA,
+  delay_estimator: LD,
 ) -> PartialExpr<Op, T>
 where
   Op: Clone
@@ -1583,9 +1633,8 @@ where
     + Sync
     + Teachable
     + 'static
-    + Hash
-    + Schedulable,
-  AstNode<Op>: Language,
+    + Hash,
+  AstNode<Op>: Language + Schedulable<LA, LD>,
   T: Eq + Clone + Hash + Debug,
 {
   let mut metavars = Vec::new();
@@ -1656,11 +1705,14 @@ where
     body = Op::apply(body, Op::var(index).into()).into();
   }
 
+  // println!("Starting to calculate the gain and cost of the au");
   // Calculate the gain and the cost of the au
   let expr: Expr<Op> = au.clone().try_into().unwrap();
   let rec_expr: RecExpr<AstNode<Op>> = expr.into();
   // println!("rec_expr: {:?}", rec_expr);
-  let (gain, cost) = Scheduler::new(clock_period).asap_schedule(&rec_expr);
+  let (gain, cost) =
+    Scheduler::new(clock_period, area_estimator, delay_estimator)
+      .asap_schedule(&rec_expr);
   // println!("gain: {}, cost: {}", gain, cost);
 
   PartialExpr::Node(BindingExpr::Lib(ix, fun, body, gain, cost).into())

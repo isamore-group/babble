@@ -17,18 +17,18 @@
 
 pub mod ast_node;
 pub mod au_search;
-#[cfg(test)]
-mod beam_pareto_test;
-mod co_occurrence;
+pub mod bb_query;
+// #[cfg(test)]
+// mod beam_pareto_test;
+pub mod co_occurrence;
 mod dfta;
 pub mod extract;
 pub mod learn;
 pub mod rewrites;
 pub mod runner;
 pub mod schedule;
-pub mod bb_query;
 pub mod sexp;
-pub mod simple_lang;
+// pub mod simple_lang;
 pub mod teachable;
 pub mod util;
 
@@ -36,7 +36,6 @@ pub use ast_node::{
   Arity, AstNode, Expr, PartialExpr, Precedence, Pretty, Printable, Printer,
   combine_exprs,
 };
-pub use co_occurrence::{COBuilder, CoOccurrences};
 pub use learn::{
   DiscriminantEq, LearnedLibrary, LearnedLibraryBuilder, LibId, ParseLibIdError,
 };
