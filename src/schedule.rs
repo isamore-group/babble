@@ -86,6 +86,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     AstNode<Op>: Schedulable<LA, LD>,
   {
     // println!("Scheduling...");
+    // println!("Size of expr: {}", expr.len());
     // Start cycle of each AST node
     let mut sc: Vec<usize> = vec![0; expr.len()];
     // Start time in the cycle of each AST node
@@ -160,7 +161,8 @@ impl<LA, LD> Scheduler<LA, LD> {
       cycle += 1;
     }
     // Calculate the gain
-    // println!("Scheduling done.");
+    // println!("Scheduling done. cycle: {}", cycle);
+    // println!("Calculating gain...");
     // println!("Calculating gain...");
     let mut latency_accelerator = 0;
     for i in 0..expr.len() {
@@ -176,13 +178,19 @@ impl<LA, LD> Scheduler<LA, LD> {
     for node in expr {
       latency_cpu += node.op_latency_cpu();
     }
+    // println!("Latency CPU: {}", latency_cpu);
     // Calculate the area
-    println!("Calculating area...");
+    // println!("Calculating area...");
     let mut area = 0;
     for node in expr {
       area += node.op_area(&self.area_estimator, node.get_op_args(expr));
     }
-    (latency_cpu - latency_accelerator, area)
+    // println!("Area: {}", area);
+    if latency_accelerator > latency_cpu {
+      (0, area)
+    } else {
+      (latency_cpu - latency_accelerator, area)
+    }
   }
 }
 
