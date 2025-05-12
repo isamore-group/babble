@@ -13,6 +13,7 @@
 //! expressions (z1, ..., zn) with z1 \in AU(x1, y1), ..., zn \in AU(xn, yn), we
 //! add the partial expression op(z1, ..., zn) to the set AU(a, b).
 //! If the set AU(a, b) is empty, we add to it the partial expression (a, b).
+use crate::bb_query::{self, BBQuery};
 // 使用随机数
 use crate::runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost};
 use crate::{
@@ -234,6 +235,7 @@ where
   clock_period: usize,
   area_estimator: LA,
   delay_estimator: LD,
+  bb_query: BBQuery,
   liblearn_config: LiblearnConfig,
 }
 
@@ -264,9 +266,10 @@ where
       co_occurences: None,
       dfta: true,
       last_lib_id: 0,
-      clock_period: 3,
+      clock_period: 1000,
       area_estimator: LA::default(),
       delay_estimator: LD::default(),
+      bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
     }
   }
@@ -318,9 +321,10 @@ where
       co_occurences: None,
       dfta: true,
       last_lib_id: 0,
-      clock_period: 3,
+      clock_period: 1000,
       area_estimator: LA::default(),
       delay_estimator: LD::default(),
+      bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
     }
   }
@@ -417,6 +421,12 @@ where
   }
 
   #[must_use]
+  pub fn with_bb_query(mut self, bb_query: BBQuery) -> Self {
+    self.bb_query = bb_query;
+    self
+  }
+
+  #[must_use]
   pub fn with_liblearn_config(
     mut self,
     liblearn_config: LiblearnConfig,
@@ -457,6 +467,7 @@ where
       self.clock_period,
       self.area_estimator,
       self.delay_estimator,
+      self.bb_query,
       self.liblearn_config,
     )
   }
@@ -513,6 +524,8 @@ where
   area_estimator: LA,
   /// delay estimator
   delay_estimator: LD,
+  /// BB query for CPU latency
+  bb_query: BBQuery,
   /// config for liblearn
   liblearn_config: LiblearnConfig,
 }
@@ -563,6 +576,7 @@ where
     clock_period: usize,
     area_estimator: LA,
     delay_estimator: LD,
+    bb_query: BBQuery,
     liblearn_config: LiblearnConfig,
   ) -> Self
   where
@@ -584,6 +598,7 @@ where
       clock_period,
       area_estimator,
       delay_estimator,
+      bb_query,
       liblearn_config: liblearn_config.clone(),
     };
 
@@ -981,6 +996,7 @@ where
         self.clock_period,
         self.area_estimator.clone(),
         self.delay_estimator.clone(),
+        self.bb_query.clone(),
       )
       .into();
       let name = format!("anti-unify {i}");
@@ -1001,6 +1017,7 @@ where
         self.clock_period,
         self.area_estimator.clone(),
         self.delay_estimator.clone(),
+        self.bb_query.clone(),
       )
       .into();
       applier
@@ -1621,6 +1638,7 @@ fn reify<Op, T, LA, LD>(
   clock_period: usize,
   area_estimator: LA,
   delay_estimator: LD,
+  bb_query: BBQuery,
 ) -> PartialExpr<Op, T>
 where
   Op: Clone
@@ -1711,7 +1729,7 @@ where
   let rec_expr: RecExpr<AstNode<Op>> = expr.into();
   // println!("rec_expr: {:?}", rec_expr);
   let (gain, cost) =
-    Scheduler::new(clock_period, area_estimator, delay_estimator)
+    Scheduler::new(clock_period, area_estimator, delay_estimator, bb_query)
       .asap_schedule(&rec_expr);
   // println!("gain: {}, cost: {}", gain, cost);
 

@@ -19,6 +19,7 @@ use log::{debug, info};
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
   Printable, Teachable,
+  bb_query::BBQuery,
   extract::beam_pareto::{ISAXAnalysis, LibExtractor, TypeInfo},
   schedule::Schedulable,
 };
@@ -261,6 +262,8 @@ where
 {
   /// The domain-specific rewrites to apply
   dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  /// BB query
+  bb_query: BBQuery,
   /// lib rewrites
   lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   /// Configuration for the beam search
@@ -302,6 +305,7 @@ where
   /// configuration
   pub fn new<I>(
     dsrs: I,
+    bb_query: BBQuery,
     lib_rewrites: HashMap<usize, Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
     config: ParetoConfig<LA, LD>,
     type_info_map: HashMap<(String, Vec<T>), T>,
@@ -313,6 +317,7 @@ where
     let dsrs = dsrs.into_iter().collect();
     Self {
       dsrs,
+      bb_query,
       lib_rewrites,
       config,
       type_info_map,
@@ -383,6 +388,7 @@ where
       .with_clock_period(self.config.clock_period)
       .with_area_estimator(self.config.area_estimator.clone())
       .with_delay_estimator(self.config.delay_estimator.clone())
+      .with_bb_query(self.bb_query.clone())
       .build(&aeg);
     println!(
       "Found {} patterns in {}ms",

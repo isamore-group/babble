@@ -1,12 +1,13 @@
 use std::{collections::HashMap, path::Path};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BBEntry {
   pub name: String,
   pub execution_count: usize,
   pub total_ticks: usize,
   pub average_ticks: f64,
   pub instr_count: usize,
+  pub operation_count: usize,
   pub cpi: f64,
 }
 
@@ -17,6 +18,7 @@ impl BBEntry {
     total_ticks: usize,
     average_ticks: f64,
     instr_count: usize,
+    operation_count: usize,
     cpi: f64,
   ) -> Self {
     Self {
@@ -25,11 +27,13 @@ impl BBEntry {
       total_ticks,
       average_ticks,
       instr_count,
+      operation_count,
       cpi,
     }
   }
 }
 
+#[derive(Debug, Clone)]
 pub struct BBQuery {
   map: HashMap<String, BBEntry>,
 }
@@ -45,7 +49,8 @@ impl BBQuery {
       let total_ticks = record[2].parse::<usize>().unwrap();
       let average_ticks = record[3].parse::<f64>().unwrap();
       let instr_count = record[4].parse::<usize>().unwrap();
-      let cpi = record[5].parse::<f64>().unwrap();
+      let operation_count = record[5].parse::<usize>().unwrap();
+      let cpi = record[6].parse::<f64>().unwrap();
       map.insert(
         name.clone(),
         BBEntry::new(
@@ -54,6 +59,7 @@ impl BBQuery {
           total_ticks,
           average_ticks,
           instr_count,
+          operation_count,
           cpi,
         ),
       );
@@ -70,13 +76,23 @@ impl BBQuery {
   }
 }
 
+impl Default for BBQuery {
+  fn default() -> Self {
+    Self {
+      map: HashMap::new(),
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
   #[test]
   fn test_bb_query() {
-    let bb_query = BBQuery::new(std::env::var("CARGO_MANIFEST_DIR").unwrap() + "/resource/bb_tracer.csv");
+    let bb_query = BBQuery::new(
+      std::env::var("CARGO_MANIFEST_DIR").unwrap() + "/resource/bb_tracer.csv",
+    );
     println!("{}", bb_query.dump());
   }
 }

@@ -1,9 +1,11 @@
 //! A simple HLS scheduler used for estimating the area and latency of the
 //! learned libraries.
 
-use std::{cmp, collections::HashSet, hash::Hash};
+use std::{cmp, collections::HashSet, fmt::Debug, hash::Hash};
 
-use crate::{BindingExpr, LibId, Teachable, ast_node::AstNode};
+use crate::{
+  BindingExpr, LibId, Teachable, ast_node::AstNode, bb_query::BBQuery,
+};
 use egg::RecExpr;
 
 /// A trait for languages that support HLS scheduling.
@@ -23,15 +25,13 @@ where
   #[must_use]
   fn op_latency(&self) -> usize;
 
-  /// Returns if the operation is sequential.
-  #[must_use]
-  fn is_sequential(&self) -> bool {
-    self.op_latency() > 0
-  }
-
   /// Returns the latency of the operation in the case of running on cpu
   #[must_use]
-  fn op_latency_cpu(&self) -> usize;
+  fn op_latency_cpu(&self, bb_query: &BBQuery) -> usize;
+
+  /// Returns the execution count of the operation.
+  #[must_use]
+  fn op_execution_count(&self, bb_query: &BBQuery) -> usize;
 }
 
 impl<Op> AstNode<Op>
@@ -52,7 +52,7 @@ where
 
 /// A struct representing a scheduler which used to estimate the area and
 /// latency of the learned libraries.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Scheduler<LA, LD> {
   /// The clock period of timing scheduling.
   clock_period: usize,
@@ -60,6 +60,8 @@ pub struct Scheduler<LA, LD> {
   area_estimator: LA,
   /// The delay estimator.
   delay_estimator: LD,
+  /// BB query for the CPU latency.
+  bb_query: BBQuery,
   // Maybe more parameters in the future.
 }
 
@@ -72,21 +74,22 @@ impl<LA, LD> Scheduler<LA, LD> {
     clock_period: usize,
     area_estimator: LA,
     delay_estimator: LD,
+    bb_query: BBQuery,
   ) -> Self {
     Self {
       clock_period,
       area_estimator,
       delay_estimator,
+      bb_query,
     }
   }
 
   pub fn asap_schedule<Op>(&self, expr: &RecExpr<AstNode<Op>>) -> ScheduleResult
   where
-    Op: Eq + Hash + Clone + Teachable,
+    Op: Eq + Hash + Clone + Teachable + Debug,
     AstNode<Op>: Schedulable<LA, LD>,
   {
     // println!("Scheduling...");
-    // println!("Size of expr: {}", expr.len());
     // Start cycle of each AST node
     let mut sc: Vec<usize> = vec![0; expr.len()];
     // Start time in the cycle of each AST node
@@ -161,39 +164,47 @@ impl<LA, LD> Scheduler<LA, LD> {
       cycle += 1;
     }
     // Calculate the gain
-    // println!("Scheduling done. cycle: {}", cycle);
     // println!("Calculating gain...");
     // println!("Calculating gain...");
     let mut latency_accelerator = 0;
     for i in 0..expr.len() {
       let node = &expr[i];
-      if node.is_sequential() {
-        latency_accelerator =
-          cmp::max(latency_accelerator, sc[i] + node.op_latency());
+      let delay = node.op_delay(&self.delay_estimator, node.get_op_args(expr));
+      let mut latency = node.op_latency();
+      latency += delay / self.clock_period;
+      let is_sequential = latency > 0;
+      if is_sequential {
+        latency_accelerator = cmp::max(latency_accelerator, sc[i] + latency);
       } else {
         latency_accelerator = cmp::max(latency_accelerator, sc[i] + 1);
       }
     }
     let mut latency_cpu = 0;
     for node in expr {
-      latency_cpu += node.op_latency_cpu();
+      latency_cpu += node.op_latency_cpu(&self.bb_query);
     }
-    // println!("Latency CPU: {}", latency_cpu);
     // Calculate the area
     // println!("Calculating area...");
     let mut area = 0;
     for node in expr {
       area += node.op_area(&self.area_estimator, node.get_op_args(expr));
     }
+    // Calculate the execution count
+    let mut execution_count = 0;
+    for node in expr {
+      execution_count =
+        cmp::max(execution_count, node.op_execution_count(&self.bb_query));
+    }
     // println!("Area: {}", area);
     if latency_accelerator > latency_cpu {
       (0, area)
     } else {
-      (latency_cpu - latency_accelerator, area)
+      ((latency_cpu - latency_accelerator) * execution_count, area)
     }
   }
 }
 
+/// Calculate the cost of an expression.
 pub fn rec_cost<Op: Teachable>(expr: &RecExpr<AstNode<Op>>) -> (usize, usize) {
   let mut used_lib: HashSet<LibId> = HashSet::new();
   let mut latency_gain: usize = 0;
