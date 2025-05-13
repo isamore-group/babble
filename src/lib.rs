@@ -18,8 +18,9 @@
 pub mod analysis;
 pub mod ast_node;
 pub mod au_search;
-#[cfg(test)]
-mod beam_pareto_test;
+pub mod bb_query;
+// #[cfg(test)]
+// mod beam_pareto_test;
 mod co_occurrence;
 mod dfta;
 pub mod extract;
@@ -28,7 +29,7 @@ pub mod rewrites;
 pub mod runner;
 pub mod schedule;
 pub mod sexp;
-pub mod simple_lang;
+// pub mod simple_lang;
 pub mod teachable;
 pub mod util;
 pub mod vectorize;

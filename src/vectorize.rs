@@ -311,7 +311,6 @@ where
     + Sync
     + Debug
     + 'static
-    + Schedulable
     + DiscriminantEq
     + Default
     + Printable
@@ -397,7 +396,6 @@ where
     + Sync
     + Debug
     + 'static
-    + Schedulable
     + DiscriminantEq
     + Default
     + Printable
@@ -493,12 +491,12 @@ where
 }
 
 /// 目前向量化直接使用liblearn中的au-search进行向量化
-pub fn vectorize<Op, T>(
+pub fn vectorize<Op, T, LA, LD>(
   egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   roots: &[Id],
   lift_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   transfrom_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
-  config: ParetoConfig,
+  config: ParetoConfig<LA, LD>,
 ) -> EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>
 where
   Op: Display
@@ -511,7 +509,6 @@ where
     + Sync
     + Debug
     + 'static
-    + Schedulable
     + DiscriminantEq
     + Default
     + Printable
@@ -527,7 +524,9 @@ where
     + Display
     + FromStr
     + 'static,
-  AstNode<Op>: TypeInfo<T>,
+  LA: Debug + Clone + Default,
+  LD: Debug + Clone + Default,
+  AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
   println!("there are {} lift dsrs", lift_dsrs.len());
   println!("there are {} transfrom dsrs", transfrom_dsrs.len());
