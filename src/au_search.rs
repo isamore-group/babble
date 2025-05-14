@@ -62,27 +62,36 @@ impl<Op: Eq + OperationInfo + Clone + Ord, Type: Eq> PartialOrd
     // let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
     // let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
     // Some(self_delay.cmp(&other_delay))
-    match self.cost_config {
+    let self_holes =
+      self.aus.iter().map(|x| x.expr().num_holes()).sum::<usize>();
+    let other_holes = other
+      .aus
+      .iter()
+      .map(|x| x.expr().num_holes())
+      .sum::<usize>();
+    let ord = match self.cost_config {
       LiblearnCost::Match => {
         // 将matches收集起来
         let self_matched =
           self.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
         let other_matched =
           other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
-        Some(self_matched.cmp(&other_matched))
+        self_matched.cmp(&other_matched)
       }
       LiblearnCost::Delay => {
         let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
         let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
-        Some(self_delay.cmp(&other_delay))
+        self_delay.cmp(&other_delay)
       }
       LiblearnCost::Size => {
         let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
         let other_size =
           other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
-        Some(self_size.cmp(&other_size))
+        self_size.cmp(&other_size)
       }
     }
+    .then(other_holes.cmp(&self_holes));
+    Some(ord)
   }
 }
 
@@ -580,6 +589,7 @@ where
     .iter()
     .map(|x| x[x.len() - 1].clone())
     .collect::<Vec<_>>();
+
   // result.push(lower_bound);
   result.push(upper_bound);
   result

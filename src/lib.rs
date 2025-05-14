@@ -30,6 +30,7 @@ pub mod runner;
 pub mod schedule;
 pub mod sexp;
 // pub mod simple_lang;
+pub mod expand;
 pub mod teachable;
 pub mod util;
 pub mod vectorize;

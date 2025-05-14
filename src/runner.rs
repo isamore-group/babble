@@ -22,6 +22,7 @@ use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
   Printable, Teachable,
   bb_query::BBQuery,
+  expand::expand,
   extract::{
     self,
     beam_pareto::{ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet},
@@ -81,6 +82,10 @@ pub trait OperationInfo {
   fn get_vec_len(&self) -> usize {
     1
   }
+  /// 加入Op_pack节点
+  fn make_op_pack(ops: Vec<String>) -> Self;
+  /// 加入Op_select节点
+  fn make_op_select(idx: usize) -> Self;
 }
 
 /// A trait for running library learning experiments with Pareto optimization
@@ -198,6 +203,8 @@ where
   pub delay_estimator: LD,
   /// whether to add all types
   pub add_all_types: bool,
+  /// whether to use select to expand
+  pub select_expand: bool,
   /// liblearn config
   pub liblearn_config: LiblearnConfig,
   /// vectorize config
@@ -222,6 +229,7 @@ where
       area_estimator: LA::default(),
       delay_estimator: LD::default(),
       add_all_types: false,
+      select_expand: false,
       liblearn_config: LiblearnConfig::default(),
       vectorize_config: VectorConfig::default(),
     }
@@ -463,6 +471,7 @@ where
     let timeout = Duration::from_secs(60 * 100_000);
     // let mut egraph = egraph.clone();
     // let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+
     if self.config.vectorize_config.vectorize {
       let vectorize_time = Instant::now();
       let vectorized_egraph = vectorize(
@@ -523,6 +532,22 @@ where
       .run(&self.dsrs);
 
     let mut aeg = runner.egraph;
+
+    // aeg.dot().to_png("target/initial_egraph.png").unwrap();
+    if self.config.select_expand {
+      // 进行expand
+      let select_expand_time = Instant::now();
+      aeg = expand(aeg.clone(), self.config.clone());
+      println!(
+        "Expand finished in {}ms",
+        select_expand_time.elapsed().as_millis()
+      );
+
+      message.insert(
+        "select_expand_time".to_string(),
+        format!("{}ms", select_expand_time.elapsed().as_millis()).to_string(),
+      );
+    }
 
     println!(
       "Final egraph size: {}, eclasses: {}",
@@ -593,15 +618,6 @@ where
     let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
     let rewrite_conditions: Vec<_> = learned_lib.conditions().collect();
 
-    // let first_rewrite = lib_rewrites[0].clone();
-    // println!(
-    //   "first rewrite: {:?}",
-    //   first_rewrite
-    // );
-    // let search_result = first_rewrite.search(&aeg);
-    // for matches in search_result {
-    //   println!("{:?}", matches);
-    // }
     info!(
       "Reduced to {} patterns in {}ms",
       learned_lib.size(),

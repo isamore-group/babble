@@ -241,11 +241,15 @@ impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> PartialOrd
     // Some(self.matches.cmp(&other.matches))
     // Some(self.expr.size().cmp(&other.expr.size()))
     // Some(self.delay.cmp(&other.delay))
-    match self.liblearn_cost {
-      LiblearnCost::Match => Some(self.matches.len().cmp(&other.matches.len())),
-      LiblearnCost::Size => Some(self.expr.size().cmp(&other.expr.size())),
-      LiblearnCost::Delay => Some(self.delay.cmp(&other.delay)),
+    let self_holes = self.expr.num_holes();
+    let other_holes = other.expr.num_holes();
+    let ord = match self.liblearn_cost {
+      LiblearnCost::Match => self.matches.len().cmp(&other.matches.len()),
+      LiblearnCost::Size => self.expr.size().cmp(&other.expr.size()),
+      LiblearnCost::Delay => self.delay.cmp(&other.delay),
     }
+    .then(self_holes.cmp(&other_holes));
+    Some(ord)
   }
 }
 
@@ -256,11 +260,14 @@ impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> Ord
     // self.matches.cmp(&other.matches)
     // self.expr.size().cmp(&other.expr.size())
     // self.delay.cmp(&other.delay)
+    let self_holes = self.expr.num_holes();
+    let other_holes = other.expr.num_holes();
     match self.liblearn_cost {
       LiblearnCost::Match => self.matches.len().cmp(&other.matches.len()),
       LiblearnCost::Size => self.expr.size().cmp(&other.expr.size()),
       LiblearnCost::Delay => self.delay.cmp(&other.delay),
     }
+    .then(other_holes.cmp(&self_holes))
   }
 }
 
@@ -1043,6 +1050,7 @@ where
             // matched_patterns.get(pattern));
           }
           let enum_start = Instant::now();
+
           for (ecls1, ecls2) in eclass_pairs {
             learned_lib.enumerate_over_egraph(egraph, (ecls1, ecls2));
           }
@@ -1061,6 +1069,7 @@ where
     //   let aus = aus.into_iter().take(500).collect::<BTreeSet<_>>();
     //   learned_lib.aus = aus;
     // }
+
     if learned_lib.aus.len() > 500 {
       let aus = learned_lib.aus.iter().collect::<Vec<_>>();
       let mut sampled_aus = BTreeSet::new();
@@ -2038,7 +2047,6 @@ where
   for _ in 0..(metavars.len() + max_locals) {
     fun = Op::lambda(fun).into();
   }
-
   // Now apply the new function to the metavariables in reverse order so they
   // match the correct de Bruijn indexed variable.
   let mut body = Op::lib_var(ix).into();
@@ -2053,7 +2061,6 @@ where
   for index in 0..max_locals {
     body = Op::apply(body, Op::var(index).into()).into();
   }
-
   // Calculate the gain and the cost of the au
   let expr: Expr<Op> = au.clone().try_into().unwrap();
   let rec_expr: RecExpr<AstNode<Op>> = expr.into();

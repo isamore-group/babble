@@ -215,6 +215,8 @@ pub enum ShieldingOp {
   FPTrunc,
   FPExt,
   VectorOp(VectorOp),
+  OpPack,
+  OpSelect,
 }
 
 impl Default for ShieldingOp {
