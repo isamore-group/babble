@@ -593,7 +593,7 @@ where
     .vectorize()
     .build(&egraph);
   let lib_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>> =
-    learned_lib.rewrites().collect::<Vec<_>>();
+    learned_lib.rewrites().map(|(r, _)| r).collect::<Vec<_>>();
   println!("learned {} libs", lib_rewrites.len());
   for rewrite in lib_rewrites {
     // println!("rewrite: {:?}", rewrite);

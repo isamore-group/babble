@@ -37,6 +37,7 @@ use egg::{
   Rewrite, Searcher, Var,
 };
 use itertools::Itertools;
+use lexpr::print;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -248,7 +249,8 @@ impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> PartialOrd
       LiblearnCost::Size => self.expr.size().cmp(&other.expr.size()),
       LiblearnCost::Delay => self.delay.cmp(&other.delay),
     }
-    .then(self_holes.cmp(&other_holes));
+    .then(self_holes.cmp(&other_holes))
+    .then(self.expr.cmp(&other.expr));
     Some(ord)
   }
 }
@@ -268,6 +270,7 @@ impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> Ord
       LiblearnCost::Delay => self.delay.cmp(&other.delay),
     }
     .then(other_holes.cmp(&self_holes))
+    .then(self.expr.cmp(&other.expr))
   }
 }
 
@@ -315,6 +318,7 @@ where
   bb_query: BBQuery,
   liblearn_config: LiblearnConfig,
   vectorize: bool,
+  meta_au_search: bool,
 }
 
 impl<Op, Type, LA, LD> Default for LearnedLibraryBuilder<Op, Type, LA, LD>
@@ -362,6 +366,7 @@ where
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
       vectorize: false,
+      meta_au_search: false,
     }
   }
 }
@@ -432,6 +437,7 @@ where
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
       vectorize: false,
+      meta_au_search: false,
     }
   }
 }
@@ -559,6 +565,11 @@ where
     self.vectorize = true;
     self
   }
+  #[must_use]
+  pub fn meta_au_search(mut self) -> Self {
+    self.meta_au_search = true;
+    self
+  }
 
   pub fn build<A>(
     self,
@@ -595,6 +606,7 @@ where
       self.bb_query,
       self.liblearn_config,
       self.vectorize,
+      self.meta_au_search,
     )
   }
 }
@@ -698,6 +710,8 @@ where
   liblearn_config: LiblearnConfig,
   /// Whether to vectorize the library
   vectorize: bool,
+  /// Whether to use meta AU search
+  meta_au_search: bool,
 }
 
 #[allow(unused)]
@@ -763,6 +777,7 @@ where
     bb_query: BBQuery,
     liblearn_config: LiblearnConfig,
     vectorize: bool,
+    meta_au_search: bool,
   ) -> Self
   where
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
@@ -786,6 +801,7 @@ where
       bb_query,
       liblearn_config: liblearn_config.clone(),
       vectorize,
+      meta_au_search,
     };
 
     if !dfta {
@@ -855,8 +871,15 @@ where
             .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)))
             .collect::<Vec<_>>();
           let start = Instant::now();
-          for pair in eclass_pairs.clone() {
-            learned_lib.enumerate_over_egraph(egraph, pair);
+          // meta_au_search 一定需要枚举所有可能的eclass对
+          if meta_au_search {
+            for pair in eclass_pairs.clone() {
+              learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
+            }
+          } else {
+            for pair in eclass_pairs.clone() {
+              learned_lib.enumerate_over_egraph(egraph, pair);
+            }
           }
           let elapsed = start.elapsed();
         }
@@ -1070,6 +1093,10 @@ where
     //   learned_lib.aus = aus;
     // }
 
+    // for (state, aus) in &learned_lib.aus_by_state {
+    //   println!("state{:?}: {:?}", state, aus);
+    // }
+
     if learned_lib.aus.len() > 500 {
       let aus = learned_lib.aus.iter().collect::<Vec<_>>();
       let mut sampled_aus = BTreeSet::new();
@@ -1140,7 +1167,7 @@ where
   /// ```
   pub fn rewrites<A: Analysis<AstNode<Op>>>(
     &self,
-  ) -> impl Iterator<Item = Rewrite<AstNode<Op>, A>> + '_
+  ) -> impl Iterator<Item = (Rewrite<AstNode<Op>, A>, Pattern<AstNode<Op>>)> + '_
   where
     <A as Analysis<AstNode<Op>>>::Data: PartialEq<Type>,
   {
@@ -1164,8 +1191,11 @@ where
       debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
 
       // Both patterns contain the same variables, so this can never fail.
-      Rewrite::new(name, searcher, conditional_applier)
-        .unwrap_or_else(|_| unreachable!())
+      (
+        Rewrite::new(name, searcher.clone(), conditional_applier)
+          .unwrap_or_else(|_| unreachable!()),
+        searcher,
+      )
     })
   }
   /// conditions of the rewrites
@@ -1541,6 +1571,143 @@ where
   //   self.filter_aus(aus, state);
   // }
 
+  /// meta_au enumerate
+  /// no pruning, judge by the length of args
+  fn enumerate_over_egraph_meta_au<A: Analysis<AstNode<Op>> + Clone>(
+    &mut self,
+    egraph: &EGraph<AstNode<Op>, A>,
+    state: (Id, Id),
+  ) where
+    <A as Analysis<AstNode<Op>>>::Data: ClassMatch,
+  {
+    if self.aus_by_state.contains_key(&state) {
+      // we have already enumerated this state
+      return;
+    }
+
+    self.aus_by_state.insert(state, BTreeSet::new());
+
+    let mut aus: BTreeSet<AU<Op, (Id, Id), Type>> = BTreeSet::new();
+
+    let mut same = false;
+    let mut different = false;
+
+    let ops1 = egraph[state.0].nodes.iter().map(AstNode::as_parts);
+    let ops2 = egraph[state.1].nodes.iter().map(AstNode::as_parts);
+
+    for (op1, args1) in ops1 {
+      for (op2, args2) in ops2.clone() {
+        // just using the length of args to judge
+        if args1.len() == args2.len() {
+          same = true;
+          let new_op = if op1 == op2 {
+            // if the same, just use the first one
+            op1.clone()
+          } else {
+            // if different, add a mask op
+            Op::make_opmask()
+          };
+          if args1.is_empty() && args2.is_empty() {
+            // 一个小改动，叶节点不会插入Opmask，没有意义
+            if op1 == op2 {
+              let new_au = PartialExpr::from(AstNode::leaf(op1.clone()));
+              aus.insert(AU::new_with_expr(
+                new_au,
+                &self.egraph,
+                self.liblearn_config.cost.clone(),
+              ));
+            } else {
+              different = true;
+            }
+          } else {
+            info!("Processing op1 {:?} and op2 {:?}", op1, op2);
+            // recursively enumerate the inputs to this rule.
+            let inputs: Vec<_> =
+              args1.iter().copied().zip(args2.iter().copied()).collect();
+
+            for next_state in &inputs {
+              self.enumerate_over_egraph(egraph, *next_state);
+            }
+
+            let smax_arity = self.max_arity;
+            // let au_range: Vec<Vec<PartialExpr<Op, (Id, Id)>>> =
+            // au_range.collect::<Vec<_>>();
+            let new_aus = inputs.iter().map(|input| {
+              let aus =
+                self.aus_by_state[input].iter().cloned().collect::<Vec<_>>();
+              aus
+            });
+            info!("get_range_aus");
+            let au_range = new_aus.collect::<Vec<_>>();
+            let new_aus = match self.liblearn_config.au_merge_mod {
+              AUMergeMod::Random => get_random_aus(au_range, 1000),
+              AUMergeMod::Kd => kd_random_aus(au_range, 1000),
+              AUMergeMod::Greedy => greedy_aus(au_range),
+              AUMergeMod::Cartesian => {
+                // 笛卡尔积
+                // 首先取出所有的expr
+                let new_exprs = au_range.into_iter().map(|inputs| {
+                  let inputs = inputs.into_iter().map(|au| au.expr.clone());
+                  inputs.collect::<Vec<_>>()
+                });
+                let new_expr = new_exprs.into_iter().multi_cartesian_product();
+                new_expr.collect::<Vec<_>>()
+              }
+            };
+            info!("filtering according to arity");
+            let new_aus = new_aus
+              .into_iter() //kd_random_aus(au_range, 1000).into_iter()
+              .map(|inputs| {
+                PartialExpr::from(AstNode::new(new_op.clone(), inputs))
+              })
+              .filter(|au| {
+                smax_arity.map_or(true, |max_arity| {
+                  au.unique_holes().len() <= max_arity
+                })
+              });
+
+            info!("aus_state.len() is {}", self.aus_by_state.len());
+            info!("deduplicating new_aus last: {} ", new_aus.clone().count());
+
+            let new_aus_dedu = self
+              .deduplicate_from_candidates::<SimpleAnalysis<Op, Type>>(new_aus);
+            // info!("now  is {}", new_aus_dedu.len());
+            let start_total = Instant::now(); // 总的执行时间
+            // 为每一个新的模式生成一个AU
+            // aus.extend(new_aus.map(|au| {
+            //   AU::new_with_expr(
+            //     au,
+            //     &self.egraph,
+            //     self.liblearn_config.cost.clone(),
+            //   )
+            // }));
+            // println!("aus_size: {}", aus.len());
+            // println!("{:?}", new_aus_dedu);
+            aus.extend(new_aus_dedu);
+            info!(
+              "Total processing time: {:?}, lenth of new_aus and aus is {}",
+              start_total.elapsed(),
+              aus.len()
+            ); // 总的处理时间
+          }
+        } else {
+          different = true;
+        }
+      }
+    }
+
+    if same && different {
+      let new_expr = PartialExpr::Hole(state);
+      aus.insert(AU::new_with_expr(
+        new_expr,
+        &self.egraph,
+        self.liblearn_config.cost.clone(),
+      ));
+    }
+
+    self.filter_aus(aus, state, egraph);
+  }
+
   /// Computes the antiunifications of `state` in the `egraph`.
   /// This avoids computing all of the cross products ahead of time, which is
   /// what the `Dfta` implementation does. So it should be faster and more
@@ -1807,7 +1974,7 @@ where
           })
           .collect::<Vec<_>>()
       };
-      self.aus.extend(nontrivial_aus);
+      self.aus.extend(nontrivial_aus.clone());
     }
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
   }

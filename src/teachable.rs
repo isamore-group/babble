@@ -217,6 +217,7 @@ pub enum ShieldingOp {
   VectorOp(VectorOp),
   OpPack,
   OpSelect,
+  OpMask,
 }
 
 impl Default for ShieldingOp {

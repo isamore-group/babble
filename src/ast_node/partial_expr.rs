@@ -385,7 +385,7 @@ impl<Op: Default + Arity + Debug + OperationInfo + Clone + Ord, T: Clone + Ord>
       PartialExpr::Hole(_) => {
         // 首先，我们将PE转化为Expr只是为了转化成Recexpr进行delay计算，
         // 所以Hole可以不需要在意，将其作为一个叶节点处理就好，
-        // 目前直接使用Op(也就是RdgEgg的default，我设定default是const 0)
+        // 目前直接使用rulevar表示
         let node = AstNode::leaf(Op::default());
         Ok(node.into())
       }

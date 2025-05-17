@@ -86,6 +86,14 @@ pub trait OperationInfo {
   fn make_op_pack(ops: Vec<String>) -> Self;
   /// 加入Op_select节点
   fn make_op_select(idx: usize) -> Self;
+  /// 加入rule_var节点
+  fn make_rule_var(name: String) -> Self;
+  /// 加入Opmask节点
+  fn make_opmask() -> Self;
+  /// 是不是Opmask节点
+  fn is_opmask(&self) -> bool {
+    false
+  }
 }
 
 /// A trait for running library learning experiments with Pareto optimization
@@ -615,9 +623,11 @@ where
     // info!("Deduplicating patterns... ");
     let dedup_time = Instant::now();
     // learned_lib.deduplicate(&aeg);
-    let lib_rewrites: Vec<_> = learned_lib.rewrites().collect();
+    let lib_rewrites: Vec<_> = learned_lib.rewrites().map(|(r, _)| r).collect();
     let rewrite_conditions: Vec<_> = learned_lib.conditions().collect();
-
+    // for rewrite in lib_rewrites.iter() {
+    //   println!("rewrite: {:?}", rewrite);
+    // }
     info!(
       "Reduced to {} patterns in {}ms",
       learned_lib.size(),
@@ -652,6 +662,7 @@ where
     .run(lib_rewrites.iter());
 
     let mut egraph = runner.egraph;
+    // egraph.dot().to_png("target/final_egraph.png").unwrap();
     let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
