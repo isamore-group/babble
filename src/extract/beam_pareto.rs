@@ -222,6 +222,17 @@ impl CostSet {
     self.set = set;
   }
 
+  pub fn update_cost(&mut self, strategy: f32, exe_count: usize) {
+    for ls in &mut self.set {
+      if ls.full_cost == 0.0 {
+        for (_, (gain, cost, set)) in &ls.libs {
+          ls.full_cost += (1.0 - strategy) * (*cost as f32);
+          ls.full_cost -= strategy * (gain * exe_count * set.len()) as f32;
+        }
+      }
+    }
+  }
+
   pub fn unify2(&mut self) {
     // println!("unify");
     let mut i = 0;
@@ -671,6 +682,16 @@ where
     to.cs.combine(from.cs.clone());
     to.cs.unify();
     to.cs.prune(self.beam_size, self.lps);
+
+    let exe_count = match to.bb.len() {
+      0 => 1,
+      _ => match self.bb_query.get(&to.bb[0]) {
+        Some(bb) => bb.execution_count,
+        None => 1,
+      },
+    };
+    to.cs.update_cost(self.strategy, exe_count);
+
     // we also need to merge the type information
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
     // 合并哈希
