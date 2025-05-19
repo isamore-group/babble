@@ -661,7 +661,7 @@ where
 
     println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
-    println!("cs: {:#?}", isax_cost.cs);
+    // println!("cs: {:#?}", isax_cost.cs);
     let mut chosen_rewrites = Vec::new();
     let mut learned_libs = Vec::new();
     let mut rewrites_map = HashMap::new();
