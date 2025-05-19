@@ -450,6 +450,9 @@ where
 
     let mut aeg = runner.egraph;
     crate::perf_infer::perf_infer(&mut aeg, roots, vec![]);
+    // for ecls in aeg.classes() {
+    //   println!("ecls_bb: {:?}", ecls.data.bb);
+    // }
 
     let mut root_vec = roots.to_vec();
 
@@ -490,6 +493,7 @@ where
         self.config.inter_beams,
         self.config.lps,
         self.config.strategy,
+        self.bb_query.clone(),
       ));
 
       root_vec = vec![new_egraph.add_expr(&expr)];
@@ -627,6 +631,7 @@ where
       self.config.inter_beams,
       self.config.lps,
       self.config.strategy,
+      self.bb_query.clone(),
     ))
     .with_egraph(aeg.clone())
     .with_iter_limit(self.config.lib_iter_limit)
@@ -656,7 +661,7 @@ where
 
     println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
-    // println!("cs: {:#?}", isax_cost.cs);
+    println!("cs: {:#?}", isax_cost.cs);
     let mut chosen_rewrites = Vec::new();
     let mut learned_libs = Vec::new();
     let mut rewrites_map = HashMap::new();
@@ -732,7 +737,10 @@ where
     println!("Rewriting done");
     let root = egraph.add(AstNode::new(Op::list(), root_vec.iter().copied()));
 
-    let mut extractor = LibExtractor::new(&egraph, self.config.strategy);
+    crate::perf_infer::perf_infer(&mut egraph, roots, vec![]);
+
+    let mut extractor =
+      LibExtractor::new(&egraph, self.config.strategy, self.bb_query.clone());
     println!("Extracting");
     let best = extractor.best(root);
     let final_cost = extractor.cost(&best);
@@ -815,6 +823,7 @@ where
       self.config.inter_beams,
       self.config.lps,
       self.config.strategy,
+      self.bb_query.clone(),
     ));
     let roots = recexprs
       .iter()
@@ -888,6 +897,7 @@ where
       self.config.inter_beams,
       self.config.lps,
       self.config.strategy,
+      self.bb_query.clone(),
     ));
 
     let roots: Vec<_> = recexpr_groups

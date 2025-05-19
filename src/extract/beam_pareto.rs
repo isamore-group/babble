@@ -3,6 +3,7 @@
 use crate::{
   analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode},
+  bb_query::{self, BBInfo, BBQuery},
   learn::LibId,
   runner::OperationInfo,
   schedule::rec_cost,
@@ -12,6 +13,7 @@ use bitvec::prelude::*;
 use egg::{
   Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
 };
+use indexmap::set;
 use log::debug;
 use rustc_hash::FxHashMap;
 use std::{
@@ -438,6 +440,7 @@ where
   /// larger amount will be pruned.
   lps: usize,
   strategy: f32,
+  bb_query: BBQuery,
   /// Marker to indicate that this struct uses the Op type parameter
   op_phantom: PhantomData<Op>,
   ty_phantom: PhantomData<T>,
@@ -453,12 +456,14 @@ where
     inter_beam: usize,
     lps: usize,
     strategy: f32,
+    bb_query: BBQuery,
   ) -> ISAXAnalysis<Op, T> {
     ISAXAnalysis {
       beam_size,
       inter_beam,
       lps,
       strategy,
+      bb_query,
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
     }
@@ -471,6 +476,7 @@ where
       inter_beam: 0,
       lps: 1,
       strategy: 1.0,
+      bb_query: BBQuery::default(),
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
     }
@@ -568,6 +574,7 @@ where
 {
   pub cs: CostSet,
   pub ty: T,
+  pub bb: Vec<String>,
   pub hash: StructuralHash,
 }
 
@@ -591,8 +598,13 @@ where
 
 impl<T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
   #[must_use]
-  pub fn new(cs: CostSet, ty: T, hash: StructuralHash) -> Self {
-    ISAXCost { cs, ty, hash }
+  pub fn new(
+    cs: CostSet,
+    ty: T,
+    bb: Vec<String>,
+    hash: StructuralHash,
+  ) -> Self {
+    ISAXCost { cs, ty, bb, hash }
   }
 }
 
@@ -649,6 +661,10 @@ where
     // println!("{:?}", to);
     // println!("{:?}", &from);
     let a0 = to.clone();
+
+    if to.bb.len() == 0 {
+      to.bb = from.bb.clone();
+    }
 
     // Merging consists of combination, followed by unification and beam
     // pruning.
@@ -726,18 +742,23 @@ where
         // println!("new cost set: {:#?}", e);
         e.unify();
         e.prune(self_ref.beam_size, self_ref.lps);
-        ISAXCost::new(e, ty, hash)
+        ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
         // We test the arity of the function
         if enode.is_empty() {
           // 0 args. Return new.
-          ISAXCost::new(CostSet::new(), ty, hash)
+          ISAXCost::new(
+            CostSet::new(),
+            ty,
+            enode.operation().get_bbs_info(),
+            hash,
+          )
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
           let e = x(&enode.args()[0]).clone();
-          ISAXCost::new(e, ty, hash)
+          ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
@@ -751,7 +772,7 @@ where
 
           e.unify();
           e.prune(self_ref.beam_size, self_ref.lps);
-          ISAXCost::new(e, ty, hash)
+          ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
         }
       }
     }
@@ -860,6 +881,7 @@ pub struct LibExtractor<
   /// The relative weight of area cost and delay cost, from 0.0 (all areaa) to
   /// 1.0 (all delay)
   strategy: f32,
+  bb_query: BBQuery,
   _phantom: PhantomData<T>,
 }
 
@@ -878,7 +900,11 @@ where
   AstNode<Op>: TypeInfo<T>,
 {
   /// Create a lib extractor for the given egraph
-  pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, strategy: f32) -> Self {
+  pub fn new(
+    egraph: &'a EGraph<AstNode<Op>, N>,
+    strategy: f32,
+    bb_query: BBQuery,
+  ) -> Self {
     Self {
       memo: FxHashMap::default(),
       all_exprs: Vec::with_capacity(10000),
@@ -887,6 +913,7 @@ where
       egraph,
       indent: 0,
       strategy,
+      bb_query,
       _phantom: PhantomData,
     }
   }
@@ -967,7 +994,7 @@ where
 
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> f32 {
-    let (latency_gain, area) = rec_cost(expr);
+    let (latency_gain, area) = rec_cost(expr, &self.bb_query);
     // println!("used {}ms to get the cost", start.elapsed().as_millis());
     (1.0 - self.strategy) * (area as f32)
       - self.strategy * (latency_gain as f32)

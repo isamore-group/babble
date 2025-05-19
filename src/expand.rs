@@ -15,6 +15,7 @@ use std::{
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, ParetoConfig, PartialExpr, Printable,
   Teachable,
+  bb_query::{BBInfo, BBQuery},
   extract::beam_pareto::{ISAXAnalysis, TypeInfo},
   learn::{self, LearnedLibraryBuilder},
   runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo},
@@ -113,6 +114,7 @@ where
     + Clone
     + Ord
     + Teachable
+    + BBInfo
     + Arity
     + Send
     + Sync
@@ -249,6 +251,7 @@ where
     + Clone
     + Ord
     + Teachable
+    + BBInfo
     + Arity
     + Send
     + Sync
@@ -305,6 +308,7 @@ where
     config.inter_beams,
     config.lps,
     config.strategy,
+    BBQuery::default(),
   ));
 
   // 将au生成的Recexpr加入到meta_egraph中

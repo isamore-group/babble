@@ -73,6 +73,7 @@ pub fn perf_infer<Op, T>(
   for ecls in egraph.classes_mut() {
     let id = ecls.id;
     if let Some(ecls_bb_info) = bb_info_map.get(&id) {
+      ecls.data.bb = ecls_bb_info.clone();
       for node in &mut ecls.nodes {
         let bb_info = node.operation_mut().get_mut_bbs_info();
         if bb_info.len() > 0 {

@@ -2,6 +2,7 @@ use crate::{
   DiscriminantEq, Printable,
   analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode},
+  bb_query::BBInfo,
   extract::beam_pareto::{ClassMatch, ISAXAnalysis, TypeInfo},
   learn::LearnedLibraryBuilder,
   rewrites::TypeMatch,
@@ -114,6 +115,7 @@ where
     + Sync
     + Debug
     + OperationInfo
+    + BBInfo
     + 'static
     + Default,
   T: Debug
@@ -362,6 +364,7 @@ where
     + Clone
     + Ord
     + Teachable
+    + BBInfo
     + Arity
     + Send
     + Sync
@@ -447,6 +450,7 @@ where
     + Clone
     + Ord
     + Teachable
+    + BBInfo
     + Arity
     + Send
     + Sync
@@ -560,6 +564,7 @@ where
     + Clone
     + Ord
     + Teachable
+    + BBInfo
     + Arity
     + Send
     + Sync

@@ -4,7 +4,10 @@
 use std::{cmp, collections::HashSet, fmt::Debug, hash::Hash};
 
 use crate::{
-  BindingExpr, LibId, Teachable, ast_node::AstNode, bb_query::BBQuery,
+  BindingExpr, LibId, Teachable,
+  ast_node::AstNode,
+  bb_query::{self, BBInfo, BBQuery},
+  runner::OperationInfo,
 };
 use egg::RecExpr;
 
@@ -205,7 +208,10 @@ impl<LA, LD> Scheduler<LA, LD> {
 }
 
 /// Calculate the cost of an expression.
-pub fn rec_cost<Op: Teachable>(expr: &RecExpr<AstNode<Op>>) -> (usize, usize) {
+pub fn rec_cost<Op: Teachable + OperationInfo>(
+  expr: &RecExpr<AstNode<Op>>,
+  bb_query: &BBQuery,
+) -> (usize, usize) {
   let mut used_lib: HashSet<LibId> = HashSet::new();
   let mut latency_gain: usize = 0;
   let mut area: usize = 0;
@@ -213,7 +219,14 @@ pub fn rec_cost<Op: Teachable>(expr: &RecExpr<AstNode<Op>>) -> (usize, usize) {
     if let Some(BindingExpr::Lib(lid, _, _, gain, cost)) =
       node.as_binding_expr()
     {
-      latency_gain += gain;
+      let exe_count = match node.operation().get_bbs_info().len() {
+        0 => 1,
+        _ => match bb_query.get(&node.operation().get_bbs_info()[0]) {
+          Some(bb_entry) => bb_entry.execution_count,
+          None => 1,
+        },
+      };
+      latency_gain += gain * exe_count;
       if used_lib.insert(lid) {
         area += cost;
       }
