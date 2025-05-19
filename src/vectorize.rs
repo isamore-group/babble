@@ -584,17 +584,18 @@ where
 
   // 进行库学习
   let learned_lib = LearnedLibraryBuilder::default()
+    .learn_trivial(true)
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
     // .with_co_occurs(co_occurs)
     .with_last_lib_id(0)
     .with_liblearn_config(vetorize_lib_config)
     .with_clock_period(config.clock_period)
-    .vectorize()
     .build(&egraph);
   let lib_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>> =
     learned_lib.rewrites().map(|(r, _)| r).collect::<Vec<_>>();
   println!("learned {} libs", lib_rewrites.len());
+  let mut id_set = HashSet::new();
   for rewrite in lib_rewrites {
     // println!("rewrite: {:?}", rewrite);
     let results = rewrite.search(&egraph);
@@ -606,6 +607,14 @@ where
     if results.len() > 8 {
       continue;
     }
+    // 检查当前的包是不是已经存在
+    let mut id_pack = results.iter().map(|x| x.eclass).collect::<Vec<_>>();
+    id_pack.sort();
+    id_pack.dedup();
+    if id_set.contains(&id_pack) {
+      continue;
+    }
+    id_set.insert(id_pack);
     // println!("found {} matches for {:?}", results.len(), rewrite);
     let mut tys = Vec::new();
     let matched_eclass_id = results
@@ -658,6 +667,7 @@ where
     println!("size of vec_containments: {}", vec_containments.len());
     // 根据包含关系加入gather节点
     for (i, (id, fathers)) in vec_containments.into_iter().enumerate() {
+      // println!("i:{}, id: {}, fathers: {}", i, id, fathers.len());
       for father in fathers {
         let gather_op = Op::make_gather(&vec_gathers[&(id, father)]);
         let cani_father = egraph.find(father);

@@ -22,7 +22,7 @@ use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
   Printable, Teachable,
   bb_query::BBQuery,
-  expand::expand,
+  expand::{OpPackConfig, expand},
   extract::{
     self,
     beam_pareto::{ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet},
@@ -92,6 +92,10 @@ pub trait OperationInfo {
   fn make_opmask() -> Self;
   /// 是不是Opmask节点
   fn is_opmask(&self) -> bool {
+    false
+  }
+  /// 是不是RuleVar节点
+  fn is_rule_var(&self) -> bool {
     false
   }
 }
@@ -211,12 +215,12 @@ where
   pub delay_estimator: LD,
   /// whether to add all types
   pub add_all_types: bool,
-  /// whether to use select to expand
-  pub select_expand: bool,
   /// liblearn config
   pub liblearn_config: LiblearnConfig,
   /// vectorize config
   pub vectorize_config: VectorConfig,
+  /// op_pack config
+  pub op_pack_config: OpPackConfig,
 }
 
 impl<LA, LD> Default for ParetoConfig<LA, LD>
@@ -237,9 +241,9 @@ where
       area_estimator: LA::default(),
       delay_estimator: LD::default(),
       add_all_types: false,
-      select_expand: false,
       liblearn_config: LiblearnConfig::default(),
       vectorize_config: VectorConfig::default(),
+      op_pack_config: OpPackConfig::default(),
     }
   }
 }
@@ -480,48 +484,6 @@ where
     // let mut egraph = egraph.clone();
     // let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
 
-    if self.config.vectorize_config.vectorize {
-      let vectorize_time = Instant::now();
-      let vectorized_egraph = vectorize(
-        egraph.clone(),
-        roots,
-        &self.lift_dsrs,
-        &self.transform_dsrs,
-        self.config.clone(),
-      );
-      let (cost, expr) =
-        Extractor::new(&vectorized_egraph, VectorCF).find_best(roots[0]);
-      debug!("cost: {:?}", cost);
-      let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
-      debug!("pretty expr: {}", pretty_expr);
-      // println!("Expression: ");
-      let mut vecop_cnt = 0;
-      for (id, node) in expr.iter().enumerate() {
-        debug!("{}: {:?}", id, node);
-        if node.operation().is_vector_op() {
-          vecop_cnt += 1;
-        }
-      }
-      println!("Vectorized Nodes: {}", vecop_cnt);
-      println!(
-        "Vectorized egraph size: {}, eclasses: {}",
-        egraph.total_size(),
-        egraph.classes().len()
-      );
-      message.insert(
-        "vectorized_eclass_size".to_string(),
-        format!("{}", egraph.classes().len()).to_string(),
-      );
-      message.insert(
-        "vectorized_egraph_size".to_string(),
-        format!("{}", egraph.total_size()).to_string(),
-      );
-      message.insert(
-        "vectorized_time".to_string(),
-        format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
-      );
-    }
-
     println!(
       "Initial egraph size: {}, eclasses: {}",
       egraph.total_size(),
@@ -542,7 +504,7 @@ where
     let mut aeg = runner.egraph;
 
     // aeg.dot().to_png("target/initial_egraph.png").unwrap();
-    if self.config.select_expand {
+    if self.config.op_pack_config.pack_expand {
       // 进行expand
       let select_expand_time = Instant::now();
       aeg = expand(aeg.clone(), self.config.clone());
@@ -554,6 +516,46 @@ where
       message.insert(
         "select_expand_time".to_string(),
         format!("{}ms", select_expand_time.elapsed().as_millis()).to_string(),
+      );
+    } else if self.config.vectorize_config.vectorize {
+      let vectorize_time = Instant::now();
+      let vectorized_egraph = vectorize(
+        aeg.clone(),
+        roots,
+        &self.lift_dsrs,
+        &self.transform_dsrs,
+        self.config.clone(),
+      );
+      let (cost, expr) = Extractor::new(&aeg, VectorCF).find_best(roots[0]);
+      debug!("cost: {:?}", cost);
+      let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
+      debug!("pretty expr: {}", pretty_expr);
+      // println!("Expression: ");
+      let mut vecop_cnt = 0;
+      for (id, node) in expr.iter().enumerate() {
+        debug!("{}: {:?}", id, node);
+        if node.operation().is_vector_op() {
+          vecop_cnt += 1;
+        }
+      }
+
+      println!("Vectorized Nodes: {}", vecop_cnt);
+      println!(
+        "Vectorized egraph size: {}, eclasses: {}",
+        vectorized_egraph.total_size(),
+        vectorized_egraph.classes().len()
+      );
+      message.insert(
+        "vectorized_eclass_size".to_string(),
+        format!("{}", vectorized_egraph.classes().len()).to_string(),
+      );
+      message.insert(
+        "vectorized_egraph_size".to_string(),
+        format!("{}", vectorized_egraph.total_size()).to_string(),
+      );
+      message.insert(
+        "vectorized_time".to_string(),
+        format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
       );
     }
 

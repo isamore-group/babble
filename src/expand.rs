@@ -1,3 +1,6 @@
+use bitvec::vec;
+use rand::prelude::*;
+use serde::Deserialize;
 use std::{
   collections::{HashMap, HashSet},
   fmt::{Debug, Display, format},
@@ -24,6 +27,38 @@ use egg::{
 use lexpr::print;
 use log::debug;
 use nom::lib;
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct OpPackConfig {
+  /// 是否进行expand
+  pub pack_expand: bool,
+  /// 是否进行eclass pair剪枝
+  pub prune_eclass_pair: bool,
+  /// 是否学习所有可能的AU(要不要过滤掉一些trivial的AU)
+  pub learn_trivial: bool,
+  /// 保留多少个含有mask的Meta_AU
+  pub num_meta_au_mask: usize,
+  /// 保留多少个不含有mask的Meta_AU
+  pub num_meta_au_no_mask: usize,
+  /// 至多允许一个pack里面出现多少个eclass id
+  pub max_eclass_id: usize,
+  /// 至多允许一个pack里面出现多少个operation
+  pub max_operation: usize,
+}
+
+impl Default for OpPackConfig {
+  fn default() -> Self {
+    OpPackConfig {
+      pack_expand: false,
+      prune_eclass_pair: true,
+      learn_trivial: true,
+      num_meta_au_mask: 100,
+      num_meta_au_no_mask: 100,
+      max_eclass_id: 10,
+      max_operation: 5,
+    }
+  }
+}
 
 fn au2expr<Op>(pe: PartialExpr<Op, Var>, idx: usize) -> Expr<Op>
 where
@@ -54,7 +89,7 @@ where
       // 首先，我们将PE转化为Expr只是为了转化成Recexpr进行delay计算，
       // 所以Hole可以不需要在意，将其作为一个叶节点处理就好，
       // 目前直接使用rulevar表示
-      let s = format!("{}_{}", var.to_string(), idx).to_string();
+      let s = var.to_string(); //format!("{}_{}", var.to_string(), idx).to_string();
       let node = AstNode::leaf(Op::make_rule_var(s));
       node.into()
     }
@@ -165,7 +200,8 @@ where
   {
     let mut found = false;
     for node in egraph[id].nodes.iter() {
-      if node.operation() == enode.operation()
+      if (node.operation() == enode.operation()
+        && node.args().len() == enode.args().len())
         || (enode.operation().is_opmask()
           && node.args().len() == enode.args().len())
       {
@@ -176,7 +212,6 @@ where
           match self.searcher.ast[ast_arg].clone() {
             ENodeOrVar::ENode(en) => {
               // 拿到node的子节点
-
               let egraph_arg = node.args()[i];
               // 递归调用
               if self.found_matched_eclasses(en.clone(), egraph_arg, egraph) {
@@ -254,17 +289,15 @@ where
   let learned_lib = LearnedLibraryBuilder::default()
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
-    // .with_co_occurs(co_occurs)
     .with_last_lib_id(0)
     .with_liblearn_config(expansion_lib_config)
     .with_clock_period(config.clock_period)
-    .vectorize()
     .build(&egraph);
   println!("expand::learned {} libs", learned_lib.size());
 
-  for lib in learned_lib.libs() {
-    println!("lib: {}", lib);
-  }
+  // for lib in learned_lib.libs() {
+  //   println!("lib: {}", lib);
+  // }
 
   let learned_aus: Vec<_> = learned_lib.anti_unifications().collect();
   let mut meta_egraph = EGraph::new(ISAXAnalysis::new(
@@ -275,21 +308,38 @@ where
   ));
 
   // 将au生成的Recexpr加入到meta_egraph中
-  for i in 0..learned_aus.len() {
+  let learned_rewrites: Vec<_> =
+    learned_lib.rewrites::<ISAXAnalysis<_, _>>().collect();
+  for i in (0..learned_aus.len()).rev() {
+    // 这里从大到小检查，能将一些meta_egraph中已经存在的AU去掉
+    let rule = learned_rewrites[i].clone();
+    // 非常重要，添加之前先看这条规则能不能search到匹配，如果已经有匹配，
+    // 就直接跳过
+    if rule.1.search(&meta_egraph).len() > 0 {
+      continue;
+    }
     let au = learned_aus[i].clone();
     // 在转化的过程中，需要考虑每一个Var如何转化，目前只是转化成了一个RuleVar，
     // 但是不同au中的RuleVar理应是不一样的
     let expr = au2expr(au.clone(), i);
     let recexpr = RecExpr::from(expr);
     meta_egraph.add_expr(&recexpr);
+
+    meta_egraph.rebuild();
   }
 
-  meta_egraph.rebuild();
-
   // meta_egraph.dot().to_png("target/expand.png").unwrap();
+  println!(
+    "For meta_egraph, eclass size: {}, egraph size: {}",
+    meta_egraph.classes().len(),
+    meta_egraph.total_size()
+  );
 
-  let meta_au_lib_config =
-    LiblearnConfig::new(LiblearnCost::Size, AUMergeMod::Greedy, EnumMode::All);
+  let meta_au_lib_config = LiblearnConfig::new(
+    LiblearnCost::Size,
+    AUMergeMod::Greedy,
+    EnumMode::PruningGold,
+  );
 
   // 进行meta_au-search
   let learn_meta_lib = LearnedLibraryBuilder::default()
@@ -297,17 +347,16 @@ where
     .max_arity(config.max_arity)
     .with_liblearn_config(meta_au_lib_config)
     .with_clock_period(config.clock_period)
-    .meta_au_search()
-    .vectorize()
+    .with_op_pack_expand(config.op_pack_config)
     .build(&meta_egraph);
 
   let lib_rewrites: Vec<_> =
     learn_meta_lib.rewrites::<ISAXAnalysis<_, _>>().collect();
 
   println!("expand::learned {} meta libs", learn_meta_lib.size());
-  for lib in learn_meta_lib.libs() {
-    println!("meta lib: {}", lib);
-  }
+  // for lib in learn_meta_lib.libs() {
+  //   println!("meta lib: {}", lib);
+  // }
 
   for rewrite in lib_rewrites {
     let mut searcher = MetaAUOpSearcher::new(rewrite.1);
@@ -320,10 +369,20 @@ where
     // 1. 合并普通变量结果和 mask 结果到一个 Vec 用 Option<Var> 表示：Some(var)
     //    是普通变量，None 表示 mask。
     let mut entries: Vec<(Option<Var>, HashSet<Id>)> = Vec::new();
-
+    let mut set_ids = HashSet::new();
     // 普通变量
     for (var, ids) in var_results {
+      if ids.len() > config.op_pack_config.max_eclass_id {
+        // 如果ids的个数超过了限制，就直接跳过
+        continue;
+      }
+      let mut vec_ids = ids.clone().into_iter().collect::<Vec<_>>();
+      vec_ids.sort_unstable();
+      if set_ids.contains(&vec_ids) {
+        continue; // 如果ids已经存在，就跳过
+      }
       entries.push((Some(var.clone()), ids.clone()));
+      set_ids.insert(vec_ids);
     }
     // mask 结果
     entries.push((None, mask_results.clone()));
@@ -355,6 +414,10 @@ where
         .flat_map(|&eid| egraph[eid].nodes.iter())
         .map(|n| n.operation().to_string())
         .collect();
+      // 如果op_vec中操作符的个数超过5个，就直接跳过
+      if op_vec.len() > config.op_pack_config.max_operation {
+        continue;
+      }
       op_vec.sort_unstable();
       op_vec.dedup();
 
