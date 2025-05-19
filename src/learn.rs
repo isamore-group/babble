@@ -1065,6 +1065,15 @@ where
           sampled_aus.insert(aus[i].clone());
         }
         learned_lib.aus = sampled_aus;
+        // 取后500个
+        // let aus = learned_lib.aus.iter().collect::<Vec<_>>();
+        // let sampled_aus = aus
+        //   .into_iter()
+        //   .map(|x| x.clone())
+        //   .rev()
+        //   .take(500)
+        //   .collect::<BTreeSet<_>>();
+        // learned_lib.aus = sampled_aus;
       }
     } else {
       // 如果是meta_au_search，首先将aus分成两部分，一部分Opmask为1，

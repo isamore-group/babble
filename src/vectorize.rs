@@ -18,6 +18,7 @@ use egg::{
   Searcher, Subst, Var, rewrite,
 };
 use lexpr::print;
+use serde::Deserialize;
 use std::{
   collections::{BTreeMap, HashMap, HashSet, VecDeque},
   fmt::{Debug, Display},
@@ -25,9 +26,68 @@ use std::{
   ops::Deref,
   path::PathBuf,
   str::FromStr,
-  sync::Arc,
+  sync::{Arc, mpsc},
   time::Duration,
 };
+
+/// 用于进行向量化的config
+#[derive(Debug, Clone, Deserialize)]
+pub struct VectorConfig {
+  /// 是否进行向量化
+  pub vectorize: bool,
+  /// 是否启用gather节点(gather节点搜索数目较少， 对整体速度的影响不是很大，
+  /// 默认为true)
+  pub enable_gather: bool,
+  /// 是否启用shuffle节点(shuffle节点搜索数目很大， 对整体速度的影响较大，
+  /// 默认为false， 但是加入shuffle节点之后， 向量化的性能会很高)
+  pub enable_shuffle: bool,
+  /// 是否启用post-check(在预处理阶段，
+  /// 对于store和load节点的深嵌套进行了解耦，但是可能导致错误的结果)
+  pub enable_post_check: bool,
+  /// 最大允许的向量化组大小、
+  pub max_vec_len: usize,
+  /// lift-rules的文件名
+  pub lift_rules: Option<String>,
+  /// transfrom-rules的文件名
+  pub transform_rules: Option<String>,
+}
+
+impl Default for VectorConfig {
+  fn default() -> Self {
+    Self {
+      vectorize: false,
+      enable_gather: true,
+      enable_shuffle: false,
+      enable_post_check: false,
+      max_vec_len: 8,
+      lift_rules: None,
+      transform_rules: None,
+    }
+  }
+}
+
+impl VectorConfig {
+  /// Create a new VectorConfig with the given parameters
+  pub fn new(
+    vectorize: bool,
+    enable_gather: bool,
+    enable_shuffle: bool,
+    enable_post_check: bool,
+    max_vec_len: usize,
+    lift_rules: Option<String>,
+    transform_rules: Option<String>,
+  ) -> Self {
+    Self {
+      vectorize,
+      enable_gather,
+      enable_shuffle,
+      enable_post_check,
+      max_vec_len,
+      lift_rules,
+      transform_rules,
+    }
+  }
+}
 
 // 核心数据结构
 struct VecGroupFinder<Op, T> {
@@ -262,7 +322,7 @@ where
     + Debug
     + OperationInfo,
 {
-  type Cost = usize;
+  type Cost = f64;
 
   fn cost<C>(&mut self, enode: &AstNode<Op>, mut costs: C) -> Self::Cost
   where
@@ -275,25 +335,21 @@ where
     let vector_bonus = if op.is_vector_op() {
       if op.is_vec() {
         let vec_len = enode.args().len();
-        20 + vec_len * vec_len
+        10.0 + (vec_len * vec_len) as f64
       } else {
         let vec_len = op.get_vec_len();
-        base_cost = base_cost.saturating_div(vec_len);
-        0
+        base_cost = base_cost / vec_len as f64;
+        base_cost
       }
     } else {
-      0
+      0.0
     };
 
     // 子节点成本
-    let children_cost: usize =
-      enode.children().iter().map(|&id| costs(id)).sum();
-
+    let children_cost: f64 = enode.fold(0.01, |sum, id| sum + costs(id));
+    // println!("cost: {}", children_cost);
     // 最终成本：基准 + 子节点 + 惩罚
-    base_cost
-      .saturating_add(children_cost)
-      .saturating_sub(vector_bonus)
-      .max(children_cost)
+    (base_cost + children_cost - vector_bonus).max(children_cost)
   }
 }
 
@@ -531,12 +587,12 @@ where
   println!("there are {} lift dsrs", lift_dsrs.len());
   println!("there are {} transfrom dsrs", transfrom_dsrs.len());
   let timeout = Duration::from_secs(60 * 100_000);
-  let runner = Runner::<_, _, ()>::new(ISAXAnalysis::default())
-    .with_egraph(egraph)
-    .with_time_limit(timeout)
-    .with_iter_limit(3)
-    .run(vec![]);
-  let mut egraph = runner.egraph.clone();
+  let mut egraph = egraph.clone();
+  println!(
+    "before vectorize, eclass size: {}, egraph size: {}",
+    egraph.classes().len(),
+    egraph.total_size()
+  );
   let vetorize_lib_config = LiblearnConfig::new(
     LiblearnCost::Size,
     AUMergeMod::Greedy,
@@ -592,57 +648,76 @@ where
     .with_liblearn_config(vetorize_lib_config)
     .with_clock_period(config.clock_period)
     .build(&egraph);
-  let lib_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>> =
-    learned_lib.rewrites().map(|(r, _)| r).collect::<Vec<_>>();
+  let lib_rewrites: Vec<(
+    Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>,
+    Pattern<_>,
+  )> = learned_lib.rewrites().collect::<Vec<_>>();
   println!("learned {} libs", lib_rewrites.len());
   let mut id_set = HashSet::new();
-  for rewrite in lib_rewrites {
-    // println!("rewrite: {:?}", rewrite);
-    let results = rewrite.search(&egraph);
-    // println!("length of results: {}", results.len());
-    if results.is_empty() {
-      continue;
+  for (id, rewrite) in lib_rewrites.clone().into_iter().enumerate() {
+    // let rewrite = rewrite.0.clone();
+    let (tx, rx) = mpsc::channel();
+    let egraph_clone = egraph.clone();
+    let searcher = rewrite.1.clone();
+    std::thread::spawn(move || {
+      let results: Vec<egg::SearchMatches<'_, AstNode<Op>>> =
+        searcher.search(&egraph_clone);
+      let classes = results.iter().map(|x| x.eclass).collect::<Vec<_>>();
+      let _ = tx.send(classes);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(5)) {
+      Ok(results) => {
+        // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
+        if results.len() > config.vectorize_config.max_vec_len
+          || results.len() < 2
+        {
+          continue;
+        }
+        // println!("results.len(): {}", results.len());
+        // 检查当前的包是不是已经存在
+        let mut id_pack = results.clone().into_iter().collect::<Vec<_>>();
+        id_pack.sort();
+        id_pack.dedup();
+        if id_set.contains(&id_pack) {
+          continue;
+        }
+        id_set.insert(id_pack);
+        // println!("found {} matches for {:?}", results.len(), rewrite);
+        let mut tys = Vec::new();
+        let matched_eclass_id = results
+          .iter()
+          .map(|x| {
+            let eclass = x.clone();
+            let ty = egraph[eclass].data.get_type()[0].clone();
+            tys.push(ty.clone());
+            eclass
+          })
+          .collect::<Vec<_>>();
+        // 首先加入Vec节点
+        let vec_node =
+          AstNode::new(Op::make_vec(tys.clone()), matched_eclass_id.clone());
+        let list_id = egraph.add(vec_node);
+        // 针对每个id，构造一个get节点
+        for i in 0..matched_eclass_id.len() {
+          let get_node =
+            AstNode::new(Op::make_get(i, vec![tys[i].clone()]), vec![list_id]);
+          // println!("tys[i]: {:?}", tys[i]);
+          let get_id = egraph.add(get_node);
+          // println!("get_eclass: {:?}", egraph[get_id]);
+          // 进行替换
+          egraph.union(matched_eclass_id[i], get_id);
+          // println!("success union");
+        }
+        // 重建egraph
+        egraph.rebuild();
+      }
+      Err(_) => {
+        eprintln!("rewrite {} timed out, skip", id);
+        // 直接继续下一个，不用等子线程
+        continue;
+      }
     }
-    // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
-    if results.len() > 8 {
-      continue;
-    }
-    // 检查当前的包是不是已经存在
-    let mut id_pack = results.iter().map(|x| x.eclass).collect::<Vec<_>>();
-    id_pack.sort();
-    id_pack.dedup();
-    if id_set.contains(&id_pack) {
-      continue;
-    }
-    id_set.insert(id_pack);
-    // println!("found {} matches for {:?}", results.len(), rewrite);
-    let mut tys = Vec::new();
-    let matched_eclass_id = results
-      .iter()
-      .map(|x| {
-        let eclass = x.eclass;
-        let ty = egraph[eclass].data.get_type()[0].clone();
-        tys.push(ty.clone());
-        eclass
-      })
-      .collect::<Vec<_>>();
-    // 首先加入Vec节点
-    let vec_node =
-      AstNode::new(Op::make_vec(tys.clone()), matched_eclass_id.clone());
-    let list_id = egraph.add(vec_node);
-    // 针对每个id，构造一个get节点
-    for i in 0..matched_eclass_id.len() {
-      let get_node =
-        AstNode::new(Op::make_get(i, vec![tys[i].clone()]), vec![list_id]);
-      // println!("tys[i]: {:?}", tys[i]);
-      let get_id = egraph.add(get_node);
-      // println!("get_eclass: {:?}", egraph[get_id]);
-      // 进行替换
-      egraph.union(matched_eclass_id[i], get_id);
-      // println!("success union");
-    }
-    // 重建egraph
-    egraph.rebuild();
   }
   // egraph.dot().to_png("target/foo2.png").unwrap();
   println!(
@@ -723,12 +798,12 @@ where
   );
 
   // 使用transform_dsrs进行重写
-  let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
-    .with_egraph(egraph)
-    .with_time_limit(timeout)
-    .with_iter_limit(10)
-    .run(transfrom_dsrs);
-  egraph = runner.egraph.clone();
+  // let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
+  //   .with_egraph(egraph)
+  //   .with_time_limit(timeout)
+  //   .with_iter_limit(10)
+  //   .run(transfrom_dsrs);
+  // egraph = runner.egraph.clone();
   // 恢复类型信息，将每个eclass的类型信息传给里面的enode
 
   let cloned_egraph = egraph.clone();

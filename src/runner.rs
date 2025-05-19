@@ -29,7 +29,7 @@ use crate::{
   },
   rewrites::TypeMatch,
   schedule::Schedulable,
-  vectorize::{VectorCF, vectorize},
+  vectorize::{VectorCF, VectorConfig, vectorize},
 };
 use egg::{
   AstSize, EGraph, Extractor, Id, Language, RecExpr, Rewrite,
@@ -56,7 +56,7 @@ pub trait OperationInfo {
   /// judge whether a node is a vector op
   fn is_vector_op(&self) -> bool;
   /// get_simple_cost
-  fn get_simple_cost(&self) -> usize;
+  fn get_simple_cost(&self) -> f64;
   /// For List and Vec, though args may have different order , but they are the
   /// sam, this function is used to judge
   fn is_vec(&self) -> bool {
@@ -318,60 +318,6 @@ impl LiblearnConfig {
   }
 }
 
-/// 用于进行向量化的config
-#[derive(Debug, Clone, Deserialize)]
-pub struct VectorConfig {
-  /// 是否进行向量化
-  pub vectorize: bool,
-  /// 是否启用gather节点(gather节点搜索数目较少， 对整体速度的影响不是很大，
-  /// 默认为true)
-  pub enable_gather: bool,
-  /// 是否启用shuffle节点(shuffle节点搜索数目很大， 对整体速度的影响较大，
-  /// 默认为false， 但是加入shuffle节点之后， 向量化的性能会很高)
-  pub enable_shuffle: bool,
-  /// 是否启用post-check(在预处理阶段，
-  /// 对于store和load节点的深嵌套进行了解耦，但是可能导致错误的结果)
-  pub enable_post_check: bool,
-  /// lift-rules的文件名
-  pub lift_rules: Option<String>,
-  /// transfrom-rules的文件名
-  pub transform_rules: Option<String>,
-}
-
-impl Default for VectorConfig {
-  fn default() -> Self {
-    Self {
-      vectorize: false,
-      enable_gather: true,
-      enable_shuffle: false,
-      enable_post_check: false,
-      lift_rules: None,
-      transform_rules: None,
-    }
-  }
-}
-
-impl VectorConfig {
-  /// Create a new VectorConfig with the given parameters
-  pub fn new(
-    vectorize: bool,
-    enable_gather: bool,
-    enable_shuffle: bool,
-    enable_post_check: bool,
-    lift_rules: Option<String>,
-    transform_rules: Option<String>,
-  ) -> Self {
-    Self {
-      vectorize,
-      enable_gather,
-      enable_shuffle,
-      enable_post_check,
-      lift_rules,
-      transform_rules,
-    }
-  }
-}
-
 /// A Pareto Runner that uses Pareto optimization with beam search
 pub struct ParetoRunner<Op, T, LA, LD>
 where
@@ -503,6 +449,8 @@ where
 
     let mut aeg = runner.egraph;
 
+    let mut root_vec = roots.to_vec();
+
     // aeg.dot().to_png("target/initial_egraph.png").unwrap();
     if self.config.op_pack_config.pack_expand {
       // 进行expand
@@ -519,17 +467,41 @@ where
       );
     } else if self.config.vectorize_config.vectorize {
       let vectorize_time = Instant::now();
-      let vectorized_egraph = vectorize(
+      let mut vectorized_egraph = vectorize(
         aeg.clone(),
         roots,
         &self.lift_dsrs,
         &self.transform_dsrs,
         self.config.clone(),
       );
-      let (cost, expr) = Extractor::new(&aeg, VectorCF).find_best(roots[0]);
+
+      let new_root =
+        vectorized_egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+
+      let (cost, expr) =
+        Extractor::new(&vectorized_egraph, VectorCF).find_best(new_root);
       debug!("cost: {:?}", cost);
-      let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
-      debug!("pretty expr: {}", pretty_expr);
+
+      // 新建一个EGraph，将expr加入
+      let mut new_egraph = EGraph::new(ISAXAnalysis::new(
+        self.config.final_beams,
+        self.config.inter_beams,
+        self.config.lps,
+        self.config.strategy,
+      ));
+
+      root_vec = vec![new_egraph.add_expr(&expr)];
+
+      // 使用部分transform_dsr进行重写
+      let mut new_runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
+        .with_egraph(new_egraph)
+        .with_time_limit(timeout)
+        .with_iter_limit(3)
+        .run(&self.transform_dsrs);
+
+      aeg = new_runner.egraph;
+      // let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
+      // debug!("pretty expr: {}", pretty_expr);
       // println!("Expression: ");
       let mut vecop_cnt = 0;
       for (id, node) in expr.iter().enumerate() {
@@ -627,9 +599,6 @@ where
     // learned_lib.deduplicate(&aeg);
     let lib_rewrites: Vec<_> = learned_lib.rewrites().map(|(r, _)| r).collect();
     let rewrite_conditions: Vec<_> = learned_lib.conditions().collect();
-    // for rewrite in lib_rewrites.iter() {
-    //   println!("rewrite: {:?}", rewrite);
-    // }
     info!(
       "Reduced to {} patterns in {}ms",
       learned_lib.size(),
@@ -665,7 +634,7 @@ where
 
     let mut egraph = runner.egraph;
     // egraph.dot().to_png("target/final_egraph.png").unwrap();
-    let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+    let root = egraph.add(AstNode::new(Op::list(), root_vec.iter().copied()));
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root: {:#?}", egraph[egraph.find(root)]);
     // println!("cs: {:#?}", cs);
@@ -759,7 +728,7 @@ where
       .run(chosen_rewrites.iter())
       .egraph;
     println!("Rewriting done");
-    let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+    let root = egraph.add(AstNode::new(Op::list(), root_vec.iter().copied()));
 
     let mut extractor = LibExtractor::new(&egraph, self.config.strategy);
     println!("Extracting");
