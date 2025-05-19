@@ -71,12 +71,12 @@ impl CostSet {
   /// each `CostSet` corresponds to an argument of a node) such that paired
   /// `LibSel`s have their libraries combined and costs added.
   #[must_use]
-  pub fn cross(&self, other: &CostSet, lps: usize, strategy: f32) -> CostSet {
+  pub fn cross(&self, other: &CostSet, lps: usize) -> CostSet {
     let mut set = Vec::new();
 
     for ls1 in &self.set {
       for ls2 in &other.set {
-        match ls1.combine(ls2, lps, strategy) {
+        match ls1.combine(ls2, lps) {
           None => continue,
           Some(ls) => {
             // println!("ls1: {:?}", ls1);
@@ -109,9 +109,6 @@ impl CostSet {
     }
   }
 
-  /// Performs trivial partial order reduction: if `CostSet` A contains a
-  /// superset of the libs of another `CostSet` B, and A has a higher
-  /// `expr_cost` than B, remove A.
   pub fn unify(&mut self) {
     // println!("unify");
     let mut i = 0;
@@ -123,7 +120,7 @@ impl CostSet {
         let ls1 = &self.set[i];
         let ls2 = &self.set[j];
 
-        if ls1.is_subset(ls2) {
+        if ls1.libs == ls2.libs {
           self.set.remove(j);
         } else {
           j += 1;
@@ -142,14 +139,13 @@ impl CostSet {
     id: Id,
     nested_libs: &CostSet,
     lps: usize,
-    strategy: f32,
   ) -> CostSet {
     // To add a lib, we do a modified cross.
     let mut set = Vec::new();
 
     for ls1 in &nested_libs.set {
       for ls2 in &self.set {
-        match ls2.add_lib(lib, gain, cost, id, ls1, lps, strategy) {
+        match ls2.add_lib(lib, gain, cost, id, ls1, lps) {
           None => continue,
           Some(ls) => {
             if let Err(pos) = set.binary_search(&ls) {
@@ -173,73 +169,43 @@ impl CostSet {
   /// Our pruning strategy preserves n `LibSel`s per # of libs, where
   /// n is the beam size. In other words, we preserve n `LibSel`s with
   /// 0 libs, n `LibSel`s with 1 lib, etc.
-  pub fn prune(&mut self, n: usize, lps: usize) {
-    use std::cmp::Reverse;
-
+  pub fn prune(
+    &mut self,
+    beam_size: usize,
+    lps: usize,
+    strategy: f32,
+    exe_count: usize,
+  ) {
     let old_set = std::mem::take(&mut self.set);
-
-    // First, we create a table from # of libs to a list of LibSels
-    let mut table: HashMap<usize, BinaryHeap<Reverse<LibSelFC>>> =
-      HashMap::new();
-
-    // We then iterate over all of the LibSels in this set
-    for ls in old_set {
-      let num_libs = ls.libs.len();
-
-      // We don't need to do this anymore, because this is happening in cross:
-      // If lps is set, if num_libs > lps, give up immediately
-      // if num_libs > lps {
-      //     panic!("LibSels that are too large should have been filtered out by
-      // cross!"); }
-
-      let h = table.entry(num_libs).or_default();
-
-      h.push(Reverse(LibSelFC(ls)));
-    }
-
-    // From our table, recombine into a sorted vector
     let mut set = Vec::new();
-    let beams_per_size = std::cmp::max(1, n / lps);
-
-    for (_sz, mut h) in table {
-      // Take the first n items from the heap
-      let mut i = 0;
-      while i < beams_per_size {
-        if let Some(ls) = h.pop() {
-          let ls = ls.0.0;
-
-          if let Err(pos) = set.binary_search(&ls) {
-            set.insert(pos, ls);
-          }
-
-          i += 1;
-        } else {
-          break;
-        }
+    for ls in old_set {
+      if ls.libs.len() <= lps {
+        set.push(ls);
       }
     }
 
-    self.set = set;
-  }
-
-  pub fn unify2(&mut self) {
-    // println!("unify");
-    let mut i = 0;
-
-    while i < self.set.len() {
-      let mut j = i + 1;
-
-      while j < self.set.len() {
-        let ls1 = &self.set[i];
-        let ls2 = &self.set[j];
-
-        if ls2.is_subset(ls1) {
-          self.set.remove(j);
-        } else {
-          j += 1;
+    for ls in &mut set {
+      if ls.full_cost == 0.0 {
+        for (_, (gain, cost, set)) in &ls.libs {
+          ls.full_cost += (1.0 - strategy) * (*cost as f32);
+          ls.full_cost -= strategy * (gain * exe_count * set.len()) as f32;
         }
       }
-      i += 1;
+    }
+    // Sort the set by full cost
+    // Less is the full cost, higher is the order
+    set.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // println!("set: {:?}", set);
+    if set.len() > beam_size {
+      let mut new_set = Vec::new();
+      for i in 0..beam_size {
+        if i < set.len() {
+          new_set.push(set[i].clone());
+        }
+      }
+      self.set = new_set;
+    } else {
+      self.set = set;
     }
   }
 }
@@ -305,27 +271,17 @@ impl LibSel {
   /// Combines two `LibSel`s. Unions the lib sets, adds
   /// the expr
   #[must_use]
-  pub fn combine(
-    &self,
-    other: &LibSel,
-    lps: usize,
-    strategy: f32,
-  ) -> Option<LibSel> {
+  pub fn combine(&self, other: &LibSel, lps: usize) -> Option<LibSel> {
     let mut res = self.clone();
 
     for (lib_id, lib_info) in &other.libs {
       match res.libs.entry(*lib_id) {
         Entry::Occupied(mut entry) => {
           let (_, _, set) = entry.get_mut();
-          let count = set.len();
           set.extend(lib_info.2.clone());
-          let count_inc = set.len() - count;
-          res.full_cost -= count_inc as f32 * lib_info.0 as f32 * strategy;
         }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
-          res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
-            - lib_info.2.len() as f32 * lib_info.0 as f32 * strategy;
           if res.libs.len() > lps {
             return None;
           }
@@ -345,24 +301,18 @@ impl LibSel {
     id: Id,
     nested_libs: &LibSel,
     lps: usize,
-    strategy: f32,
   ) -> Option<LibSel> {
-    let mut res = self.clone();
+    let mut res: LibSel = self.clone();
 
     // Add all nested libs that the lib uses, then add the lib itself.
     for (nested_lib, lib_info) in &nested_libs.libs {
       match res.libs.entry(*nested_lib) {
         Entry::Occupied(mut entry) => {
           let (_, _, set) = entry.get_mut();
-          let count = set.len();
           set.extend(lib_info.2.clone());
-          let count_inc = set.len() - count;
-          res.full_cost -= count_inc as f32 * lib_info.0 as f32 * strategy;
         }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
-          res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
-            - lib_info.2.len() as f32 * lib_info.0 as f32 * strategy;
           if res.libs.len() > lps {
             return None;
           }
@@ -374,14 +324,11 @@ impl LibSel {
       Entry::Occupied(mut entry) => {
         let (_, _, set) = entry.get_mut();
         set.insert(id);
-        res.full_cost -= gain as f32 * strategy;
       }
       Entry::Vacant(entry) => {
         let mut set = HashSet::new();
         set.insert(id);
         entry.insert((gain, cost, set));
-        res.full_cost +=
-          cost as f32 * (1.0 - strategy) - gain as f32 * strategy;
         if res.libs.len() > lps {
           return None;
         }
@@ -389,38 +336,6 @@ impl LibSel {
     }
 
     Some(res)
-  }
-
-  /// O(n) subset check
-  #[must_use]
-  pub fn is_subset(&self, other: &LibSel) -> bool {
-    // For every element in this LibSel, we want to see
-    // if it exists in other.
-    for (lib_id, _) in &self.libs {
-      match other.libs.get(lib_id) {
-        Some(_) => {}
-        None => {
-          return false;
-        }
-      }
-    }
-    true
-  }
-}
-
-/// A wrapper around `LibSel`s that orders based on their full cost.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LibSelFC(pub(crate) LibSel);
-
-impl PartialOrd for LibSelFC {
-  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    self.0.full_cost.partial_cmp(&other.0.full_cost)
-  }
-}
-
-impl Ord for LibSelFC {
-  fn cmp(&self, other: &Self) -> Ordering {
-    self.partial_cmp(other).unwrap()
   }
 }
 
@@ -644,6 +559,7 @@ where
     + std::hash::Hash
     + Debug
     + Teachable
+    + BBInfo
     + Arity
     + Eq
     + Clone
@@ -658,21 +574,32 @@ where
 
   fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
     // println!("merge");
-    // println!("{:?}", to);
-    // println!("{:?}", &from);
+    // println!("to.bb: {:?}", to.bb);
+    // println!("from.bb: {:?}", &from.bb);
     let a0 = to.clone();
 
     if to.bb.len() == 0 {
       to.bb = from.bb.clone();
     }
 
+    let exe_count = match to.bb.len() {
+      0 => 1,
+      _ => match self.bb_query.get(&to.bb[0]) {
+        Some(bb_entry) => bb_entry.execution_count,
+        None => 1,
+      },
+    };
+
     // Merging consists of combination, followed by unification and beam
     // pruning.
     to.cs.combine(from.cs.clone());
     to.cs.unify();
-    to.cs.prune(self.beam_size, self.lps);
+    to.cs
+      .prune(self.beam_size, self.lps, self.strategy, exe_count);
     // we also need to merge the type information
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
+    // println!("from.bb: {:?}", from.bb);
+    // println!("to.bb: {:?}", to.bb);
     // 合并哈希
     // 合并ecls哈希，目前取最大值
     // to.hash.cls_hash = max(to.hash.cls_hash, from.hash.cls_hash);
@@ -729,50 +656,35 @@ where
       Some(BindingExpr::Lib(id, f, b, gain, cost)) => {
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
-        // println!("before adding lib: {:#?}", x(b));
-        let mut e = x(b).add_lib(
-          id,
-          gain,
-          cost,
-          *b,
-          x(f),
-          self_ref.lps,
-          self_ref.strategy,
-        );
-        // println!("new cost set: {:#?}", e);
+        // println!("lib: {:?}", id);
+        let mut e = x(b).add_lib(id, gain, cost, *b, x(f), self_ref.lps);
         e.unify();
-        e.prune(self_ref.beam_size, self_ref.lps);
-        ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
+        e.prune(self_ref.beam_size, self_ref.lps, self_ref.strategy, 1);
+        // println!("new cost set: {:#?}", e);
+        ISAXCost::new(e, ty, enode.operation().get_bbs_info().clone(), hash)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
         // We test the arity of the function
         if enode.is_empty() {
           // 0 args. Return new.
-          ISAXCost::new(
-            CostSet::new(),
-            ty,
-            enode.operation().get_bbs_info(),
-            hash,
-          )
+          ISAXCost::new(CostSet::new(), ty, vec![], hash)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
-          let e = x(&enode.args()[0]).clone();
-          ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
+          let mut e = x(&enode.args()[0]).clone();
+          e.unify();
+          ISAXCost::new(e, ty, enode.operation().get_bbs_info().clone(), hash)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
 
           for cs in &enode.args()[1..] {
-            e = e.cross(x(cs), self_ref.lps, self_ref.strategy);
-            // Intermediate prune.
+            e = e.cross(x(cs), self_ref.lps);
             e.unify();
-            e.prune(self_ref.inter_beam, self_ref.lps);
           }
+          e.prune(self_ref.beam_size, self_ref.lps, self_ref.strategy, 1);
 
-          e.unify();
-          e.prune(self_ref.beam_size, self_ref.lps);
-          ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
+          ISAXCost::new(e, ty, enode.operation().get_bbs_info().clone(), hash)
         }
       }
     }
