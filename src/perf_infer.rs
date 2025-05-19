@@ -43,7 +43,7 @@ pub fn perf_infer<Op, T>(
       continue;
     }
 
-    println!("perf_infer: {:?}", current_id);
+    // println!("perf_infer: {:?}", current_id);
 
     let mut ecls_bb_info = current_bb_info;
     let ecls = &mut egraph[current_id];
