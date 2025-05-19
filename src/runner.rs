@@ -21,7 +21,7 @@ use serde::Deserialize;
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
   Printable, Teachable,
-  bb_query::BBQuery,
+  bb_query::{BBInfo, BBQuery},
   expand::{OpPackConfig, expand},
   extract::{
     self,
@@ -283,7 +283,7 @@ pub enum EnumMode {
   ClusterTest,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct LiblearnConfig {
   /// type of cost : "delay", "Match", "size"
   pub cost: LiblearnCost,
@@ -356,6 +356,7 @@ impl<Op, T, LA, LD> ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + OperationInfo
+    + BBInfo
     + Teachable
     + Printable
     + Debug
@@ -448,6 +449,7 @@ where
       .run(&self.dsrs);
 
     let mut aeg = runner.egraph;
+    crate::perf_infer::perf_infer(&mut aeg, roots, vec![]);
 
     let mut root_vec = roots.to_vec();
 
@@ -771,6 +773,7 @@ impl<Op, T, LA, LD> BabbleParetoRunner<Op, T> for ParetoRunner<Op, T, LA, LD>
 where
   Op: Arity
     + OperationInfo
+    + BBInfo
     + Teachable
     + Printable
     + Debug

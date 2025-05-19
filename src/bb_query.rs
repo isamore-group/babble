@@ -84,6 +84,10 @@ impl Default for BBQuery {
   }
 }
 
+pub trait BBInfo {
+  fn get_mut_bbs_info(&mut self) -> &mut Vec<String>;
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

@@ -25,6 +25,7 @@ mod co_occurrence;
 mod dfta;
 pub mod extract;
 pub mod learn;
+pub mod perf_infer;
 pub mod rewrites;
 pub mod runner;
 pub mod schedule;
