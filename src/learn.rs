@@ -15,7 +15,7 @@
 //! If the set AU(a, b) is empty, we add to it the partial expression (a, b).
 use crate::bb_query::{self, BBQuery};
 use crate::expand::OpPackConfig;
-use crate::extract::beam_pareto::{TypeInfo, TypeSet};
+use crate::extract::beam_pareto::{ISAXAnalysis, TypeInfo, TypeSet};
 use crate::rewrites::TypeMatch;
 // 使用随机数
 use crate::runner::{
@@ -317,7 +317,7 @@ where
   delay_estimator: LD,
   bb_query: BBQuery,
   liblearn_config: LiblearnConfig,
-  op_pack_expand: OpPackConfig,
+  op_pack_config: OpPackConfig,
 }
 
 impl<Op, Type, LA, LD> Default for LearnedLibraryBuilder<Op, Type, LA, LD>
@@ -363,7 +363,7 @@ where
       delay_estimator: LD::default(),
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
-      op_pack_expand: OpPackConfig::default(),
+      op_pack_config: OpPackConfig::default(),
     }
   }
 }
@@ -417,7 +417,7 @@ where
       delay_estimator: LD::default(),
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
-      op_pack_expand: OpPackConfig::default(),
+      op_pack_config: OpPackConfig::default(),
     }
   }
 }
@@ -536,8 +536,8 @@ where
   }
 
   #[must_use]
-  pub fn with_op_pack_expand(mut self, op_pack_expand: OpPackConfig) -> Self {
-    self.op_pack_expand = op_pack_expand;
+  pub fn with_op_pack_config(mut self, op_pack_config: OpPackConfig) -> Self {
+    self.op_pack_config = op_pack_config;
     self
   }
 
@@ -574,9 +574,44 @@ where
       self.delay_estimator,
       self.bb_query,
       self.liblearn_config,
-      self.op_pack_expand,
+      self.op_pack_config,
     )
   }
+}
+
+#[derive(Debug, Clone)]
+pub struct LiblearnMessage<Op, Type, A: Analysis<AstNode<Op>>>
+where
+  Op: Arity
+    + Clone
+    + Debug
+    + Ord
+    + Sync
+    + Send
+    + Display
+    + Hash
+    + DiscriminantEq
+    + 'static
+    + Teachable
+    + OperationInfo,
+  Type: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
+  A: 'static,
+{
+  pub lib_id: usize,
+  pub rewrite: Rewrite<AstNode<Op>, A>,
+  pub searcher_pe: PartialExpr<Op, Var>,
+  pub applier_pe: PartialExpr<Op, Var>,
+  pub condition: TypeMatch<Type>,
 }
 
 pub trait DiscriminantEq {
@@ -676,8 +711,8 @@ where
   bb_query: BBQuery,
   /// config for liblearn
   liblearn_config: LiblearnConfig,
-  /// op_pack_expand
-  op_pack_expand: OpPackConfig,
+  /// op_pack_config
+  op_pack_config: OpPackConfig,
 }
 
 #[allow(unused)]
@@ -741,7 +776,7 @@ where
     delay_estimator: LD,
     bb_query: BBQuery,
     liblearn_config: LiblearnConfig,
-    op_pack_expand: OpPackConfig,
+    op_pack_config: OpPackConfig,
   ) -> Self
   where
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
@@ -764,7 +799,7 @@ where
       delay_estimator,
       bb_query,
       liblearn_config: liblearn_config.clone(),
-      op_pack_expand,
+      op_pack_config,
     };
     let classes: Vec<_> = egraph.classes().map(|cls| cls.id).collect();
 
@@ -822,7 +857,7 @@ where
           .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)))
           .collect::<Vec<_>>();
         let start = Instant::now();
-        if op_pack_expand.pack_expand {
+        if op_pack_config.pack_expand {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -900,8 +935,8 @@ where
               let subtree_cnt1 = subtree_levels1.count_ones();
               for j in i..end {
                 let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
-                if op_pack_expand.pack_expand
-                  && !op_pack_expand.prune_eclass_pair
+                if op_pack_config.pack_expand
+                  && !op_pack_config.prune_eclass_pair
                 {
                   // 不进行后面的检查，直接插入
                   local_pairs.push((**ecls1, **ecls2));
@@ -940,7 +975,7 @@ where
           .collect();
         let eclass_pairs = all_pairs.clone();
         let start = Instant::now();
-        if op_pack_expand.pack_expand {
+        if op_pack_config.pack_expand {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -1029,7 +1064,7 @@ where
         }
         let enum_start = Instant::now();
 
-        if op_pack_expand.pack_expand {
+        if op_pack_config.pack_expand {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -1056,7 +1091,7 @@ where
     // for (state, aus) in &learned_lib.aus_by_state {
     //   println!("state{:?}: {:?}", state, aus);
     // }
-    if !op_pack_expand.pack_expand {
+    if !op_pack_config.pack_expand {
       if learned_lib.aus.len() > 500 {
         let aus = learned_lib.aus.iter().collect::<Vec<_>>();
         let mut sampled_aus = BTreeSet::new();
@@ -1097,23 +1132,14 @@ where
       }
       // 如果has_mask_aus和no_mask_aus中有一个数量大于50，就选择前50个
       let mut sampled_aus = BTreeSet::new();
-      if has_mask_aus.len() > op_pack_expand.num_meta_au_mask {
+      if has_mask_aus.len() > op_pack_config.num_meta_au_mask {
         let aus = has_mask_aus.iter().collect::<Vec<_>>();
-        let step = aus.len() / op_pack_expand.num_meta_au_mask;
+        let step = aus.len() / op_pack_config.num_meta_au_mask;
         for i in (0..aus.len()).step_by(step) {
           sampled_aus.insert(aus[i].clone());
         }
       } else {
         sampled_aus.extend(has_mask_aus);
-      }
-      if no_mast_aus.len() > op_pack_expand.num_meta_au_no_mask {
-        let aus = no_mast_aus.iter().collect::<Vec<_>>();
-        let step = aus.len() / op_pack_expand.num_meta_au_no_mask;
-        for i in (0..aus.len()).step_by(step) {
-          sampled_aus.insert(aus[i].clone());
-        }
-      } else {
-        sampled_aus.extend(no_mast_aus);
       }
       learned_lib.aus = sampled_aus;
     }
@@ -1176,42 +1202,44 @@ where
   /// ```text
   /// (* (+ 1 ?x) 5) => (lib f (lambda (* (+ 1 $0) 5)) (apply f ?x))
   /// ```
-  pub fn rewrites<A: Analysis<AstNode<Op>>>(
+  pub fn messages(
     &self,
-  ) -> impl Iterator<Item = (Rewrite<AstNode<Op>, A>, Pattern<AstNode<Op>>)> + '_
-  where
-    <A as Analysis<AstNode<Op>>>::Data: PartialEq<Type>,
+  ) -> impl Iterator<Item = LiblearnMessage<Op, Type, ISAXAnalysis<Op, Type>>> + '_
   {
     self.aus.iter().enumerate().map(|(i, au)| {
       let new_i = i + self.last_lib_id;
       let searcher: Pattern<_> = au.au.expr.clone().into();
-      let applier: Pattern<_> = reify(
+      let applier_pe = reify(
         LibId(new_i),
         au.au.expr.clone(),
         self.clock_period,
         self.area_estimator.clone(),
         self.delay_estimator.clone(),
         self.bb_query.clone(),
-      )
-      .into();
+      );
+      let applier: Pattern<_> = applier_pe.clone().into();
       let conditional_applier = ConditionalApplier {
         condition: TypeMatch::new(au.ty_map.clone()),
         applier: applier.clone(),
       };
-      let name = format!("anti-unify {i}");
+      let name = if self.op_pack_config.pack_expand {
+        format!("meta_anti-unify {new_i}")
+      } else {
+        format!("anti-unify {new_i}")
+      };
       debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
+      let condition = TypeMatch::new(au.ty_map.clone());
 
       // Both patterns contain the same variables, so this can never fail.
-      (
-        Rewrite::new(name, searcher.clone(), conditional_applier)
+      LiblearnMessage {
+        lib_id: new_i,
+        rewrite: Rewrite::new(name, searcher.clone(), conditional_applier)
           .unwrap_or_else(|_| unreachable!()),
-        searcher,
-      )
+        searcher_pe: au.au.expr.clone(),
+        applier_pe: applier_pe.clone(),
+        condition,
+      }
     })
-  }
-  /// conditions of the rewrites
-  pub fn conditions(&self) -> impl Iterator<Item = TypeMatch<Type>> + '_ {
-    self.aus.iter().map(|au| TypeMatch::new(au.ty_map.clone()))
   }
 
   /// Right-hand sides of library rewrites.
@@ -1921,8 +1949,8 @@ where
           // corresponds to an anti-unification containing at least n
           // + 1 nodes.
           if learn_trivial
-            || (self.op_pack_expand.pack_expand
-              && self.op_pack_expand.learn_trivial)
+            || (self.op_pack_config.pack_expand
+              && self.op_pack_config.learn_trivial)
             || num_vars < au.num_holes()
             || au.num_nodes() > 1 + num_vars
           {
@@ -1966,7 +1994,7 @@ where
           PartialExpr::Hole(_) => true,
         })
         .filter(|au| {
-          if !self.op_pack_expand.pack_expand {
+          if !self.op_pack_config.pack_expand {
             true
           } else {
             // 计算每一个au中含有的opmask的数目，如果超过1个，就不加入
@@ -1990,7 +2018,7 @@ where
         "length of nontrivial_aus is {}",
         nontrivial_aus.clone().count()
       );
-      let nontrivial_aus = if self.op_pack_expand.pack_expand {
+      let nontrivial_aus = if self.op_pack_config.pack_expand {
         // 不需要完善类型
         nontrivial_aus.collect::<Vec<_>>()
       } else {

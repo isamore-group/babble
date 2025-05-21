@@ -1,5 +1,5 @@
 use crate::{
-  DiscriminantEq, Printable,
+  DiscriminantEq, PartialExpr, Printable,
   analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode},
   bb_query::BBInfo,
@@ -656,9 +656,13 @@ where
   let lib_rewrites: Vec<(
     Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>,
     Pattern<_>,
-  )> = learned_lib.rewrites().collect::<Vec<_>>();
+  )> = learned_lib
+    .messages()
+    .map(|m| (m.rewrite, m.searcher_pe.into()))
+    .collect::<Vec<_>>();
   println!("learned {} libs", lib_rewrites.len());
   let mut id_set = HashSet::new();
+  let mut pack_cnt = 0;
   for (id, rewrite) in lib_rewrites.clone().into_iter().enumerate() {
     // let rewrite = rewrite.0.clone();
     let (tx, rx) = mpsc::channel();
@@ -688,6 +692,7 @@ where
           continue;
         }
         id_set.insert(id_pack);
+        pack_cnt += 1;
         // println!("found {} matches for {:?}", results.len(), rewrite);
         let mut tys = Vec::new();
         let matched_eclass_id = results
@@ -724,6 +729,7 @@ where
       }
     }
   }
+  println!("found {} packs", pack_cnt);
   // egraph.dot().to_png("target/foo2.png").unwrap();
   println!(
     "after add list, egraph size: {}, class size: {}",
