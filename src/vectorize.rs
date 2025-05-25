@@ -602,6 +602,12 @@ where
     LiblearnCost::Size,
     AUMergeMod::Greedy,
     EnumMode::PruningGold,
+    // 后面的配置直接使用config.liblearn中的配置
+    config.liblearn_config.sample_num,
+    config.liblearn_config.hamming_threshold,
+    config.liblearn_config.jaccard_threshold,
+    config.liblearn_config.max_libs,
+    config.liblearn_config.max_lib_size,
   );
   // let mut vec_finder = VecGroupFinder::<Op, T>::new(&[]);
 

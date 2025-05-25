@@ -406,6 +406,12 @@ where
     LiblearnCost::Size,
     AUMergeMod::Greedy,
     EnumMode::PruningGold,
+    // 后面的配置直接使用config.liblearn中的配置
+    config.liblearn_config.sample_num,
+    config.liblearn_config.hamming_threshold,
+    config.liblearn_config.jaccard_threshold,
+    config.liblearn_config.max_libs,
+    config.liblearn_config.max_lib_size,
   );
   let learned_lib = LearnedLibraryBuilder::default()
     .learn_constants(config.learn_constants)
@@ -432,7 +438,7 @@ where
     BBQuery::default(),
   ));
 
-  // 将au生成的Recexpr加入到meta_egraph中
+  // // 将au生成的Recexpr加入到meta_egraph中
   let learned_messages: Vec<_> = learned_lib.messages().collect();
   for i in (0..learned_aus.len()).rev() {
     // 这里从大到小检查，能将一些meta_egraph中已经存在的AU去掉
@@ -444,8 +450,8 @@ where
       continue;
     }
     let au = learned_aus[i].clone();
-    // 在转化的过程中，需要考虑每一个Var如何转化，目前只是转化成了一个RuleVar，
-    // 但是不同au中的RuleVar理应是不一样的
+    // 在转化的过程中，需要考虑每一个Var如何转化，
+    // 目前只是转化成了一个RuleVar，   // 但是不同au中的RuleVar理应是不一样的
     let expr = au2expr(au.clone(), i);
     let recexpr = RecExpr::from(expr);
     meta_egraph.add_expr(&recexpr);
@@ -464,6 +470,12 @@ where
     LiblearnCost::Size,
     AUMergeMod::Greedy,
     EnumMode::PruningGold,
+    // 后面的配置直接使用config.liblearn中的配置
+    config.liblearn_config.sample_num,
+    config.liblearn_config.hamming_threshold,
+    config.liblearn_config.jaccard_threshold,
+    config.liblearn_config.max_libs,
+    config.liblearn_config.max_lib_size,
   );
 
   // 计算一个新的max_lib_id

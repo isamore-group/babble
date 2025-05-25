@@ -825,9 +825,14 @@ where
       a == b
     }
 
-    fn level_match(a: &(u64, u64), b: &(u64, u64)) -> bool {
-      let hash_similar = hamming_distance(a.0, b.0) < 36;
-      let subtree_similar = jaccard_similarity(&a.1, &b.1) > 0.67;
+    fn level_match(
+      a: &(u64, u64),
+      b: &(u64, u64),
+      hamming_threshold: usize,
+      jaccard_threshold: f64,
+    ) -> bool {
+      let hash_similar = hamming_distance(a.0, b.0) < hamming_threshold as u32;
+      let subtree_similar = jaccard_similarity(&a.1, &b.1) > jaccard_threshold;
       hash_similar && subtree_similar
     }
 
@@ -856,7 +861,6 @@ where
           .cartesian_product(classes.iter())
           .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)))
           .collect::<Vec<_>>();
-        let start = Instant::now();
         if op_pack_config.pack_expand {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
@@ -866,7 +870,6 @@ where
             learned_lib.enumerate_over_egraph(egraph, pair);
           }
         }
-        let elapsed = start.elapsed();
       }
       EnumMode::PruningVanilla => {
         // 无剪枝优化+并行处理+模块分组，仅有针对pair的筛选
@@ -891,6 +894,8 @@ where
             if !level_match(
               &(cls_hash1, subtree_levels1),
               &(cls_hash2, subtree_levels2),
+              liblearn_config.hamming_threshold,
+              liblearn_config.jaccard_threshold,
             ) {
               continue;
             }
@@ -943,7 +948,9 @@ where
                   continue;
                 }
                 let popcount2 = cls_hash2.count_ones();
-                if (popcount1 as i32 - popcount2 as i32).abs() >= 36 {
+                if (popcount1 as i32 - popcount2 as i32).abs()
+                  >= liblearn_config.hamming_threshold as i32
+                {
                   continue; // 汉明距离不可能<36
                 }
                 let subtree_cnt2 = subtree_levels2.count_ones();
@@ -951,13 +958,15 @@ where
                   | subtree_levels2.clone())
                 .count_ones();
                 if (subtree_cnt1.max(subtree_cnt2) as f64)
-                  < (0.67 * all_one as f64)
+                  < (liblearn_config.jaccard_threshold * all_one as f64)
                 {
-                  continue; // Jaccard相似度不可能>0.67
+                  continue; // Jaccard相似度不可能> liblearn_config.jaccard_threshold
                 }
                 if !level_match(
                   &(*cls_hash1, subtree_levels1.clone()),
                   &(*cls_hash2, subtree_levels2.clone()),
+                  liblearn_config.hamming_threshold,
+                  liblearn_config.jaccard_threshold,
                 ) {
                   continue;
                 }
@@ -1014,6 +1023,8 @@ where
             if !level_match(
               &(cls_hash1, subtree_levels1),
               &(cls_hash2, subtree_levels2),
+              liblearn_config.hamming_threshold,
+              liblearn_config.jaccard_threshold,
             ) {
               continue;
             }
@@ -1092,10 +1103,10 @@ where
     //   println!("state{:?}: {:?}", state, aus);
     // }
     if !op_pack_config.pack_expand {
-      if learned_lib.aus.len() > 500 {
+      if learned_lib.aus.len() > liblearn_config.max_libs {
         let aus = learned_lib.aus.iter().collect::<Vec<_>>();
         let mut sampled_aus = BTreeSet::new();
-        let step = aus.len() / 500;
+        let step = aus.len() / liblearn_config.max_libs;
         for i in (0..aus.len()).step_by(step) {
           sampled_aus.insert(aus[i].clone());
         }
@@ -1388,7 +1399,7 @@ where
     // info!("cache.size: {}", self.pattern_cache.len());
     // 遍历所有候选的模式
     for au in candidates {
-      if au.size() > 500 {
+      if au.size() > self.liblearn_config.max_lib_size {
         continue;
       }
       let pattern: Pattern<_> = normalize(au.clone()).0.into();
@@ -1679,8 +1690,12 @@ where
             info!("get_range_aus");
             let au_range = new_aus.collect::<Vec<_>>();
             let new_aus = match self.liblearn_config.au_merge_mod {
-              AUMergeMod::Random => get_random_aus(au_range, 1000),
-              AUMergeMod::Kd => kd_random_aus(au_range, 1000),
+              AUMergeMod::Random => {
+                get_random_aus(au_range, self.liblearn_config.sample_num)
+              }
+              AUMergeMod::Kd => {
+                kd_random_aus(au_range, self.liblearn_config.sample_num)
+              }
               AUMergeMod::Greedy => greedy_aus(au_range),
               AUMergeMod::Cartesian => {
                 // 笛卡尔积
@@ -1817,8 +1832,12 @@ where
             info!("get_range_aus");
             let au_range = new_aus.collect::<Vec<_>>();
             let new_aus = match self.liblearn_config.au_merge_mod {
-              AUMergeMod::Random => get_random_aus(au_range, 1000),
-              AUMergeMod::Kd => kd_random_aus(au_range, 1000),
+              AUMergeMod::Random => {
+                get_random_aus(au_range, self.liblearn_config.sample_num)
+              }
+              AUMergeMod::Kd => {
+                kd_random_aus(au_range, self.liblearn_config.sample_num)
+              }
               AUMergeMod::Greedy => greedy_aus(au_range),
               AUMergeMod::Cartesian => {
                 // 笛卡尔积

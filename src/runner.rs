@@ -292,6 +292,17 @@ pub struct LiblearnConfig {
   pub au_merge_mod: AUMergeMod,
   /// enumerate mode: "all", "pruning vanilla", "pruning gold"
   pub enum_mode: EnumMode,
+  /// for greedy au merge , we only merge the biggest AU, but the other two
+  /// need to sample m AUs
+  pub sample_num: usize,
+  /// to judge whether two eclasses are similar, we need to use two thresholds:
+  /// Hamming distance and Jaccard distance
+  pub hamming_threshold: usize,
+  pub jaccard_threshold: f64,
+  /// every liblearn, we learn at most this number of libs
+  pub max_libs: usize,
+  /// a lib can have at most this number of nodes
+  pub max_lib_size: usize,
 }
 
 impl Default for LiblearnConfig {
@@ -300,6 +311,11 @@ impl Default for LiblearnConfig {
       cost: LiblearnCost::Delay,
       au_merge_mod: AUMergeMod::Greedy,
       enum_mode: EnumMode::All,
+      sample_num: 10,
+      hamming_threshold: 36,
+      jaccard_threshold: 0.67,
+      max_libs: 500,
+      max_lib_size: 500,
     }
   }
 }
@@ -310,11 +326,21 @@ impl LiblearnConfig {
     cost: LiblearnCost,
     au_merge_mod: AUMergeMod,
     enum_mode: EnumMode,
+    sample_num: usize,
+    hamming_threshold: usize,
+    jaccard_threshold: f64,
+    max_libs: usize,
+    max_lib_size: usize,
   ) -> Self {
     Self {
       cost,
       au_merge_mod,
       enum_mode,
+      sample_num,
+      hamming_threshold,
+      jaccard_threshold,
+      max_libs,
+      max_lib_size,
     }
   }
 }
@@ -732,6 +758,7 @@ where
           );
         } else {
           // 说明是一个meta lib
+          println!("We have leaned a meta lib !");
           chosen_rewrites
             .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
           learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
@@ -746,10 +773,6 @@ where
     }
 
     println!("chosen_rewrites: {}", chosen_rewrites.len());
-
-    if chosen_rewrites.len() > 1 {
-      println!("We have leaned a meta lib !")
-    }
 
     debug!(
       "upper bound ('full') cost: {}",
