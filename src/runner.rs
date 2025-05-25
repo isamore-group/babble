@@ -215,7 +215,7 @@ where
   /// delay estimator
   pub delay_estimator: LD,
   /// whether to add all types
-  pub add_all_types: bool,
+  pub enable_widths_merge: bool,
   /// liblearn config
   pub liblearn_config: LiblearnConfig,
   /// vectorize config
@@ -241,7 +241,7 @@ where
       clock_period: 1000,
       area_estimator: LA::default(),
       delay_estimator: LD::default(),
-      add_all_types: false,
+      enable_widths_merge: false,
       liblearn_config: LiblearnConfig::default(),
       vectorize_config: VectorConfig::default(),
       op_pack_config: OpPackConfig::default(),
@@ -901,7 +901,7 @@ where
       .collect::<Vec<_>>();
     egraph.rebuild();
 
-    if self.config.add_all_types {
+    if self.config.enable_widths_merge {
       // 加入类型重写，相当于是给egraph中添加node并做合并
       let widths = vec![8 as u32, 16 as u32, 32 as u32, 64 as u32];
       let mut int_width: HashMap<i64, HashSet<u32>> = HashMap::new();
