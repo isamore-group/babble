@@ -1981,16 +1981,26 @@ where
             let mut ty_map = HashMap::new();
             for (k, v) in var2id.iter() {
               let id = v.clone();
-              let ty_str = egraph[id.0].data.get_type();
-              let tys = ty_str
-                .iter()
-                .map(|s| {
-                  let ty = s.parse::<Type>().unwrap_or_else(|_| {
-                    panic!("parse type error: {}", s);
-                  });
-                  ty
-                })
-                .collect::<Vec<_>>();
+              let ty0 = egraph[id.0].data.get_type()[0]
+                .parse::<Type>()
+                .unwrap_or_else(|_| {
+                  panic!(
+                    "parse type error: {}",
+                    egraph[id.0].data.get_type()[0]
+                  );
+                });
+              let ty1 = egraph[id.1].data.get_type()[0]
+                .parse::<Type>()
+                .unwrap_or_else(|_| {
+                  panic!(
+                    "parse type error: {}",
+                    egraph[id.1].data.get_type()[0]
+                  );
+                });
+
+              let ty_neglecting_width =
+                AstNode::merge_types_neglecting_width(&ty0, &ty1);
+              let tys = vec![ty_neglecting_width];
               ty_map.insert(k.clone(), tys);
             }
             Some(AUWithType {

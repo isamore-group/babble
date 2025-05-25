@@ -1254,6 +1254,7 @@ where
 pub trait TypeInfo<T> {
   fn get_rtype(&self, child_types: &Vec<T>) -> T;
   fn merge_types(a: &T, b: &T) -> T;
+  fn merge_types_neglecting_width(a: &T, b: &T) -> T;
 }
 
 // 定义GetType trait

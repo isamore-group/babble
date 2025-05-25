@@ -747,13 +747,14 @@ where
         if lib.0.0 < expand_message.normal_au_count {
           // 说明是一个正常的lib
           let new_lib = lib.0.0 - max_lib_id;
+          // println!("new_lib: {}", new_lib);
           chosen_rewrites.push(expand_message.all_au_rewrites[new_lib].clone());
-          learned_libs.push((lib.0.0, expand_message.libs[&new_lib].clone()));
+          learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
           rewrites_map.insert(
             lib.0.0,
             (
               expand_message.all_au_rewrites[new_lib].clone(),
-              expand_message.conditions[&new_lib].clone(),
+              expand_message.conditions[&lib.0.0].clone(),
             ),
           );
         } else {
