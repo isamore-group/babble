@@ -222,15 +222,15 @@ pub enum ShieldingOp {
 
 impl Default for ShieldingOp {
   fn default() -> Self {
-    ShieldingOp::Const(ShieldingConst::Int(0))
+    ShieldingOp::Const(ShieldingConst::Int(Some(0)))
   }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
 pub enum ShieldingConst {
-  Int(u32),
-  Float(u32),       //后面的参数都是用来表示位宽
-  VecInt(u32, u32), // 前者表示长度，后者表示位宽
+  Int(Option<u32>),
+  Float(Option<u32>), //后面的参数都是用来表示位宽
+  VecInt(u32, u32),   // 前者表示长度，后者表示位宽
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
