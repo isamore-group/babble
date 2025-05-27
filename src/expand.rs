@@ -350,7 +350,7 @@ where
 {
   pub all_au_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   pub conditions: HashMap<usize, TypeMatch<T>>,
-  pub libs: HashMap<usize, Pattern<AstNode<Op>>>,
+  pub libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<AstNode<Op>>)>,
   pub normal_au_count: usize,
   pub meta_au_rewrites:
     HashMap<usize, Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>>,
@@ -503,13 +503,17 @@ where
 
   let mut all_au_rewrites = Vec::new();
   let mut conditions = HashMap::new();
-  let mut libs: HashMap<usize, Pattern<_>> = HashMap::new();
+  let mut libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<_>)> =
+    HashMap::new();
   let mut meta_au_rewrites = HashMap::new();
 
   for msg in learned_messages {
     all_au_rewrites.push(msg.rewrite.clone());
     conditions.insert(msg.lib_id.clone(), msg.condition.clone());
-    libs.insert(msg.lib_id.clone(), msg.applier_pe.clone().into());
+    libs.insert(
+      msg.lib_id.clone(),
+      (msg.searcher_pe.clone(), msg.applier_pe.clone().into()),
+    );
   }
 
   for msg in meta_messages {
@@ -547,7 +551,10 @@ where
       all_au_rewrites.push(rewrite.clone());
     }
     conditions.insert(msg.lib_id.clone(), msg.condition.clone());
-    libs.insert(msg.lib_id.clone(), msg.applier_pe.clone().into());
+    libs.insert(
+      msg.lib_id.clone(),
+      (msg.searcher_pe.clone(), msg.applier_pe.clone().into()),
+    );
     meta_au_rewrites.insert(msg.lib_id.clone(), rewrites);
   }
   ExpandMessage {

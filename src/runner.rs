@@ -20,8 +20,8 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-  Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, Pretty,
-  Printable, Teachable,
+  Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, PartialExpr,
+  Pretty, Printable, Teachable,
   bb_query::{BBInfo, BBQuery},
   expand::{self, ExpandMessage, OpPackConfig, expand},
   extract::{
@@ -34,7 +34,7 @@ use crate::{
 };
 use egg::{
   AstSize, EGraph, Extractor, Id, Language, Pattern, RecExpr, Rewrite,
-  Runner as EggRunner,
+  Runner as EggRunner, Var,
 };
 use log::{debug, info};
 
@@ -144,11 +144,14 @@ where
     + Arity
     + Debug
     + 'static
-    + OperationInfo,
-  T: Debug,
+    + OperationInfo
+    + Send
+    + Sync,
+  T: Debug + Ord + Clone + Default + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
-  /// The final expression after library learning and application
-  pub final_expr: Expr<Op>,
+  /// the egraph (rewites using chosen rewrites) and its root
+  pub egraph_with_root: (EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id),
   /// The number of libraries learned
   pub num_libs: usize,
   /// The rewrites representing the learned libraries
@@ -159,7 +162,8 @@ where
   /// The time taken to run the experiment
   pub run_time: Duration,
   /// the learned lib
-  pub learned_lib: Vec<(usize, egg::Pattern<AstNode<Op>>)>,
+  pub learned_lib:
+    Vec<(usize, (PartialExpr<Op, Var>, egg::Pattern<AstNode<Op>>))>,
   /// message map to record the message
   pub message: HashMap<String, String>,
 }
@@ -174,7 +178,9 @@ where
     + Arity
     + Debug
     + 'static
-    + OperationInfo,
+    + OperationInfo
+    + Send
+    + Sync,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
   AstNode<Op>: TypeInfo<T>,
 {
@@ -509,7 +515,7 @@ where
       root_vec = vec![new_egraph.add_expr(&expr)];
 
       // 使用部分transform_dsr进行重写
-      let mut new_runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
+      let new_runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
         .with_egraph(new_egraph)
         .with_time_limit(timeout)
         .with_iter_limit(3)
@@ -588,7 +594,6 @@ where
       }
     }
     max_lib_id = if max_lib_id == 0 { 0 } else { max_lib_id + 1 };
-
     // 如果启用了expand选项，那么就不走这一条路，
     // 直接使用expand的操作获取到所以用到的rewrites
     let expand_message = if self.config.op_pack_config.pack_expand {
@@ -627,11 +632,18 @@ where
       // learned_lib.deduplicate(&aeg);
       let mut lib_rewrites = Vec::new();
       let mut rewrite_conditions = HashMap::new();
-      let mut libs: HashMap<usize, Pattern<_>> = HashMap::new();
+      let mut libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<_>)> =
+        HashMap::new();
       for msg in learned_lib.messages() {
         lib_rewrites.push(msg.rewrite.clone());
         rewrite_conditions.insert(msg.lib_id, msg.condition.clone());
-        libs.insert(msg.lib_id, msg.applier_pe.clone().into());
+        libs.insert(
+          msg.lib_id,
+          (
+            msg.searcher_pe.clone().into(),
+            msg.applier_pe.clone().into(),
+          ),
+        );
       }
       info!(
         "Reduced to {} patterns in {}ms",
@@ -666,7 +678,6 @@ where
       expand_message.all_au_rewrites.len(),
       expand_message.libs.len()
     );
-    let extract_time = Instant::now();
     let lib_rewrite_time = Instant::now();
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
@@ -698,7 +709,7 @@ where
       .cs
       .set
       .sort_unstable_by_key(|elem| elem.full_cost as usize);
-
+    // println!("cs: {:#?}", isax_cost.cs.set);
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
     info!("Number of nodes: {}", egraph.total_size());
@@ -796,8 +807,6 @@ where
     //   let final_cost = extractor.cost(&best);
     //   println!("final cost: {}", final_cost);
     // }
-
-    let ex_time = Instant::now();
     println!("Rewriting");
     let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
       .with_egraph(aeg)
@@ -809,20 +818,23 @@ where
     println!("Rewriting done");
     let root = egraph.add(AstNode::new(Op::list(), root_vec.iter().copied()));
 
-    let mut extractor =
-      LibExtractor::new(&egraph, self.config.strategy, self.bb_query.clone());
-    println!("Extracting");
-    let best = extractor.best(root);
-    let final_cost = extractor.cost(&best);
-    println!("Extracting done");
+    let final_cost = isax_cost.cs.set[0].full_cost;
+    let egraph_with_root = (egraph, root);
 
-    println!("extracting using {}s", extract_time.elapsed().as_secs());
+    // let mut extractor =
+    //   LibExtractor::new(&egraph, self.config.strategy,
+    // self.bb_query.clone()); println!("Extracting");
+    // let best = extractor.best(root);
+    // let final_cost = extractor.cost(&best);
+    // println!("Extracting done");
+
+    // println!("extracting using {}s", extract_time.elapsed().as_secs());
     // Lifting the lib will result in incorrect cost
     // let lifted = extract::lift_libs(&best);
 
-    info!("Finished in {}ms", ex_time.elapsed().as_millis());
+    // info!("Finished in {}ms", ex_time.elapsed().as_millis());
     debug!("final cost: {}", final_cost);
-    debug!("{}", Pretty::new(Arc::new(Expr::from(best.clone()))));
+    // debug!("{}", Pretty::new(Arc::new(Expr::from(best.clone()))));
     info!("round time: {}ms", start_time.elapsed().as_millis());
 
     message.insert(
@@ -830,13 +842,13 @@ where
       format!("{}", final_cost).to_string(),
     );
 
-    message.insert(
-      "extract_time".to_string(),
-      format!("{}ms", ex_time.elapsed().as_millis()).to_string(),
-    );
+    // message.insert(
+    //   "extract_time".to_string(),
+    //   format!("{}ms", ex_time.elapsed().as_millis()).to_string(),
+    // );
 
     ParetoResult {
-      final_expr: best.into(),
+      egraph_with_root: egraph_with_root,
       num_libs: chosen_rewrites.len(),
       rewrites_with_conditon: rewrites_map,
       final_cost: final_cost,

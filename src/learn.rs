@@ -2016,6 +2016,18 @@ where
             None
           }
         })
+        // 进行fill，如果au中含有超过lib节点，就不加入
+        .filter(|au| {
+          let expr = &au.au.expr;
+          let recexpr: RecExpr<_> =
+            Expr::try_from(expr.clone()).unwrap().into();
+          for node in recexpr.iter() {
+            if node.operation().is_lib() {
+              return false;
+            }
+          }
+          true
+        })
         .filter(|au| match au.au.expr.clone() {
           PartialExpr::Node(ast_node) => !banned_ops
             .iter()
