@@ -192,17 +192,11 @@ impl<LA, LD> Scheduler<LA, LD> {
     for node in expr {
       area += node.op_area(&self.area_estimator, node.get_op_args(expr));
     }
-    // Calculate the execution count
-    let mut execution_count = 0;
-    for node in expr {
-      execution_count =
-        cmp::max(execution_count, node.op_execution_count(&self.bb_query));
-    }
     // println!("Area: {}", area);
     if latency_accelerator > latency_cpu {
       (0, area)
     } else {
-      ((latency_cpu - latency_accelerator) * execution_count, area)
+      (latency_cpu - latency_accelerator, area)
     }
   }
 }
