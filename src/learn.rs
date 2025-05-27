@@ -35,13 +35,14 @@ use crate::{
 use bitvec::prelude::*;
 use egg::{
   Analysis, ConditionalApplier, EGraph, Id, Language, Pattern, RecExpr,
-  Rewrite, Searcher, Var,
+  Rewrite, Runner, Searcher, Var,
 };
 use itertools::Itertools;
 use lexpr::print;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::time::Duration;
 use std::{
   collections::{BTreeMap, BTreeSet, HashMap},
   fmt::{Debug, Display},
@@ -1170,6 +1171,7 @@ where
     + Send
     + Sync
     + Teachable
+    + OperationInfo
     + DiscriminantEq
     + 'static
     + Hash
@@ -1192,6 +1194,87 @@ where
   AstNode<Op>: TypeInfo<Type>,
   T: Clone + Ord,
 {
+  /// Get the maximum bitwidth of the lib in a saturated egraph
+  fn get_max_bitwidth(
+    egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+  ) -> HashMap<LibId, usize> {
+    let mut max_bitwidths = HashMap::new();
+    for eclass in egraph.classes() {
+      for node in eclass.iter() {
+        match node.as_binding_expr() {
+          Some(BindingExpr::Lib(id, _, b, _, _)) => {
+            for app_node in egraph[*b].iter() {
+              for var_cls in app_node.args() {
+                for var_node in egraph[*var_cls].iter() {
+                  for const_cls in var_node.args() {
+                    for const_node in egraph[*const_cls].iter() {
+                      let bitwidth = const_node.operation().get_bitwidth();
+                      if let Some(max_bitwidth) = max_bitwidths.get_mut(&id) {
+                        if *max_bitwidth < bitwidth {
+                          *max_bitwidth = bitwidth;
+                        }
+                      } else {
+                        max_bitwidths.insert(id, bitwidth);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+    max_bitwidths
+  }
+
+  fn make_cost(
+    &self,
+    applier: Pattern<AstNode<Op>>,
+    max_bitwidth: usize,
+  ) -> Pattern<AstNode<Op>>
+  where
+    Op: Teachable + OperationInfo + Default + Arity + Debug + Clone + Eq + Hash,
+    AstNode<Op>: Schedulable<LA, LD>,
+  {
+    let ast = &applier.ast;
+    let new_expr = ast
+      .iter()
+      .map(|node| match node {
+        egg::ENodeOrVar::ENode(ast_node) => {
+          let mut new_node = (*ast_node).clone();
+          new_node.operation_mut().make_bitwidth(max_bitwidth);
+          new_node
+        }
+        egg::ENodeOrVar::Var(_) => Op::var(0),
+      })
+      .collect::<Vec<AstNode<Op>>>();
+    let rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
+    let scheduler = Scheduler::new(
+      self.clock_period,
+      self.area_estimator.clone(),
+      self.delay_estimator.clone(),
+      self.bb_query.clone(),
+    );
+    let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+    let mut new_applier = applier.clone();
+    for node in new_applier.ast.iter_mut() {
+      match node {
+        egg::ENodeOrVar::ENode(ast_node) => {
+          if let Some(BindingExpr::Lib(id, _, _, _, _)) =
+            ast_node.as_binding_expr()
+          {
+            let op = ast_node.operation_mut();
+            *op = Op::make_lib(id.into(), latency_gain, area);
+          }
+        }
+        egg::ENodeOrVar::Var(_) => {}
+      };
+    }
+    new_applier
+  }
+
   /// Returns an iterator over rewrite rules that replace expressions with
   /// equivalent calls to a learned library function.
   ///
@@ -1215,9 +1298,8 @@ where
   /// ```
   pub fn messages(
     &self,
-  ) -> impl Iterator<Item = LiblearnMessage<Op, Type, ISAXAnalysis<Op, Type>>> + '_
-  {
-    self.aus.iter().enumerate().map(|(i, au)| {
+  ) -> Vec<LiblearnMessage<Op, Type, ISAXAnalysis<Op, Type>>> {
+    let msgs = self.aus.iter().enumerate().map(|(i, au)| {
       let new_i = i + self.last_lib_id;
       let searcher: Pattern<_> = au.au.expr.clone().into();
       let applier_pe = reify(
@@ -1250,7 +1332,47 @@ where
         applier_pe: applier_pe.clone(),
         condition,
       }
-    })
+    });
+    let rules = msgs
+      .clone()
+      .map(|msg| msg.rewrite)
+      .collect::<Vec<Rewrite<AstNode<Op>, SimpleAnalysis<Op, Type>>>>();
+    let runner = Runner::<_, _, ()>::new(SimpleAnalysis::default())
+      .with_egraph(self.egraph.clone())
+      .with_time_limit(Duration::from_secs(1000))
+      .with_iter_limit(1)
+      .run(&rules);
+    let max_bitwidths = Self::get_max_bitwidth(runner.egraph);
+    msgs
+      .enumerate()
+      .map(|(i, msg)| {
+        let new_i = i + self.last_lib_id;
+        let max_bitwidth =
+          max_bitwidths.get(&LibId(new_i)).cloned().unwrap_or(32);
+        let applier =
+          self.make_cost(msg.applier_pe.clone().into(), max_bitwidth);
+        let searcher_pe = msg.searcher_pe.clone();
+        let searcher: Pattern<_> = searcher_pe.clone().into();
+        let conditional_applier = ConditionalApplier {
+          condition: msg.condition.clone(),
+          applier: applier.clone(),
+        };
+        let name = if self.op_pack_config.pack_expand {
+          format!("meta_anti-unify {new_i}")
+        } else {
+          format!("anti-unify {new_i}")
+        };
+        let applier_pe = msg.applier_pe.clone();
+        LiblearnMessage {
+          lib_id: new_i,
+          rewrite: Rewrite::new(name, searcher, conditional_applier)
+            .unwrap_or_else(|_| unreachable!()),
+          searcher_pe,
+          applier_pe,
+          condition: msg.condition.clone(),
+        }
+      })
+      .collect::<Vec<LiblearnMessage<Op, Type, ISAXAnalysis<Op, Type>>>>()
   }
 
   /// Right-hand sides of library rewrites.
@@ -2326,14 +2448,6 @@ where
   for index in 0..max_locals {
     body = Op::apply(body, Op::var(index).into()).into();
   }
-  // Calculate the gain and the cost of the au
-  let expr: Expr<Op> = au.clone().try_into().unwrap();
-  let rec_expr: RecExpr<AstNode<Op>> = expr.into();
-  // println!("rec_expr: {:?}", rec_expr);
-  let (gain, cost) =
-    Scheduler::new(clock_period, area_estimator, delay_estimator, bb_query)
-      .asap_schedule(&rec_expr);
-  // println!("gain: {}, cost: {}", gain, cost);
 
-  PartialExpr::Node(BindingExpr::Lib(ix, fun, body, gain, cost).into())
+  PartialExpr::Node(BindingExpr::Lib(ix, fun, body, 0, 0).into())
 }

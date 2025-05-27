@@ -439,7 +439,7 @@ where
   ));
 
   // // 将au生成的Recexpr加入到meta_egraph中
-  let learned_messages: Vec<_> = learned_lib.messages().collect();
+  let learned_messages: Vec<_> = learned_lib.messages();
   for i in (0..learned_aus.len()).rev() {
     // 这里从大到小检查，能将一些meta_egraph中已经存在的AU去掉
     let msg = learned_messages[i].clone();
@@ -494,7 +494,7 @@ where
     .with_bb_query(bb_query.clone())
     .build(&meta_egraph);
 
-  let meta_messages: Vec<_> = learn_meta_lib.messages().collect();
+  let meta_messages: Vec<_> = learn_meta_lib.messages();
 
   println!("expand::learned {} meta libs", learn_meta_lib.size());
   // for lib in learn_meta_lib.libs() {

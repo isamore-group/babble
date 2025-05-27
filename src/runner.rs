@@ -20,8 +20,8 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-  Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, PartialExpr,
-  Pretty, Printable, Teachable,
+  Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, LibId,
+  PartialExpr, Pretty, Printable, Teachable,
   bb_query::{BBInfo, BBQuery},
   expand::{self, ExpandMessage, OpPackConfig, expand},
   extract::{
@@ -44,6 +44,8 @@ pub trait OperationInfo {
   fn is_lib(&self) -> bool;
   /// Get the library ID of the operation
   fn get_libid(&self) -> usize;
+  /// Make a lib node
+  fn make_lib(id: LibId, gain: usize, cost: usize) -> Self;
   /// make a list op
   fn make_vec(result_tys: Vec<String>) -> Self;
   /// make a get op
@@ -99,6 +101,8 @@ pub trait OperationInfo {
   fn is_rule_var(&self) -> bool {
     false
   }
+  fn get_bitwidth(&self) -> usize;
+  fn make_bitwidth(&mut self, width: usize);
 }
 
 /// A trait for running library learning experiments with Pareto optimization

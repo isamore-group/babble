@@ -664,7 +664,8 @@ where
     Pattern<_>,
   )> = learned_lib
     .messages()
-    .map(|m| (m.rewrite, m.searcher_pe.into()))
+    .iter()
+    .map(|m| (m.rewrite.clone(), m.searcher_pe.clone().into()))
     .collect::<Vec<_>>();
   println!("learned {} libs", lib_rewrites.len());
   let mut id_set = HashSet::new();
