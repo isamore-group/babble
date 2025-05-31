@@ -15,10 +15,11 @@ use crate::{
 };
 use bitvec::vec;
 use egg::{
-  CostFunction, EGraph, Id, Language, Pattern, RecExpr, Rewrite, Runner,
-  Searcher, Subst, Var, rewrite,
+  CostFunction, EGraph, Extractor, Id, Language, Pattern, RecExpr, Rewrite,
+  Runner, Searcher, Subst, Var, rewrite,
 };
 use lexpr::print;
+use log::debug;
 use serde::Deserialize;
 use std::{
   collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -557,7 +558,7 @@ pub fn vectorize<Op, T, LA, LD>(
   lift_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   transfrom_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   config: ParetoConfig<LA, LD>,
-) -> EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>
+) -> RecExpr<AstNode<Op>>
 where
   Op: Display
     + Hash
@@ -769,9 +770,9 @@ where
         // 进行替换
         let cani_id = egraph.find(id);
         egraph.union(cani_id, gather_id);
-        egraph.rebuild();
       }
     }
+    egraph.rebuild();
   }
   if config.vectorize_config.enable_shuffle {
     // 除此之外，还需要加入shuffle节点
@@ -801,11 +802,10 @@ where
         // 进行替换
         let cani_id = egraph.find(c_id);
         egraph.union(cani_id, shuffle_id);
-
-        // 重新构建 egraph
-        egraph.rebuild();
       }
     }
+    // 重新构建 egraph
+    egraph.rebuild();
   }
 
   // egraph.dot().to_png("target/foo.png").unwrap();
@@ -816,12 +816,12 @@ where
   );
 
   // 使用transform_dsrs进行重写
-  // let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
-  //   .with_egraph(egraph)
-  //   .with_time_limit(timeout)
-  //   .with_iter_limit(10)
-  //   .run(transfrom_dsrs);
-  // egraph = runner.egraph.clone();
+  let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
+    .with_egraph(egraph)
+    .with_time_limit(timeout)
+    .with_iter_limit(10)
+    .run(transfrom_dsrs);
+  egraph = runner.egraph.clone();
   // 恢复类型信息，将每个eclass的类型信息传给里面的enode
 
   let cloned_egraph = egraph.clone();
@@ -832,5 +832,25 @@ where
     }
   }
 
-  egraph
+  // 进行extract
+  let new_root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+
+  let (cost, expr) = Extractor::new(&egraph, VectorCF).find_best(new_root);
+  debug!("cost: {:?}", cost);
+
+  let mut vecop_cnt = 0;
+  for (id, node) in expr.iter().enumerate() {
+    debug!("{}: {:?}", id, node);
+    if node.operation().is_vector_op() {
+      vecop_cnt += 1;
+    }
+  }
+
+  println!("Vectorized Nodes: {}", vecop_cnt);
+  println!(
+    "Vectorized egraph size: {}, eclasses: {}",
+    egraph.total_size(),
+    egraph.classes().len()
+  );
+  expr
 }

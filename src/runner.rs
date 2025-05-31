@@ -486,26 +486,18 @@ where
       .run(&self.dsrs);
 
     let mut aeg = runner.egraph;
-
     let mut root_vec = roots.to_vec();
 
     // aeg.dot().to_png("target/initial_egraph.png").unwrap();
     if self.config.vectorize_config.vectorize {
       let vectorize_time = Instant::now();
-      let mut vectorized_egraph = vectorize(
+      let vectorized_expr = vectorize(
         aeg.clone(),
         roots,
         &self.lift_dsrs,
         &self.transform_dsrs,
         self.config.clone(),
       );
-
-      let new_root =
-        vectorized_egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
-
-      let (cost, expr) =
-        Extractor::new(&vectorized_egraph, VectorCF).find_best(new_root);
-      debug!("cost: {:?}", cost);
 
       // 新建一个EGraph，将expr加入
       let mut new_egraph = EGraph::new(ISAXAnalysis::new(
@@ -516,45 +508,21 @@ where
         self.bb_query.clone(),
       ));
 
-      root_vec = vec![new_egraph.add_expr(&expr)];
+      root_vec = vec![new_egraph.add_expr(&vectorized_expr)];
+
+      message.insert(
+        "vectorized_time".to_string(),
+        format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
+      );
 
       // 使用部分transform_dsr进行重写
       let new_runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
         .with_egraph(new_egraph)
         .with_time_limit(timeout)
         .with_iter_limit(3)
-        .run(&self.transform_dsrs);
+        .run(&self.dsrs);
 
       aeg = new_runner.egraph;
-      // let pretty_expr = Pretty::new(Arc::new(Expr::from(expr.clone())));
-      // debug!("pretty expr: {}", pretty_expr);
-      // println!("Expression: ");
-      let mut vecop_cnt = 0;
-      for (id, node) in expr.iter().enumerate() {
-        debug!("{}: {:?}", id, node);
-        if node.operation().is_vector_op() {
-          vecop_cnt += 1;
-        }
-      }
-
-      println!("Vectorized Nodes: {}", vecop_cnt);
-      println!(
-        "Vectorized egraph size: {}, eclasses: {}",
-        vectorized_egraph.total_size(),
-        vectorized_egraph.classes().len()
-      );
-      message.insert(
-        "vectorized_eclass_size".to_string(),
-        format!("{}", vectorized_egraph.classes().len()).to_string(),
-      );
-      message.insert(
-        "vectorized_egraph_size".to_string(),
-        format!("{}", vectorized_egraph.total_size()).to_string(),
-      );
-      message.insert(
-        "vectorized_time".to_string(),
-        format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
-      );
     }
 
     println!(
@@ -683,6 +651,39 @@ where
       expand_message.libs.len()
     );
     let lib_rewrite_time = Instant::now();
+
+    // // FIXME: test
+    // let mut eg = aeg.clone();
+    // for rewrite in expand_message.all_au_rewrites.iter().rev() {
+    //   println!("rewrite: {}", rewrite.name);
+    //   println!("rewrite: {:?}", rewrite);
+    //   let matches = rewrite.search(&aeg);
+    //   println!("search done");
+    //   //apply
+    //   rewrite.apply(&mut eg, &matches);
+    //   println!("apply done");
+    //   eg.rebuild();
+    //   println!("rebuild done");
+    //   let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
+    //     self.config.final_beams,
+    //     self.config.inter_beams,
+    //     self.config.lps,
+    //     self.config.strategy,
+    //     self.bb_query.clone(),
+    //   ))
+    //   .with_egraph(aeg.clone())
+    //   .with_iter_limit(self.config.lib_iter_limit)
+    //   .with_time_limit(timeout)
+    //   .with_node_limit(1_000_000)
+    //   .run(&vec![rewrite.clone()]);
+    // }
+    // println!("beginning to run lib rewrites");
+    let new_all_rewrites = expand_message
+      .all_au_rewrites
+      .clone()
+      .into_iter()
+      .rev()
+      .collect::<Vec<_>>();
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
@@ -694,7 +695,7 @@ where
     .with_iter_limit(self.config.lib_iter_limit)
     .with_time_limit(timeout)
     .with_node_limit(1_000_000)
-    .run(&expand_message.all_au_rewrites);
+    .run(&new_all_rewrites);
 
     let mut egraph = runner.egraph;
 

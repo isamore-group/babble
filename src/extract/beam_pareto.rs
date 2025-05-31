@@ -123,7 +123,7 @@ impl CostSet {
         let ls1 = &self.set[i];
         let ls2 = &self.set[j];
 
-        if ls1.is_subset(ls2) {
+        if ls1.is_subset(ls2) && ls1.full_cost < ls2.full_cost {
           self.set.remove(j);
         } else {
           j += 1;
