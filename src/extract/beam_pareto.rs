@@ -23,6 +23,25 @@ use std::{
   hash::{DefaultHasher, Hash, Hasher},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub struct ParetoCost {
+  pub latency_gain: usize,
+  pub area_cost: usize,
+  pub strategy: f32,
+  pub full_cost: f32,
+}
+
+impl Default for ParetoCost {
+  fn default() -> Self {
+    ParetoCost {
+      latency_gain: 0,
+      area_cost: 0,
+      strategy: 1.0,
+      full_cost: f32::MAX,
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeSet<T: Debug + Default + Clone + PartialEq + Ord + Hash> {
   pub set: HashSet<T>,
@@ -1014,11 +1033,17 @@ where
   }
 
   /// Expression gain used by this extractor
-  pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> f32 {
+  pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> ParetoCost {
     let (latency_gain, area) = rec_cost(expr, &self.bb_query);
     // println!("used {}ms to get the cost", start.elapsed().as_millis());
-    (1.0 - self.strategy) * (area as f32)
-      - self.strategy * (latency_gain as f32)
+    let full_cost = (1.0 - self.strategy) * (area as f32)
+      - self.strategy * (latency_gain as f32);
+    ParetoCost {
+      latency_gain,
+      area_cost: area,
+      strategy: self.strategy,
+      full_cost,
+    }
   }
 
   /// Extract the expression with the largest gain from the eclass id and its
@@ -1058,13 +1083,13 @@ where
                 let prev_cost = if let Some(cost) = self.all_costs[*index] {
                   cost
                 } else {
-                  let cost = Self::cost(&self, &prev);
+                  let cost = Self::cost(&self, &prev).full_cost;
                   prev_msg = (index.clone(), Some(cost));
                   renew_flag = true;
                   cost
                 };
                 // 接下来计算cand的cost，并赋给cand_cost
-                let c_cost = Self::cost(&self, &cand);
+                let c_cost = Self::cost(&self, &cand).full_cost;
                 // 如果prev_cost < c_cost，说明cand的cost更大,
                 // 将flag置为false,否则就将c_cost赋给cand_cost
                 if prev_cost < c_cost {
