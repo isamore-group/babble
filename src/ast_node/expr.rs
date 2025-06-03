@@ -1,5 +1,5 @@
 use super::{Arity, AstNode, ParseNodeError};
-use crate::{sexp::Sexp, teachable::Teachable};
+use crate::{runner::OperationInfo, sexp::Sexp, teachable::Teachable};
 use egg::{Id, Language, RecExpr};
 use std::{
   collections::HashMap, convert::TryFrom, hash::Hash, str::FromStr, sync::Arc,
@@ -7,10 +7,10 @@ use std::{
 
 /// An abstract syntax tree with operations `Op`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Expr<Op>(pub AstNode<Op, Arc<Self>>);
+pub struct Expr<Op: OperationInfo + Ord>(pub AstNode<Op, Arc<Self>>);
 
 #[allow(clippy::len_without_is_empty)]
-impl<Op> Expr<Op> {
+impl<Op: OperationInfo + Ord> Expr<Op> {
   /// Converts `self` into its underlying [`AstNode`].
   #[must_use]
   pub fn into_inner(self) -> AstNode<Op, Arc<Self>> {
@@ -26,7 +26,9 @@ impl<Op> Expr<Op> {
   }
 }
 
-impl<'a, Op: FromStr + Arity> TryFrom<Sexp<'a>> for Expr<Op> {
+impl<'a, Op: FromStr + Arity + OperationInfo + Ord> TryFrom<Sexp<'a>>
+  for Expr<Op>
+{
   type Error = ParseNodeError<Op, Arc<Expr<Op>>, <Op as FromStr>::Err>;
 
   fn try_from(sexp: Sexp<'a>) -> Result<Self, Self::Error> {
@@ -48,9 +50,11 @@ impl<'a, Op: FromStr + Arity> TryFrom<Sexp<'a>> for Expr<Op> {
   }
 }
 
-impl<Op: Hash + Eq + Clone> From<Expr<Op>> for RecExpr<AstNode<Op>> {
+impl<Op: Hash + Eq + Clone + OperationInfo + Ord> From<Expr<Op>>
+  for RecExpr<AstNode<Op>>
+{
   fn from(expr: Expr<Op>) -> Self {
-    fn build<Op: Hash + Eq + Clone>(
+    fn build<Op: Hash + Eq + Clone + OperationInfo + Ord>(
       table: &mut HashMap<*const Expr<Op>, Id>,
       rec_expr: &mut Vec<AstNode<Op>>,
       rc_expr: Arc<Expr<Op>>,
@@ -81,9 +85,11 @@ impl<Op: Hash + Eq + Clone> From<Expr<Op>> for RecExpr<AstNode<Op>> {
   }
 }
 
-impl<Op: Clone> From<RecExpr<AstNode<Op>>> for Expr<Op> {
+impl<Op: Clone + std::fmt::Debug + OperationInfo + Ord>
+  From<RecExpr<AstNode<Op>>> for Expr<Op>
+{
   fn from(rec_expr: RecExpr<AstNode<Op>>) -> Self {
-    fn build<Op: Clone>(
+    fn build<Op: Clone + std::fmt::Debug + OperationInfo + Ord>(
       table: &mut HashMap<usize, Arc<Expr<Op>>>,
       rec_expr_slice: &[AstNode<Op>],
       id: usize,
@@ -100,7 +106,6 @@ impl<Op: Clone> From<RecExpr<AstNode<Op>>> for Expr<Op> {
       table.insert(id, rc_expr.clone());
       rc_expr
     }
-
     let mut table = HashMap::new();
     let rc_expr = build(&mut table, rec_expr.as_ref(), rec_expr.len() - 1);
     rc_expr.as_ref().clone()
@@ -112,7 +117,13 @@ impl<Op: Clone> From<RecExpr<AstNode<Op>>> for Expr<Op> {
 #[must_use]
 pub fn combine_exprs<Op>(exprs: Vec<Expr<Op>>) -> RecExpr<AstNode<Op>>
 where
-  Op: Teachable + std::fmt::Debug + Clone + Arity + std::hash::Hash + Ord,
+  Op: Teachable
+    + std::fmt::Debug
+    + Clone
+    + Arity
+    + std::hash::Hash
+    + Ord
+    + OperationInfo,
 {
   let mut res: Vec<AstNode<Op>> = Vec::new();
   let mut roots: Vec<egg::Id> = Vec::new();
@@ -142,19 +153,19 @@ where
   res.into()
 }
 
-impl<Op> From<AstNode<Op, Arc<Self>>> for Expr<Op> {
+impl<Op: OperationInfo + Ord> From<AstNode<Op, Arc<Self>>> for Expr<Op> {
   fn from(node: AstNode<Op, Arc<Self>>) -> Self {
     Self(node)
   }
 }
 
-impl<Op> From<Expr<Op>> for AstNode<Op, Arc<Expr<Op>>> {
+impl<Op: OperationInfo + Ord> From<Expr<Op>> for AstNode<Op, Arc<Expr<Op>>> {
   fn from(expr: Expr<Op>) -> Self {
     expr.0
   }
 }
 
-impl<Op> AsRef<AstNode<Op, Arc<Self>>> for Expr<Op> {
+impl<Op: OperationInfo + Ord> AsRef<AstNode<Op, Arc<Self>>> for Expr<Op> {
   fn as_ref(&self) -> &AstNode<Op, Arc<Self>> {
     &self.0
   }

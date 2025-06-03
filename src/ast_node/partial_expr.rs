@@ -1,7 +1,14 @@
+use crate::analysis::SimpleAnalysis;
+use crate::extract::beam_pareto::TypeInfo;
+use crate::runner::OperationInfo;
 use crate::teachable::BindingExpr;
 
 use super::{super::teachable::Teachable, AstNode, Expr};
-use egg::{ENodeOrVar, Id, Language, Pattern, RecExpr, Var};
+use crate::ast_node::Arity;
+use crate::learn::Match;
+use crate::learn::normalize;
+use crate::schedule::Schedulable;
+use egg::{EGraph, ENodeOrVar, Id, Language, Pattern, RecExpr, Searcher, Var};
 use std::{
   collections::HashSet,
   convert::{TryFrom, TryInto},
@@ -14,8 +21,8 @@ use std::{
 /// A partial expression. This is a generalization of an abstract syntax tree
 /// where subexpressions can be replaced by "holes", i.e., values of type `T`.
 /// The type [`Expr<Op>`] is isomorphic to `PartialExpr<Op, !>`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PartialExpr<Op, T> {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash, Ord)]
+pub enum PartialExpr<Op: OperationInfo + Clone + Ord, T: Clone + Ord> {
   /// A node in the abstract syntax tree.
   Node(AstNode<Op, Self>),
   /// A hole containing a value of type `T`.
@@ -24,13 +31,81 @@ pub enum PartialExpr<Op, T> {
 
 impl<Op, T> PartialExpr<Op, T>
 where
-  Op: Teachable,
+  Op: Clone
+    + Default
+    + Arity
+    + Debug
+    + Display
+    + Ord
+    + Send
+    + Sync
+    + Teachable
+    + 'static
+    + Hash
+    + OperationInfo,
+  AstNode<Op>: Language,
+  T: Eq + Clone + Hash + Debug + Default + Ord,
+{
+  pub fn get_match<Type>(
+    self,
+    egraph: &EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+  ) -> Vec<Match>
+  where
+    Type: Debug + Default + Clone + Ord + Hash,
+    AstNode<Op>: TypeInfo<Type>,
+  {
+    let pattern: Pattern<_> = normalize(self.clone()).0.into();
+    // A key in `cache` is a set of matches
+    // represented as a sorted vector.
+    let mut key = vec![];
+
+    for m in pattern.search(egraph) {
+      for sub in m.substs {
+        let actuals: Vec<_> = pattern.vars().iter().map(|v| sub[*v]).collect();
+        let match_signature = Match::new(m.eclass, actuals);
+        key.push(match_signature);
+      }
+    }
+
+    key.sort();
+    key
+  }
+  // 定义get_delay函数，输入是一个PartialExpr<Op, T>，输出是一个u32
+  // Critical path delay (maybe use hls in the future)
+  pub fn get_delay(&self) -> usize {
+    // 首先将PE转化为Expr
+    let expr: Expr<Op> = self.clone().try_into().unwrap();
+    // 将Expr转化成RecExpr
+    let rec_expr: RecExpr<AstNode<Op>> = expr.into();
+    // 计算delay
+    let mut node_delay: Vec<usize> = Vec::new();
+    for node in &rec_expr {
+      let op_delay = 1;
+      let args_sum_delay = node
+        .args()
+        .iter()
+        .map(|id| {
+          let idx: usize = (*id).into();
+          node_delay[idx]
+        })
+        .sum::<usize>();
+      node_delay.push(op_delay + args_sum_delay);
+    }
+    *node_delay.last().unwrap_or(&0)
+  }
+}
+
+impl<Op, T> PartialExpr<Op, T>
+where
+  Op: Teachable + OperationInfo + Clone + Ord,
+  T: Clone + Ord,
 {
   /// Same as [`Self::fill`], but also provides the number of outer binders
   /// to the function.
   pub fn fill_with_binders<U, F>(self, mut f: F) -> PartialExpr<Op, U>
   where
     F: FnMut(T, usize) -> PartialExpr<Op, U>,
+    U: Clone + Ord,
   {
     self.fill_with_binders_helper(&mut f, 0)
   }
@@ -42,6 +117,7 @@ where
   ) -> PartialExpr<Op, U>
   where
     F: FnMut(T, usize) -> PartialExpr<Op, U>,
+    U: Clone + Ord,
   {
     match self {
       PartialExpr::Node(node) => {
@@ -89,7 +165,9 @@ where
   }
 }
 
-impl<Op, T: Eq + Hash> PartialExpr<Op, T> {
+impl<Op: OperationInfo + Clone + Ord, T: Eq + Hash + Clone + Ord>
+  PartialExpr<Op, T>
+{
   /// Returns the set of unique holes in the partial expression.
   #[must_use]
   pub fn unique_holes(&self) -> HashSet<&T> {
@@ -108,7 +186,7 @@ impl<Op, T: Eq + Hash> PartialExpr<Op, T> {
   }
 }
 
-impl<Op, T> PartialExpr<Op, T> {
+impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord> PartialExpr<Op, T> {
   /// Returns `true` if the partial expression is a node.
   #[must_use]
   pub fn is_node(&self) -> bool {
@@ -190,6 +268,7 @@ impl<Op, T> PartialExpr<Op, T> {
   pub fn fill<U, F>(self, mut f: F) -> PartialExpr<Op, U>
   where
     F: FnMut(T) -> PartialExpr<Op, U>,
+    U: Clone + Ord,
   {
     self.fill_mut(&mut f)
   }
@@ -199,6 +278,7 @@ impl<Op, T> PartialExpr<Op, T> {
   fn fill_mut<U, F>(self, f: &mut F) -> PartialExpr<Op, U>
   where
     F: FnMut(T) -> PartialExpr<Op, U>,
+    U: Clone + Ord,
   {
     match self {
       PartialExpr::Node(node) => {
@@ -210,12 +290,13 @@ impl<Op, T> PartialExpr<Op, T> {
   }
 }
 
-impl<Op> From<PartialExpr<Op, Var>> for Pattern<AstNode<Op>>
+impl<Op: OperationInfo + Clone + Ord> From<PartialExpr<Op, Var>>
+  for Pattern<AstNode<Op>>
 where
   AstNode<Op>: Language,
 {
   fn from(partial_expr: PartialExpr<Op, Var>) -> Self {
-    fn build<Op>(
+    fn build<Op: OperationInfo + Clone + Ord>(
       pattern: &mut Vec<ENodeOrVar<AstNode<Op>>>,
       partial_expr: PartialExpr<Op, Var>,
     ) {
@@ -242,9 +323,11 @@ where
   }
 }
 
-impl<Op: Clone> From<Pattern<AstNode<Op>>> for PartialExpr<Op, Var> {
+impl<Op: Clone + OperationInfo + Clone + Ord> From<Pattern<AstNode<Op>>>
+  for PartialExpr<Op, Var>
+{
   fn from(pattern: Pattern<AstNode<Op>>) -> Self {
-    fn build<Op: Clone>(
+    fn build<Op: Clone + OperationInfo + Ord>(
       pattern: &[ENodeOrVar<AstNode<Op>>],
     ) -> PartialExpr<Op, Var> {
       match &pattern[pattern.len() - 1] {
@@ -277,7 +360,12 @@ impl<T: Debug> Display for IncompleteExprError<T> {
   }
 }
 
-impl<Op, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
+// 修改从PE转化到Expr的函数，当PE是Hole的时候，不再返回错误，
+// 而是返回一个叶子节点表示的表达式
+
+impl<Op: Default + Arity + Debug + OperationInfo + Clone + Ord, T: Clone + Ord>
+  TryFrom<PartialExpr<Op, T>> for Expr<Op>
+{
   type Error = IncompleteExprError<T>;
 
   fn try_from(partial_expr: PartialExpr<Op, T>) -> Result<Self, Self::Error> {
@@ -294,12 +382,20 @@ impl<Op, T> TryFrom<PartialExpr<Op, T>> for Expr<Op> {
         };
         Ok(node.into())
       }
-      PartialExpr::Hole(hole) => Err(IncompleteExprError { hole }),
+      PartialExpr::Hole(_) => {
+        // 首先，我们将PE转化为Expr只是为了转化成Recexpr进行delay计算，
+        // 所以Hole可以不需要在意，将其作为一个叶节点处理就好，
+        // 目前直接使用rulevar表示
+        let node = AstNode::leaf(Op::default());
+        Ok(node.into())
+      }
     }
   }
 }
 
-impl<Op, T> TryFrom<PartialExpr<Op, T>> for AstNode<Op, PartialExpr<Op, T>> {
+impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord>
+  TryFrom<PartialExpr<Op, T>> for AstNode<Op, PartialExpr<Op, T>>
+{
   type Error = IncompleteExprError<T>;
 
   fn try_from(partial_expr: PartialExpr<Op, T>) -> Result<Self, Self::Error> {
@@ -310,13 +406,17 @@ impl<Op, T> TryFrom<PartialExpr<Op, T>> for AstNode<Op, PartialExpr<Op, T>> {
   }
 }
 
-impl<Op, T> From<AstNode<Op, Self>> for PartialExpr<Op, T> {
+impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord> From<AstNode<Op, Self>>
+  for PartialExpr<Op, T>
+{
   fn from(node: AstNode<Op, Self>) -> Self {
     Self::Node(node)
   }
 }
 
-impl<Op: Clone, T> From<Expr<Op>> for PartialExpr<Op, T> {
+impl<Op: Clone + OperationInfo + Ord, T: Clone + Ord> From<Expr<Op>>
+  for PartialExpr<Op, T>
+{
   fn from(expr: Expr<Op>) -> Self {
     Self::Node(AstNode::from(expr).map(|x| x.as_ref().clone().into()))
   }
