@@ -13,14 +13,14 @@ use std::{
 /// 用于扩展生成的库，如(x * y) + 1 和 (m / n) + 1, 会生成(?a f ?b) + 1 f =
 /// select(idx, (+, *))
 use crate::{
-  Arity, AstNode, DiscriminantEq, Expr, ParetoConfig, PartialExpr, Printable,
-  Teachable,
+  Arity, AstNode, BindingExpr, DiscriminantEq, Expr, ParetoConfig, PartialExpr,
+  Printable, Teachable,
   bb_query::{self, BBQuery},
   extract::beam_pareto::{ISAXAnalysis, TypeInfo},
   learn::{self, LearnedLibraryBuilder},
   rewrites::TypeMatch,
   runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo},
-  schedule::Schedulable,
+  schedule::{Schedulable, Scheduler},
 };
 use egg::{
   EGraph, ENodeOrVar, Id, Pattern, RecExpr, Rewrite, Runner, Searcher, Symbol,
@@ -489,8 +489,8 @@ where
     .with_clock_period(config.clock_period)
     .with_op_pack_config(config.op_pack_config)
     .with_last_lib_id(max_lib_id)
-    .with_area_estimator(config.area_estimator)
-    .with_delay_estimator(config.delay_estimator)
+    .with_area_estimator(config.area_estimator.clone())
+    .with_delay_estimator(config.delay_estimator.clone())
     .with_bb_query(bb_query.clone())
     .build(&meta_egraph);
 
@@ -536,8 +536,38 @@ where
     let op_pack =
       Op::make_op_pack(mask_results.iter().map(|x| x.to_string()).collect());
     // 将新的partial_expr转化成applier
-    let new_applier: Pattern<_> =
+    let mut new_applier: Pattern<_> =
       add_op_pack(msg.applier_pe.clone(), op_pack.clone()).into();
+    // Calculate the gain and cost of the new applier
+    let ast = &new_applier.ast;
+    let new_expr = ast
+      .iter()
+      .map(|node| match node {
+        egg::ENodeOrVar::ENode(ast_node) => ast_node.clone(),
+        egg::ENodeOrVar::Var(_) => Op::var(0),
+      })
+      .collect::<Vec<AstNode<Op>>>();
+    let rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
+    let scheduler = Scheduler::new(
+      config.clock_period,
+      config.area_estimator.clone(),
+      config.delay_estimator.clone(),
+      bb_query.clone(),
+    );
+    let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+    for node in new_applier.ast.iter_mut() {
+      match node {
+        egg::ENodeOrVar::ENode(ast_node) => {
+          if let Some(BindingExpr::Lib(id, _, _, _, _)) =
+            ast_node.as_binding_expr()
+          {
+            let op = ast_node.operation_mut();
+            *op = Op::make_lib(id.into(), latency_gain, area);
+          }
+        }
+        egg::ENodeOrVar::Var(_) => {}
+      };
+    }
     for (id, op) in mask_results.iter().enumerate() {
       let searcher: Pattern<_> =
         fill_specific_op(msg.searcher_pe.clone(), op.clone()).into();
