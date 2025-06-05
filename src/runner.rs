@@ -28,6 +28,7 @@ use crate::{
     self,
     beam_pareto::{ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet},
   },
+  perf_infer,
   rewrites::TypeMatch,
   schedule::Schedulable,
   vectorize::{VectorCF, VectorConfig, vectorize},
@@ -546,6 +547,8 @@ where
       start_time.elapsed().as_millis(),
       aeg.total_size()
     );
+
+    perf_infer::perf_infer(&mut aeg, &root_vec, vec![]);
 
     // println!("Running co-occurrence analysis... ");
     // let co_time = Instant::now();
