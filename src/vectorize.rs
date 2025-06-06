@@ -1,34 +1,36 @@
 use crate::{
-  DiscriminantEq, PartialExpr, Printable,
+  BindingExpr, DeBruijnIndex, DiscriminantEq, Expr, LibId, PartialExpr,
+  Printable,
   analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode},
-  bb_query::BBInfo,
+  bb_query::{self, BBInfo, BBQuery},
   extract::beam_pareto::{ClassMatch, ISAXAnalysis, TypeInfo},
-  learn::LearnedLibraryBuilder,
+  learn::{LearnedLibraryBuilder, LiblearnMessage, reify},
+  perf_infer,
   rewrites::TypeMatch,
   runner::{
     AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
     ParetoConfig,
   },
-  schedule::Schedulable,
+  schedule::{Schedulable, Scheduler},
   teachable::{ShieldingOp, Teachable},
 };
-use bitvec::vec;
+
 use egg::{
-  CostFunction, EGraph, Extractor, Id, Language, Pattern, RecExpr, Rewrite,
-  Runner, Searcher, Subst, Var, rewrite,
+  ConditionalApplier, CostFunction, EGraph, Extractor, Id, Language, Pattern,
+  RecExpr, Rewrite, Runner, Searcher, Subst, Var, rewrite,
 };
+
 use lexpr::print;
 use log::debug;
+
 use serde::Deserialize;
 use std::{
-  collections::{BTreeMap, HashMap, HashSet, VecDeque},
+  collections::{BTreeMap, HashMap, HashSet},
   fmt::{Debug, Display},
   hash::{Hash, Hasher},
-  ops::Deref,
-  path::PathBuf,
   str::FromStr,
-  sync::{Arc, mpsc},
+  sync::mpsc,
   time::Duration,
 };
 
@@ -558,7 +560,11 @@ pub fn vectorize<Op, T, LA, LD>(
   lift_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   transfrom_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   config: ParetoConfig<LA, LD>,
-) -> RecExpr<AstNode<Op>>
+  bb_query: BBQuery,
+) -> (
+  RecExpr<AstNode<Op>>,
+  Vec<LiblearnMessage<Op, T, ISAXAnalysis<Op, T>>>,
+)
 where
   Op: Display
     + Hash
@@ -648,6 +654,16 @@ where
   //   egraph.rebuild();
   // }
 
+  // 推导bbs信息
+  perf_infer::perf_infer(&mut egraph, roots);
+  for ecls in egraph.classes() {
+    for node in ecls.nodes.clone() {
+      if node.operation().get_bbs_info().is_empty() {
+        println!("eclass {} has no bbs info, node: {:?}", ecls.id, node);
+      }
+    }
+  }
+
   // // 进行向量化组发现
 
   // 进行库学习
@@ -659,6 +675,8 @@ where
     .with_last_lib_id(0)
     .with_liblearn_config(vetorize_lib_config)
     .with_clock_period(config.clock_period)
+    .vectorize()
+    .with_bb_query(bb_query.clone())
     .build(&egraph);
   let lib_rewrites: Vec<(
     Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>,
@@ -685,47 +703,61 @@ where
 
     match rx.recv_timeout(Duration::from_secs(5)) {
       Ok(results) => {
-        // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
-        if results.len() > config.vectorize_config.max_vec_len
-          || results.len() < 2
-        {
+        if results.len() < 2 {
+          // 如果结果小于2，直接跳过
           continue;
         }
-        // println!("results.len(): {}", results.len());
-        // 检查当前的包是不是已经存在
-        let mut id_pack = results.clone().into_iter().collect::<Vec<_>>();
-        id_pack.sort();
-        id_pack.dedup();
-        if id_set.contains(&id_pack) {
-          continue;
-        }
-        id_set.insert(id_pack);
-        pack_cnt += 1;
-        // println!("found {} matches for {:?}", results.len(), rewrite);
-        let mut tys = Vec::new();
-        let matched_eclass_id = results
-          .iter()
-          .map(|x| {
-            let eclass = x.clone();
-            let ty = egraph[eclass].data.get_type()[0].clone();
-            tys.push(ty.clone());
-            eclass
-          })
-          .collect::<Vec<_>>();
-        // 首先加入Vec节点
-        let vec_node =
-          AstNode::new(Op::make_vec(tys.clone()), matched_eclass_id.clone());
-        let list_id = egraph.add(vec_node);
-        // 针对每个id，构造一个get节点
-        for i in 0..matched_eclass_id.len() {
-          let get_node =
-            AstNode::new(Op::make_get(i, vec![tys[i].clone()]), vec![list_id]);
-          // println!("tys[i]: {:?}", tys[i]);
-          let get_id = egraph.add(get_node);
-          // println!("get_eclass: {:?}", egraph[get_id]);
-          // 进行替换
-          egraph.union(matched_eclass_id[i], get_id);
-          // println!("success union");
+        // 需要根据每个eclass的bbs信息进行分类
+        let bbs_packs: HashMap<Vec<String>, Vec<Id>> =
+          results.iter().fold(HashMap::new(), |mut acc, eclass| {
+            let bbs = egraph[*eclass].data.bb.clone();
+            acc.entry(bbs.clone()).or_default().push(*eclass);
+            acc
+          });
+        for bbs_pack in bbs_packs {
+          let bbs = bbs_pack.0.clone();
+          // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
+          // println!("results.len(): {}", results.len());
+          // 检查当前的包是不是已经存在
+          let mut id_pack = bbs_pack.1.clone();
+          id_pack.sort();
+          id_pack.dedup();
+          if id_set.contains(&id_pack) {
+            continue;
+          }
+          id_set.insert(id_pack);
+          pack_cnt += 1;
+          // println!("found {} matches for {:?}", results.len(), rewrite);
+          let mut tys = Vec::new();
+          let matched_eclass_id = results
+            .iter()
+            .map(|x| {
+              let eclass = x.clone();
+              let ty = egraph[eclass].data.get_type()[0].clone();
+              tys.push(ty.clone());
+              eclass
+            })
+            .collect::<Vec<_>>();
+          // 首先加入Vec节点
+          let vec_node = AstNode::new(
+            Op::make_vec(tys.clone(), bbs.clone()),
+            matched_eclass_id.clone(),
+          );
+
+          let list_id = egraph.add(vec_node);
+          // 针对每个id，构造一个get节点
+          for i in 0..matched_eclass_id.len() {
+            let get_node = AstNode::new(
+              Op::make_get(i, vec![tys[i].clone()], bbs.clone()),
+              vec![list_id],
+            );
+            // println!("tys[i]: {:?}", tys[i]);
+            let get_id = egraph.add(get_node);
+            // println!("get_eclass: {:?}", egraph[get_id]);
+            // 进行替换
+            egraph.union(matched_eclass_id[i], get_id);
+            // println!("success union");
+          }
         }
         // 重建egraph
         egraph.rebuild();
@@ -749,7 +781,7 @@ where
   let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
     .with_egraph(egraph)
     .with_time_limit(timeout)
-    .with_iter_limit(10)
+    .with_iter_limit(1)
     .run(lift_dsrs);
 
   // 目前已经实现了各类vec的构建，现在需要去寻找egraph中含有的vec
@@ -763,7 +795,12 @@ where
     for (i, (id, fathers)) in vec_containments.into_iter().enumerate() {
       // println!("i:{}, id: {}, fathers: {}", i, id, fathers.len());
       for father in fathers {
-        let gather_op = Op::make_gather(&vec_gathers[&(id, father)]);
+        if egraph[id].data.bb != egraph[father].data.bb {
+          // 如果id和father的bbs不一致，直接跳过
+          continue;
+        }
+        let bbs = egraph[id].data.bb.clone();
+        let gather_op = Op::make_gather(&vec_gathers[&(id, father)], bbs);
         let cani_father = egraph.find(father);
         let gather_node = AstNode::new(gather_op.clone(), vec![cani_father]);
         let gather_id = egraph.add(gather_node);
@@ -783,6 +820,17 @@ where
     for (c_id, pairs) in shuffle_pairs.into_iter() {
       // println!("c_id: {}, pairs: {}", c_id, pairs.len());
       for (a_id, b_id) in pairs {
+        // 检查 A 和 B 的 bbs 是否一致
+        if egraph[a_id].data.bb != egraph[b_id].data.bb {
+          // 如果 A 和 B 的 bbs 不一致，直接跳过
+          continue;
+        }
+        // 检查 C 的 bbs 是否一致
+        if egraph[c_id].data.bb != egraph[a_id].data.bb {
+          // 如果 C 的 bbs 不一致，直接跳过
+          continue;
+        }
+        let bbs = egraph[c_id].data.bb.clone();
         // 从 shuffle_map 中获取 (C, A, B) 对应的 gather 索引
         let indices = &shuffle_map[&(c_id, a_id, b_id)];
 
@@ -791,7 +839,7 @@ where
         let b_parent = egraph.find(b_id);
 
         // 创建 shuffle 操作节点
-        let shuffle_op = Op::make_shuffle(indices); // 这里假设 `make_shuffle`
+        let shuffle_op = Op::make_shuffle(indices, bbs); // 这里假设 `make_shuffle`
         // 是定义的函数
         let shuffle_node =
           AstNode::new(shuffle_op.clone(), vec![a_parent, b_parent]);
@@ -819,7 +867,7 @@ where
   let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
     .with_egraph(egraph)
     .with_time_limit(timeout)
-    .with_iter_limit(10)
+    .with_iter_limit(1)
     .run(transfrom_dsrs);
   egraph = runner.egraph.clone();
   // 恢复类型信息，将每个eclass的类型信息传给里面的enode
@@ -833,7 +881,16 @@ where
   }
 
   // 进行extract
-  let new_root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
+  let new_root = if roots.len() == 1 {
+    roots[0]
+  } else {
+    let bbs = egraph[roots[0]].data.bb.clone();
+    let mut list_op = AstNode::new(Op::list(), roots.iter().copied());
+    list_op.operation_mut().set_bbs_info(bbs);
+    egraph.add(list_op)
+  };
+  // 推导bbs信息
+  perf_infer::perf_infer(&mut egraph, roots);
 
   let (cost, expr) = Extractor::new(&egraph, VectorCF).find_best(new_root);
   debug!("cost: {:?}", cost);
@@ -852,5 +909,168 @@ where
     egraph.total_size(),
     egraph.classes().len()
   );
-  expr
+
+  for node in expr.clone() {
+    if node.operation().get_bbs_info().len() == 0 {
+      println!(
+        "Warning: node {:?} has no bbs info, this may cause issues",
+        node
+      );
+    }
+  }
+
+  let aus = expr_vec2lib(&(expr.clone().into()));
+  let mut lib_messages = Vec::new();
+  for (i, au) in aus.iter().enumerate() {
+    let searcher: Pattern<_> = au.0.clone().into();
+    let applier_pe = reify(
+      LibId(i),
+      au.0.clone(),
+      config.clock_period,
+      config.area_estimator.clone(),
+      config.delay_estimator.clone(),
+      BBQuery::default(),
+    );
+    let mut applier: Pattern<_> = applier_pe.clone().into();
+    // 计算cost
+    let ast = &searcher.ast;
+    let mut new_expr = ast
+      .iter()
+      .map(|node| match node {
+        egg::ENodeOrVar::ENode(ast_node) => {
+          let new_node = (*ast_node).clone();
+          new_node
+        }
+        egg::ENodeOrVar::Var(_) => Op::var(0),
+      })
+      .collect::<Vec<AstNode<Op>>>();
+    // 重新遍历，为var添加bbs信息，方式为遍历每个节点，如果子节点是Var，
+    // 则为其添加父节点的bbs信息
+    for node in new_expr.clone().iter() {
+      for arg in node.args() {
+        let op = new_expr[usize::from(*arg)].operation().clone();
+        if op.is_var() {
+          new_expr[usize::from(*arg)]
+            .operation_mut()
+            .set_bbs_info(node.operation().get_bbs_info().clone());
+        }
+      }
+    }
+    let rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
+    let scheduler = Scheduler::new(
+      config.clock_period,
+      config.area_estimator.clone(),
+      config.delay_estimator.clone(),
+      bb_query.clone(),
+    );
+    let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+    println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
+    println!("lib: {}", searcher);
+    for node in applier.ast.iter_mut() {
+      match node {
+        egg::ENodeOrVar::ENode(ast_node) => {
+          if let Some(BindingExpr::Lib(id, _, _, _, _)) =
+            ast_node.as_binding_expr()
+          {
+            let op = ast_node.operation_mut();
+            *op = Op::make_lib(id.into(), latency_gain, area);
+          }
+        }
+        egg::ENodeOrVar::Var(_) => {}
+      };
+    }
+    let mut condition: HashMap<Var, Vec<T>> = HashMap::new();
+    for (var, tys) in au.1.iter() {
+      let tys_parse = tys
+        .iter()
+        .map(|ty| ty.parse::<T>().unwrap_or_else(|_| unreachable!()))
+        .collect::<Vec<_>>();
+      condition.insert(var.clone(), tys_parse);
+    }
+    let condition = TypeMatch::new(condition);
+    let conditional_applier = ConditionalApplier {
+      condition: condition.clone(),
+      applier: applier.clone(),
+    };
+    lib_messages.push(LiblearnMessage {
+      lib_id: i,
+      rewrite: Rewrite::new(
+        format!("vec_lib_{}", i),
+        searcher.clone(),
+        conditional_applier,
+      )
+      .unwrap_or_else(|_| unreachable!()),
+      searcher_pe: au.0.clone(),
+      applier_pe: applier_pe,
+      condition: condition,
+    });
+  }
+  println!("Vectorize:: There are {} vec_libs", lib_messages.len());
+
+  (expr.into(), lib_messages)
+}
+
+// 本函数输入一个Expr，返回一个Expr(为转换后的Expr)，
+fn lib_body_get<Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable>(
+  expr: &Expr<Op>,
+  var_index: &mut usize,
+  type_map: &mut HashMap<Var, Vec<String>>,
+) -> PartialExpr<Op, Var> {
+  let op = expr.0.operation();
+  // println!("Processing op: {:?}", op);
+  if !op.is_vector_op() {
+    *var_index += 1;
+    type_map.insert(
+      format!("?x{}", *var_index - 1)
+        .parse()
+        .unwrap_or_else(|_| unreachable!()),
+      op.get_result_type(),
+    );
+    PartialExpr::Hole(
+      format!("?x{}", *var_index - 1)
+        .parse()
+        .unwrap_or_else(|_| unreachable!()),
+    )
+  } else {
+    // 对每个arg进行expr转化
+    let mut new_args = Vec::new();
+    for arg in expr.0.args() {
+      let new_arg = lib_body_get(arg.as_ref(), var_index, type_map);
+      new_args.push(new_arg);
+    }
+    // 创建一个新的Expr
+    let new_expr = PartialExpr::Node(AstNode::new(op.clone(), new_args));
+    return new_expr;
+  }
+}
+
+fn expr_vec2lib<
+  Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable + Hash,
+>(
+  expr: &Expr<Op>,
+) -> Vec<(PartialExpr<Op, Var>, HashMap<Var, Vec<String>>)> {
+  let op = expr.0.operation();
+  // println!("Processing op: {:?}", op);
+  if !op.is_vector_op() {
+    let mut pes = HashSet::new();
+    let mut pes_with_condition = Vec::new();
+    expr.0.args().iter().for_each(|arg| {
+      let sub_pes = expr_vec2lib(arg.as_ref());
+      for sub_pe in sub_pes {
+        // 对每个子表达式进行处理
+        let (pe, type_map) = sub_pe;
+        // 检查是否已经存在相同的表达式
+        if !pes.contains(&pe) {
+          pes.insert(pe.clone());
+          pes_with_condition.push((pe, type_map));
+        }
+      }
+    });
+    pes_with_condition
+  } else {
+    let mut var_index = 0;
+    let mut type_map: HashMap<Var, Vec<String>> = HashMap::new();
+    let body = lib_body_get(expr, &mut var_index, &mut type_map);
+    vec![(body, type_map)]
+  }
 }

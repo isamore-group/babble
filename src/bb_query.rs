@@ -35,7 +35,7 @@ impl BBEntry {
 
 #[derive(Debug, Clone)]
 pub struct BBQuery {
-  map: HashMap<String, BBEntry>,
+  pub map: HashMap<String, BBEntry>,
 }
 
 impl BBQuery {

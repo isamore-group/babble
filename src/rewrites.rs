@@ -91,7 +91,6 @@ where
     })
     .map(|line| {
       let (name, (lhs, rhs, ac_flag)) = parse_rewrite_line::<T>(line)?;
-
       let (lhs_pat, rhs_pat) = (lhs.parse()?, rhs.parse()?);
       let condition = if let Some(cond_str) =
         line.split_once("where").map(|(_, c)| c.trim())

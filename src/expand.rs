@@ -539,7 +539,7 @@ where
     let mut new_applier: Pattern<_> =
       add_op_pack(msg.applier_pe.clone(), op_pack.clone()).into();
     // Calculate the gain and cost of the new applier
-    let ast = &new_applier.ast;
+    let ast = &searcher.searcher.ast;
     let new_expr = ast
       .iter()
       .map(|node| match node {

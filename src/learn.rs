@@ -21,7 +21,6 @@ use crate::rewrites::TypeMatch;
 use crate::runner::{
   AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
 };
-use crate::vectorize;
 use crate::{
   COBuilder,
   analysis::SimpleAnalysis,
@@ -32,6 +31,7 @@ use crate::{
   schedule::{Schedulable, Scheduler},
   teachable::{BindingExpr, Teachable},
 };
+use crate::{ast_node, vectorize};
 use bitvec::prelude::*;
 use egg::{
   Analysis, ConditionalApplier, EGraph, Id, Language, Pattern, RecExpr,
@@ -319,6 +319,8 @@ where
   bb_query: BBQuery,
   liblearn_config: LiblearnConfig,
   op_pack_config: OpPackConfig,
+  /// 是否启用向量化
+  enable_vectorize: bool,
 }
 
 impl<Op, Type, LA, LD> Default for LearnedLibraryBuilder<Op, Type, LA, LD>
@@ -365,6 +367,7 @@ where
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
       op_pack_config: OpPackConfig::default(),
+      enable_vectorize: false,
     }
   }
 }
@@ -419,6 +422,7 @@ where
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
       op_pack_config: OpPackConfig::default(),
+      enable_vectorize: false,
     }
   }
 }
@@ -542,6 +546,12 @@ where
     self
   }
 
+  #[must_use]
+  pub fn vectorize(mut self) -> Self {
+    self.enable_vectorize = true;
+    self
+  }
+
   pub fn build<A>(
     self,
     egraph: &EGraph<AstNode<Op>, A>,
@@ -576,6 +586,7 @@ where
       self.bb_query,
       self.liblearn_config,
       self.op_pack_config,
+      self.enable_vectorize,
     )
   }
 }
@@ -714,6 +725,8 @@ where
   liblearn_config: LiblearnConfig,
   /// op_pack_config
   op_pack_config: OpPackConfig,
+  /// vectorized library
+  enable_vectorize: bool,
 }
 
 #[allow(unused)]
@@ -778,6 +791,7 @@ where
     bb_query: BBQuery,
     liblearn_config: LiblearnConfig,
     op_pack_config: OpPackConfig,
+    enable_vectorize: bool,
   ) -> Self
   where
     <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
@@ -801,6 +815,7 @@ where
       bb_query,
       liblearn_config: liblearn_config.clone(),
       op_pack_config,
+      enable_vectorize,
     };
     let classes: Vec<_> = egraph.classes().map(|cls| cls.id).collect();
 
@@ -1231,6 +1246,7 @@ where
 
   fn make_cost(
     &self,
+    searcher: Pattern<AstNode<Op>>,
     applier: Pattern<AstNode<Op>>,
     max_bitwidth: usize,
   ) -> Pattern<AstNode<Op>>
@@ -1238,7 +1254,7 @@ where
     Op: Teachable + OperationInfo + Default + Arity + Debug + Clone + Eq + Hash,
     AstNode<Op>: Schedulable<LA, LD>,
   {
-    let ast = &applier.ast;
+    let ast = &searcher.ast;
     let new_expr = ast
       .iter()
       .map(|node| match node {
@@ -1250,6 +1266,7 @@ where
         egg::ENodeOrVar::Var(_) => Op::var(0),
       })
       .collect::<Vec<AstNode<Op>>>();
+
     let rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
     let scheduler = Scheduler::new(
       self.clock_period,
@@ -1349,8 +1366,11 @@ where
         let new_i = i + self.last_lib_id;
         let max_bitwidth =
           max_bitwidths.get(&LibId(new_i)).cloned().unwrap_or(32);
-        let applier =
-          self.make_cost(msg.applier_pe.clone().into(), max_bitwidth);
+        let applier = self.make_cost(
+          msg.searcher_pe.clone().into(),
+          msg.applier_pe.clone().into(),
+          max_bitwidth,
+        );
         let searcher_pe = msg.searcher_pe.clone();
         let searcher: Pattern<_> = searcher_pe.clone().into();
         let conditional_applier = ConditionalApplier {
@@ -2089,12 +2109,13 @@ where
           // if size(e[x_1/e_1, ..., x_n/e_n]) > 2n + 1. This
           // corresponds to an anti-unification containing at least n
           // + 1 nodes.
-          if learn_trivial
-            || (self.op_pack_config.pack_expand
-              && self.op_pack_config.learn_trivial)
-            || num_vars < au.num_holes()
-            || au.num_nodes() > 1 + num_vars
-          {
+          // if learn_trivial
+          //   || (self.op_pack_config.pack_expand
+          //     && self.op_pack_config.learn_trivial)
+          //   || num_vars < au.num_holes()
+          //   || au.num_nodes() > 1 + num_vars
+          // FIXME: 现在是debug模式！！！
+          if true {
             // println!("learn_trivial: {}, num_vars < au.num_holes(): {},
             // au.num_nodes() > num_vars: {}", learn_trivial, num_vars <
             // au.num_holes(), au.num_nodes() > num_vars);
@@ -2175,6 +2196,37 @@ where
             } else {
               true
             }
+          }
+        })
+        .filter(|au| {
+          // 正常模式下，直接在这个步骤做一次schedule，滤掉不可能选中的lib
+          if self.enable_vectorize || self.op_pack_config.pack_expand {
+            true
+          } else {
+            let ast = Pattern::from(au.au.expr.clone()).ast;
+            let new_expr = ast
+              .iter()
+              .map(|node| match node {
+                egg::ENodeOrVar::ENode(ast_node) => {
+                  let new_node = (*ast_node).clone();
+                  new_node
+                }
+                egg::ENodeOrVar::Var(_) => Op::var(0),
+              })
+              .collect::<Vec<AstNode<Op>>>();
+
+            let rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
+            let scheduler = Scheduler::new(
+              self.clock_period,
+              self.area_estimator.clone(),
+              self.delay_estimator.clone(),
+              self.bb_query.clone(),
+            );
+            let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+            if latency_gain == 0 || area == 0 {
+              return false;
+            }
+            true
           }
         });
       info!(
@@ -2358,7 +2410,7 @@ where
 ///
 /// assuming `name` is "foo".
 #[must_use]
-fn reify<Op, T, LA, LD>(
+pub fn reify<Op, T, LA, LD>(
   ix: LibId,
   au: PartialExpr<Op, T>,
   clock_period: usize,

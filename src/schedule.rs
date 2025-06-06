@@ -10,6 +10,7 @@ use crate::{
   runner::OperationInfo,
 };
 use egg::RecExpr;
+use lexpr::print;
 
 /// A trait for languages that support HLS scheduling.
 pub trait Schedulable<LA, LD>
@@ -193,8 +194,12 @@ impl<LA, LD> Scheduler<LA, LD> {
       area += node.op_area(&self.area_estimator, node.get_op_args(expr));
     }
     // println!("Area: {}", area);
+    // println!(
+    //   "Latency Accelerator: {}, Latency CPU: {}, Area: {}",
+    //   latency_accelerator, latency_cpu, area
+    // );
     if latency_accelerator > latency_cpu {
-      (0, area)
+      (0, 10 * area) // If the accelerator is slower, return a large cost
     } else {
       (latency_cpu - latency_accelerator, area)
     }

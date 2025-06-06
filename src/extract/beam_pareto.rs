@@ -241,12 +241,14 @@ impl CostSet {
     self.set = set;
   }
 
-  pub fn update_cost(&mut self, strategy: f32, exe_count: usize) {
+  pub fn update_cost(&mut self, strategy: f32, extra_exe_count: usize) {
     for ls in &mut self.set {
       if ls.full_cost == 0.0 {
         for (_, (gain, cost, set)) in &ls.libs {
+          // println!("update_cost");
           ls.full_cost += (1.0 - strategy) * (*cost as f32);
-          ls.full_cost -= strategy * (gain * exe_count * set.len()) as f32;
+          ls.full_cost -=
+            strategy * (gain * extra_exe_count * set.len()) as f32;
         }
       }
     }
@@ -613,7 +615,7 @@ where
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   fn eq(&self, other: &Self) -> bool {
-    self.cs == other.cs && self.ty == other.ty
+    self.cs == other.cs && self.ty == other.ty && self.bb == other.bb
   }
 }
 
@@ -691,7 +693,6 @@ where
     // println!("{:?}", to);
     // println!("{:?}", &from);
     let a0 = to.clone();
-
     if to.bb.len() == 0 {
       to.bb = from.bb.clone();
     }
