@@ -3,30 +3,23 @@
 //! This module provides functionality for running library learning experiments
 //! using either regular beam search or Pareto-optimal beam search.
 
-use nom::lib;
-use serde_json::json;
 use std::{
   collections::{HashMap, HashSet},
   fmt::{Debug, Display},
-  fs::File,
   hash::Hash,
-  io::{self, Write},
-  path::{Path, PathBuf},
   str::FromStr,
-  sync::Arc,
-  time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+  time::{Duration, Instant},
 };
 
 use serde::Deserialize;
 
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, LibId,
-  PartialExpr, Pretty, Printable, Teachable,
+  PartialExpr, Printable, Teachable,
   bb_query::{BBInfo, BBQuery},
-  expand::{self, ExpandMessage, OpPackConfig, expand},
-  extract::{
-    self,
-    beam_pareto::{ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet},
+  expand::{ExpandMessage, OpPackConfig, expand},
+  extract::beam_pareto::{
+    ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet,
   },
   perf_infer,
   rewrites::TypeMatch,
@@ -34,13 +27,10 @@ use crate::{
   vectorize::{VectorCF, VectorConfig, vectorize},
 };
 use egg::{
-  AstSize, EGraph, Extractor, Id, Language, Pattern, RecExpr, Rewrite,
-  Runner as EggRunner, Var,
+  EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner as EggRunner, Var,
 };
 use log::{debug, info};
 
-/// 定义一个trait名为OperationInfo,其中有两个函数，分别为get_libid,
-/// change_libid, get_const
 pub trait OperationInfo {
   fn is_lib(&self) -> bool;
   /// Get the library ID of the operation
@@ -79,9 +69,7 @@ pub trait OperationInfo {
     vec![]
   }
   /// 为每个Operation设置返回类型
-  fn set_result_type(&mut self, result_ty: Vec<String>) {
-    // do nothing
-  }
+  fn set_result_type(&mut self, result_ty: Vec<String>);
   /// get_vec_len
   fn get_vec_len(&self) -> usize {
     1
@@ -109,9 +97,8 @@ pub trait OperationInfo {
     false
   }
   /// 设置bbs信息
-  fn set_bbs_info(&mut self, bbs: Vec<String>) {
-    // do nothing
-  }
+  fn set_bbs_info(&mut self, bbs: Vec<String>);
+  fn is_arithmetic(&self) -> bool;
 }
 
 /// A trait for running library learning experiments with Pareto optimization
@@ -305,7 +292,7 @@ pub enum EnumMode {
   ClusterTest,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 pub struct LiblearnConfig {
   /// type of cost : "delay", "Match", "size"
   pub cost: LiblearnCost,
@@ -565,7 +552,7 @@ where
         "After vectorization, root cost: {}, cs: {:#?}",
         cs.set[0].full_cost, cs.set
       );
-      let (cost, expr) = Extractor::new(&aeg, VectorCF).find_best(root_vec[0]);
+      let (_cost, expr) = Extractor::new(&aeg, VectorCF).find_best(root_vec[0]);
 
       // // TODO: 目前直接使用了Extract
       let extractor =
@@ -908,8 +895,11 @@ where
       .run(chosen_rewrites.iter())
       .egraph;
     println!("Rewriting done");
-    let root = egraph.add(AstNode::new(Op::list(), root_vec.iter().copied()));
-
+    let bbs = egraph[root_vec[0]].data.bb.clone();
+    let mut list_op = AstNode::new(Op::list(), root_vec.iter().copied());
+    list_op.operation_mut().set_bbs_info(bbs);
+    let root = egraph.add(list_op);
+    perf_infer::perf_infer(&mut egraph, &[root]);
     let final_cost = isax_cost.cs.set[0].full_cost;
     let egraph_with_root = (egraph, root);
 

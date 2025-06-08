@@ -1,5 +1,6 @@
-use egg::{EGraph, Id};
+use egg::{EGraph, Id, RecExpr};
 use std::{
+  borrow::BorrowMut,
   collections::{HashMap, HashSet},
   fmt::Debug,
   hash::Hash,
@@ -125,4 +126,37 @@ pub fn perf_infer<Op, T>(
 
   // ── Step 4: Rebuild to maintain e-graph invariants ──
   egraph.rebuild();
+}
+
+pub fn expr_perf_infer<Op>(expr: &mut RecExpr<AstNode<Op>>)
+where
+  Op: Clone
+    + Debug
+    + Ord
+    + Hash
+    + Teachable
+    + Arity
+    + OperationInfo
+    + Send
+    + Sync
+    + BBInfo
+    + 'static,
+{
+  let mut nodes_without_bbs: Vec<usize> = Vec::new();
+  let expr_clone = expr.clone();
+  let nodes = expr.as_mut();
+  for (i, node) in expr_clone.iter().enumerate() {
+    if node.operation().get_bbs_info().is_empty() {
+      nodes_without_bbs.push(i);
+    } else {
+      let bbs = node.operation().get_bbs_info();
+      for node_without_bbs in nodes_without_bbs.iter() {
+        nodes[*node_without_bbs]
+          .operation_mut()
+          .get_mut_bbs_info()
+          .extend(bbs.iter().cloned());
+      }
+      nodes_without_bbs.clear();
+    }
+  }
 }

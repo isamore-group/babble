@@ -241,15 +241,16 @@ impl CostSet {
     self.set = set;
   }
 
-  pub fn update_cost(&mut self, strategy: f32, extra_exe_count: usize) {
+  pub fn update_cost(&mut self, strategy: f32, exe_count: usize) {
     for ls in &mut self.set {
-      if ls.full_cost == 0.0 {
-        for (_, (gain, cost, set)) in &ls.libs {
-          // println!("update_cost");
-          ls.full_cost += (1.0 - strategy) * (*cost as f32);
-          ls.full_cost -=
-            strategy * (gain * extra_exe_count * set.len()) as f32;
-        }
+      let mut full_cost = 0.0;
+      for (_, (gain, cost, set)) in &ls.libs {
+        // println!("update_cost");
+        full_cost += (1.0 - strategy) * (*cost as f32);
+        full_cost -= strategy * (gain * exe_count * set.len()) as f32;
+      }
+      if full_cost < ls.full_cost {
+        ls.full_cost = full_cost;
       }
     }
   }
@@ -706,7 +707,10 @@ where
     let exe_count = match to.bb.len() {
       0 => 1,
       _ => match self.bb_query.get(&to.bb[0]) {
-        Some(bb) => bb.execution_count,
+        Some(bb) => {
+          // println!("bb: {:?}, exe count: {}", bb.name, bb.execution_count);
+          bb.execution_count
+        }
         None => 1,
       },
     };
@@ -783,7 +787,13 @@ where
         // println!("new cost set: {:#?}", e);
         e.unify();
         e.prune(self_ref.beam_size, self_ref.lps);
-        ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
+        let bbs = enode.operation().get_bbs_info();
+        if bbs.len() > 0 {
+          if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
+            e.update_cost(self_ref.strategy, bb_entry.execution_count);
+          }
+        }
+        ISAXCost::new(e, ty, bbs, hash)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
@@ -798,8 +808,14 @@ where
           )
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
-          let e = x(&enode.args()[0]).clone();
-          ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
+          let mut e = x(&enode.args()[0]).clone();
+          let bbs = enode.operation().get_bbs_info();
+          if bbs.len() > 0 {
+            if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
+              e.update_cost(self_ref.strategy, bb_entry.execution_count);
+            }
+          }
+          ISAXCost::new(e, ty, bbs, hash)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
@@ -813,7 +829,13 @@ where
 
           e.unify();
           e.prune(self_ref.beam_size, self_ref.lps);
-          ISAXCost::new(e, ty, enode.operation().get_bbs_info(), hash)
+          let bbs = enode.operation().get_bbs_info();
+          if bbs.len() > 0 {
+            if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
+              e.update_cost(self_ref.strategy, bb_entry.execution_count);
+            }
+          }
+          ISAXCost::new(e, ty, bbs, hash)
         }
       }
     }

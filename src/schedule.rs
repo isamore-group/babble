@@ -1,16 +1,18 @@
 //! A simple HLS scheduler used for estimating the area and latency of the
 //! learned libraries.
 
-use std::{cmp, collections::HashSet, fmt::Debug, hash::Hash};
+use std::{
+  cmp,
+  collections::{HashMap, HashSet},
+  fmt::Debug,
+  hash::Hash,
+};
 
 use crate::{
-  BindingExpr, LibId, Teachable,
-  ast_node::AstNode,
-  bb_query::{self, BBInfo, BBQuery},
+  BindingExpr, LibId, Teachable, ast_node::AstNode, bb_query::BBQuery,
   runner::OperationInfo,
 };
-use egg::RecExpr;
-use lexpr::print;
+use egg::{Id, Language, RecExpr};
 
 /// A trait for languages that support HLS scheduling.
 pub trait Schedulable<LA, LD>
@@ -90,8 +92,8 @@ impl<LA, LD> Scheduler<LA, LD> {
 
   pub fn asap_schedule<Op>(&self, expr: &RecExpr<AstNode<Op>>) -> ScheduleResult
   where
-    Op: Eq + Hash + Clone + Teachable + Debug,
-    AstNode<Op>: Schedulable<LA, LD>,
+    Op: Eq + Hash + Clone + Teachable + Debug + OperationInfo,
+    AstNode<Op>: Schedulable<LA, LD> + Language,
   {
     // println!("Scheduling...");
     // Start cycle of each AST node
@@ -106,7 +108,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     while unscheduled_count > 0 {
       for i in 0..expr.len() {
         if !scheduled[i] {
-          let node = &expr[i];
+          let node = &expr[i.into()];
           // Check if the operation is ready to be scheduled and calculate the
           // earliest time in the cycle the operation can start
           let mut ready = true;
@@ -117,7 +119,7 @@ impl<LA, LD> Scheduler<LA, LD> {
               ready = false;
               break;
             } else {
-              let dep = &expr[idx];
+              let dep = &expr[idx.into()];
               let mut delay =
                 dep.op_delay(&self.delay_estimator, dep.get_op_args(expr));
               let mut latency = dep.op_latency();
@@ -167,12 +169,32 @@ impl<LA, LD> Scheduler<LA, LD> {
       }
       cycle += 1;
     }
+
+    // Identify the loop in the expression
+    let root: usize = expr.root().into();
+    let nodes = expr.as_ref();
+    let min_exe_count = nodes[root].op_execution_count(&self.bb_query);
+    let mut max_exe_count = 0;
+    for node in expr.iter() {
+      let bb_info = node.operation().get_bbs_info();
+      if bb_info.len() >= 1 {
+        let bb_entry = self.bb_query.get(&bb_info[0]);
+        if let Some(bb_entry) = bb_entry {
+          max_exe_count = cmp::max(max_exe_count, bb_entry.execution_count);
+        }
+      }
+    }
+    if min_exe_count == usize::MAX {
+      return (0, 0);
+    }
+    let loop_length = max_exe_count / min_exe_count;
+
     // Calculate the gain
     // println!("Calculating gain...");
     // println!("Calculating gain...");
     let mut latency_accelerator = 0;
     for i in 0..expr.len() {
-      let node = &expr[i];
+      let node = &expr[i.into()];
       let delay = node.op_delay(&self.delay_estimator, node.get_op_args(expr));
       let mut latency = node.op_latency();
       latency += delay / self.clock_period;
@@ -183,9 +205,15 @@ impl<LA, LD> Scheduler<LA, LD> {
         latency_accelerator = cmp::max(latency_accelerator, sc[i] + 1);
       }
     }
+    latency_accelerator += loop_length - 1;
+
     let mut latency_cpu = 0;
     for node in expr {
-      latency_cpu += node.op_latency_cpu(&self.bb_query);
+      if node.operation().is_arithmetic() {
+        latency_cpu += node.op_latency_cpu(&self.bb_query)
+          * node.op_execution_count(&self.bb_query)
+          / min_exe_count;
+      }
     }
     // Calculate the area
     // println!("Calculating area...");
@@ -193,13 +221,15 @@ impl<LA, LD> Scheduler<LA, LD> {
     for node in expr {
       area += node.op_area(&self.area_estimator, node.get_op_args(expr));
     }
-    // println!("Area: {}", area);
+    // println!("Number of nodes: {}", expr.len());
     // println!(
     //   "Latency Accelerator: {}, Latency CPU: {}, Area: {}",
     //   latency_accelerator, latency_cpu, area
     // );
     if latency_accelerator > latency_cpu {
-      (0, 10 * area) // If the accelerator is slower, return a large cost
+      (0, 0) // If the accelerator is slower, return a large cost
+    } else if area == 0 {
+      (0, 0)
     } else {
       (latency_cpu - latency_accelerator, area)
     }
@@ -232,4 +262,34 @@ pub fn rec_cost<Op: Teachable + OperationInfo>(
     }
   }
   (latency_gain, area)
+}
+
+pub fn rec_perf<Op, LA, LD>(
+  expr: &RecExpr<AstNode<Op>>,
+  bb_query: &BBQuery,
+) -> usize
+where
+  Op: Teachable + OperationInfo + Clone + Debug + Ord + Hash,
+  AstNode<Op>: Language + Schedulable<LA, LD>,
+{
+  let mut costs: HashMap<Id, usize> = HashMap::new();
+  for (i, node) in expr.iter().enumerate() {
+    let args_cost: usize = node
+      .args()
+      .iter()
+      .map(|&id| {
+        let idx: usize = id.into();
+        costs.get(&Id::from(idx)).cloned().unwrap_or(0)
+      })
+      .sum();
+    let node_latency = node.op_latency_cpu(bb_query);
+    let exe_count = node.op_execution_count(bb_query);
+    let perf_gain = match node.as_binding_expr() {
+      Some(BindingExpr::Lib(_, _, _, gain, _)) => gain,
+      _ => 0,
+    };
+    let cost = args_cost + node_latency * exe_count - perf_gain * exe_count; // Subtract the gain from the cost
+    costs.insert(Id::from(i), cost);
+  }
+  costs.get(&expr.root()).cloned().unwrap_or(0)
 }
