@@ -244,10 +244,13 @@ impl CostSet {
   pub fn update_cost(&mut self, strategy: f32, exe_count: usize) {
     for ls in &mut self.set {
       let mut full_cost = 0.0;
-      for (_, (gain, cost, set)) in &ls.libs {
+      for (_, (gain, cost, set)) in &mut ls.libs {
         // println!("update_cost");
         full_cost += (1.0 - strategy) * (*cost as f32);
-        full_cost -= strategy * (gain * exe_count * set.len()) as f32;
+        for (_id, count) in set.iter_mut() {
+          *count = std::cmp::max(exe_count, *count);
+          full_cost -= *count as f32 * *gain as f32 * strategy;
+        }
       }
       if full_cost < ls.full_cost {
         ls.full_cost = full_cost;
@@ -288,7 +291,7 @@ pub struct LibSel {
   pub full_cost: f32,
   /// The libraries used in this expression. Each library is binded with its
   /// gain, cost and the instances.
-  pub libs: HashMap<LibId, (usize, usize, HashSet<Id>)>,
+  pub libs: HashMap<LibId, (usize, usize, HashMap<Id, usize>)>,
 }
 
 impl Eq for LibSel {}
@@ -350,15 +353,19 @@ impl LibSel {
       match res.libs.entry(*lib_id) {
         Entry::Occupied(mut entry) => {
           let (_, _, set) = entry.get_mut();
-          let count = set.len();
-          set.extend(lib_info.2.clone());
-          let count_inc = set.len() - count;
-          res.full_cost -= count_inc as f32 * lib_info.0 as f32 * strategy;
+          for (id, count) in lib_info.2.iter() {
+            if let None = set.get_mut(id) {
+              set.insert(*id, *count);
+              res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+            }
+          }
         }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
-          res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
-            - lib_info.2.len() as f32 * lib_info.0 as f32 * strategy;
+          res.full_cost += lib_info.1 as f32 * (1.0 - strategy);
+          for (_, count) in lib_info.2.iter() {
+            res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+          }
           if res.libs.len() > lps {
             return None;
           }
@@ -387,15 +394,19 @@ impl LibSel {
       match res.libs.entry(*nested_lib) {
         Entry::Occupied(mut entry) => {
           let (_, _, set) = entry.get_mut();
-          let count = set.len();
-          set.extend(lib_info.2.clone());
-          let count_inc = set.len() - count;
-          res.full_cost -= count_inc as f32 * lib_info.0 as f32 * strategy;
+          for (id, count) in lib_info.2.iter() {
+            if let None = set.get_mut(id) {
+              set.insert(*id, *count);
+              res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+            }
+          }
         }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
-          res.full_cost += lib_info.1 as f32 * (1.0 - strategy)
-            - lib_info.2.len() as f32 * lib_info.0 as f32 * strategy;
+          res.full_cost += lib_info.1 as f32 * (1.0 - strategy);
+          for (_, count) in lib_info.2.iter() {
+            res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+          }
           if res.libs.len() > lps {
             return None;
           }
@@ -406,12 +417,12 @@ impl LibSel {
     match res.libs.entry(lib) {
       Entry::Occupied(mut entry) => {
         let (_, _, set) = entry.get_mut();
-        set.insert(id);
+        set.insert(id, 1);
         res.full_cost -= gain as f32 * strategy;
       }
       Entry::Vacant(entry) => {
-        let mut set = HashSet::new();
-        set.insert(id);
+        let mut set = HashMap::new();
+        set.insert(id, 1);
         entry.insert((gain, cost, set));
         res.full_cost +=
           cost as f32 * (1.0 - strategy) - gain as f32 * strategy;
