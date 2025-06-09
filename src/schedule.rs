@@ -173,6 +173,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     // Identify the loop in the expression
     let root: usize = expr.root().into();
     let nodes = expr.as_ref();
+    // println!("Root node: {:?}", nodes[root].operation().get_bbs_info());
     let min_exe_count = nodes[root].op_execution_count(&self.bb_query);
     let mut max_exe_count = 0;
     for node in expr.iter() {
@@ -184,6 +185,10 @@ impl<LA, LD> Scheduler<LA, LD> {
         }
       }
     }
+    // println!(
+    //   "Min execution count: {}, Max execution count: {}",
+    //   min_exe_count, max_exe_count
+    // );
     if min_exe_count == usize::MAX {
       return (0, 0);
     }
