@@ -13,6 +13,7 @@
 //! expressions (z1, ..., zn) with z1 \in AU(x1, y1), ..., zn \in AU(xn, yn), we
 //! add the partial expression op(z1, ..., zn) to the set AU(a, b).
 //! If the set AU(a, b) is empty, we add to it the partial expression (a, b).
+use crate::au_filter::{CiEncodingConfig, TypeAnalysis, io_filter};
 use crate::bb_query::{self, BBQuery};
 use crate::expand::OpPackConfig;
 use crate::extract::beam_pareto::{ISAXAnalysis, TypeInfo, TypeSet};
@@ -319,6 +320,7 @@ where
   bb_query: BBQuery,
   liblearn_config: LiblearnConfig,
   op_pack_config: OpPackConfig,
+  ci_encoding_config: CiEncodingConfig,
   /// 是否启用向量化
   enable_vectorize: bool,
 }
@@ -367,6 +369,7 @@ where
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
       op_pack_config: OpPackConfig::default(),
+      ci_encoding_config: CiEncodingConfig::default(),
       enable_vectorize: false,
     }
   }
@@ -422,6 +425,7 @@ where
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
       op_pack_config: OpPackConfig::default(),
+      ci_encoding_config: CiEncodingConfig::default(),
       enable_vectorize: false,
     }
   }
@@ -455,7 +459,8 @@ where
     + Sync
     + 'static
     + Display
-    + FromStr,
+    + FromStr
+    + TypeAnalysis,
   TypeSet<Type>: ClassMatch,
   AstNode<Op>: TypeInfo<Type>,
 {
@@ -547,6 +552,15 @@ where
   }
 
   #[must_use]
+  pub fn with_ci_encoding_config(
+    mut self,
+    ci_encoding_config: CiEncodingConfig,
+  ) -> Self {
+    self.ci_encoding_config = ci_encoding_config;
+    self
+  }
+
+  #[must_use]
   pub fn vectorize(mut self) -> Self {
     self.enable_vectorize = true;
     self
@@ -586,6 +600,7 @@ where
       self.bb_query,
       self.liblearn_config,
       self.op_pack_config,
+      self.ci_encoding_config,
       self.enable_vectorize,
     )
   }
@@ -725,6 +740,8 @@ where
   liblearn_config: LiblearnConfig,
   /// op_pack_config
   op_pack_config: OpPackConfig,
+  /// IO filter config
+  ci_encoding_config: CiEncodingConfig,
   /// vectorized library
   enable_vectorize: bool,
 }
@@ -770,7 +787,8 @@ where
     + Sync
     + 'static
     + Display
-    + FromStr,
+    + FromStr
+    + TypeAnalysis,
   TypeSet<Type>: ClassMatch,
   AstNode<Op>: TypeInfo<Type>,
 {
@@ -791,6 +809,7 @@ where
     bb_query: BBQuery,
     liblearn_config: LiblearnConfig,
     op_pack_config: OpPackConfig,
+    ci_encoding_config: CiEncodingConfig,
     enable_vectorize: bool,
   ) -> Self
   where
@@ -815,6 +834,7 @@ where
       bb_query,
       liblearn_config: liblearn_config.clone(),
       op_pack_config,
+      ci_encoding_config,
       enable_vectorize,
     };
     let classes: Vec<_> = egraph.classes().map(|cls| cls.id).collect();
@@ -1614,7 +1634,8 @@ where
     + Sync
     + 'static
     + Display
-    + FromStr,
+    + FromStr
+    + TypeAnalysis,
   TypeSet<Type>: ClassMatch,
   LA: Debug + Clone,
   LD: Debug + Clone,
@@ -1937,10 +1958,12 @@ where
 
     for (op1, args1) in ops1 {
       if op1.is_dummy() {
+        different = true;
         continue;
       }
       for (op2, args2) in ops2.clone() {
         if op2.is_dummy() {
+          different = true;
           continue;
         }
         if op1 == op2 {
@@ -2109,19 +2132,21 @@ where
           // if size(e[x_1/e_1, ..., x_n/e_n]) > 2n + 1. This
           // corresponds to an anti-unification containing at least n
           // + 1 nodes.
-          // if learn_trivial
-          //   || (self.op_pack_config.pack_expand
-          //     && self.op_pack_config.learn_trivial)
-          //   || num_vars < au.num_holes()
-          //   || au.num_nodes() > 1 + num_vars
-          // FIXME: 现在是debug模式！！！
-          if true {
+          if learn_trivial
+            || (self.op_pack_config.pack_expand
+              && self.op_pack_config.learn_trivial)
+            || num_vars < au.num_holes()
+            || au.num_nodes() > 1 + num_vars
+          {
+            // FIXME: 现在是debug模式！！！
+            // if true {
             // println!("learn_trivial: {}, num_vars < au.num_holes(): {},
             // au.num_nodes() > num_vars: {}", learn_trivial, num_vars <
             // au.num_holes(), au.num_nodes() > num_vars);
             // 从var2id中取出变量对应的eclassId，
             // 从Id对应的eclass中拿到data作为变量类型
             let mut ty_map = HashMap::new();
+            let mut ty_vec = vec![];
             for (k, v) in var2id.iter() {
               let id = v.clone();
               let ty0 = egraph[id.0].data.get_type()[0]
@@ -2143,29 +2168,70 @@ where
 
               let ty_neglecting_width =
                 AstNode::merge_types_neglecting_width(&ty0, &ty1);
+              let ty_merged = AstNode::merge_types(&ty0, &ty1);
+              if !ty_merged.is_state_type() {
+                // 状态变量不考虑
+                ty_vec.push(ty_merged.clone());
+              }
               let tys = vec![ty_neglecting_width];
               ty_map.insert(k.clone(), tys);
             }
-            Some(AUWithType {
-              au: AU::new(
-                au.clone(),
-                matches,
-                delay,
-                self.liblearn_config.cost.clone(),
-              ),
-              ty_map,
-            })
+            // 最终加入关于output节点的类型
+            let output_ty = match au.clone() {
+              PartialExpr::Node(ast_node) => {
+                let tys = ast_node.operation().get_result_type();
+                let ty = tys
+                  .get(0)
+                  .map(|t| {
+                    t.parse::<Type>().unwrap_or_else(|_| {
+                      panic!("parse type error: {}", t);
+                    })
+                  })
+                  .unwrap_or_else(|| Type::default());
+                ty
+              }
+              PartialExpr::Hole(_) => Type::default(),
+            };
+            ty_vec.push(output_ty.clone());
+            // 只有在普通模式下才进行io_filter
+            if !self.op_pack_config.pack_expand && !self.enable_vectorize {
+              let io_config = self.ci_encoding_config.clone();
+              if io_filter(&io_config, &ty_vec) {
+                return Some(AUWithType {
+                  au: AU::new(
+                    au.clone(),
+                    matches,
+                    delay,
+                    self.liblearn_config.cost.clone(),
+                  ),
+                  ty_map,
+                });
+              } else {
+                return None;
+              }
+            } else {
+              // 在其他模式下，直接返回AUWithType
+              return Some(AUWithType {
+                au: AU::new(
+                  au.clone(),
+                  matches,
+                  delay,
+                  self.liblearn_config.cost.clone(),
+                ),
+                ty_map,
+              });
+            }
           } else {
             None
           }
         })
-        // 进行fill，如果au中含有超过lib节点，就不加入
+        // 进行fill，如果au中含有超过lib相关的节点，就不加入
         .filter(|au| {
           let expr = &au.au.expr;
           let recexpr: RecExpr<_> =
             Expr::try_from(expr.clone()).unwrap().into();
           for node in recexpr.iter() {
-            if node.operation().is_lib() {
+            if node.operation().is_lib_op() {
               return false;
             }
           }
@@ -2229,6 +2295,15 @@ where
             true
           }
         });
+      // for au in nontrivial_aus.clone() {
+      //   if au.au.expr.num_holes() > 10 {
+      //     println!(
+      //       "num_holes is {}, num_nodes is {}",
+      //       au.au.expr.num_holes(),
+      //       au.au.expr.num_nodes()
+      //     );
+      //   }
+      // }
       info!(
         "length of nontrivial_aus is {}",
         nontrivial_aus.clone().count()

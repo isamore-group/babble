@@ -15,7 +15,8 @@ use serde::Deserialize;
 
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, LibId,
-  PartialExpr, Printable, Teachable,
+  PartialExpr, Pretty, Printable, Teachable,
+  au_filter::{CiEncodingConfig, TypeAnalysis},
   bb_query::{BBInfo, BBQuery},
   expand::{ExpandMessage, OpPackConfig, expand},
   extract::beam_pareto::{
@@ -33,6 +34,7 @@ use log::{debug, info};
 
 pub trait OperationInfo {
   fn is_lib(&self) -> bool;
+  fn is_lib_op(&self) -> bool;
   /// Get the library ID of the operation
   fn get_libid(&self) -> usize;
   /// Make a lib node
@@ -230,6 +232,8 @@ where
   pub vectorize_config: VectorConfig,
   /// op_pack config
   pub op_pack_config: OpPackConfig,
+  /// ci_encoding config
+  pub ci_encoding_config: CiEncodingConfig,
 }
 
 impl<LA, LD> Default for ParetoConfig<LA, LD>
@@ -253,6 +257,7 @@ where
       liblearn_config: LiblearnConfig::default(),
       vectorize_config: VectorConfig::default(),
       op_pack_config: OpPackConfig::default(),
+      ci_encoding_config: CiEncodingConfig::default(),
     }
   }
 }
@@ -414,7 +419,8 @@ where
     + Sync
     + 'static
     + Display
-    + FromStr,
+    + FromStr
+    + TypeAnalysis,
   TypeSet<T>: ClassMatch,
   LA: Debug + Default + Clone,
   LD: Debug + Default + Clone,
@@ -642,6 +648,7 @@ where
         // .with_co_occurs(co_occurs)
         .with_last_lib_id(max_lib_id)
         .with_liblearn_config(self.config.liblearn_config.clone())
+        .with_ci_encoding_config(self.config.ci_encoding_config.clone())
         .with_clock_period(self.config.clock_period)
         .with_area_estimator(self.config.area_estimator.clone())
         .with_delay_estimator(self.config.delay_estimator.clone())
@@ -760,6 +767,17 @@ where
     .with_node_limit(1_000_000)
     .run(&new_all_rewrites);
 
+    // for ecls in runner.egraph.classes() {
+    //   let mut cs = ecls.data.cs.clone();
+    //   cs.set.sort_unstable_by_key(|elem| elem.full_cost as usize);
+    //   if !cs.set.is_empty() {
+    //     if cs.set[0].full_cost < -100_000.0 {
+    //       println!("eclass {}: cost: {}", ecls.id, cs.set[0].full_cost,);
+    //       println!("{:?}", ecls.nodes);
+    //     }
+    //   }
+    // }
+
     let mut egraph = runner.egraph;
 
     println!(
@@ -779,7 +797,7 @@ where
     let mut isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root_vec: {:?}", root_vec);
     // println!("cs: {:#?}", cs);
-    // println!("cs: {:#?}", isax_cost.cs.set[0]);
+    // println!("cs: {:#?}", isax_cost.cs.set);
     isax_cost
       .cs
       .set
@@ -968,7 +986,8 @@ where
     + Sync
     + 'static
     + Display
-    + FromStr,
+    + FromStr
+    + TypeAnalysis,
   TypeSet<T>: ClassMatch,
   LA: Debug + Default + Clone,
   LD: Debug + Default + Clone,

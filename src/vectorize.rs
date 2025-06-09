@@ -3,6 +3,7 @@ use crate::{
   Printable,
   analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode},
+  au_filter::TypeAnalysis,
   bb_query::{self, BBInfo, BBQuery},
   extract::beam_pareto::{ClassMatch, ISAXAnalysis, TypeInfo},
   learn::{LearnedLibraryBuilder, LiblearnMessage, reify},
@@ -591,7 +592,8 @@ where
     + Sync
     + Display
     + FromStr
-    + 'static,
+    + 'static
+    + TypeAnalysis,
   LA: Debug + Clone + Default,
   LD: Debug + Clone + Default,
   AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
@@ -1018,7 +1020,7 @@ fn lib_body_get<Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable>(
 ) -> PartialExpr<Op, Var> {
   let op = expr.0.operation();
   // println!("Processing op: {:?}", op);
-  if !op.is_vector_op() {
+  if !op.is_vector_op() || op.is_vec() {
     *var_index += 1;
     type_map.insert(
       format!("?x{}", *var_index - 1)

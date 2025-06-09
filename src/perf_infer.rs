@@ -50,12 +50,12 @@ pub fn perf_infer<Op, T>(
   for &root_id in roots {
     let ecls = &mut egraph[root_id];
     let root_bb: Vec<String> = ecls.data.bb.clone();
-    if root_bb.is_empty() {
-      println!(
-        "Warning! Root eclass {} has no BB info. This should not happen.",
-        root_id
-      );
-    }
+    // if root_bb.is_empty() {
+    //   println!(
+    //     "Warning! Root eclass {} has no BB info. This should not happen.",
+    //     root_id
+    //   );
+    // }
     // By assumption, the root always has at least one enode with BB info.
     // Push (root ID, its BB info) onto the stack
     work_stack.push((root_id, root_bb));

@@ -15,6 +15,7 @@ use std::{
 use crate::{
   Arity, AstNode, BindingExpr, DiscriminantEq, Expr, ParetoConfig, PartialExpr,
   Printable, Teachable,
+  au_filter::TypeAnalysis,
   bb_query::{self, BBQuery},
   extract::beam_pareto::{ISAXAnalysis, TypeInfo},
   learn::{self, LearnedLibraryBuilder},
@@ -390,7 +391,8 @@ where
     + Sync
     + Display
     + FromStr
-    + 'static,
+    + 'static
+    + TypeAnalysis,
   LA: Debug + Clone + Default,
   LD: Debug + Clone + Default,
   AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,

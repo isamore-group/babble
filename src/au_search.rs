@@ -584,13 +584,18 @@ where
   }
   // 将aus中的每个Vec的第一个和最后一个元素取出
   let mut result = Vec::new();
-  // let lower_bound = aus.iter().map(|x| x[0].clone()).collect::<Vec<_>>();
+  let lower_bound = aus.iter().map(|x| x[0].clone()).collect::<Vec<_>>();
   let upper_bound = aus
     .iter()
     .map(|x| x[x.len() - 1].clone())
     .collect::<Vec<_>>();
 
-  // result.push(lower_bound);
+  if lower_bound == upper_bound {
+    // 如果上下界相同，直接返回
+    return vec![lower_bound.iter().map(|x| x.expr().clone()).collect()];
+  }
+
+  result.push(lower_bound);
   result.push(upper_bound);
   result
     .iter()
