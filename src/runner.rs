@@ -153,7 +153,7 @@ where
   AstNode<Op>: TypeInfo<T>,
 {
   /// the egraph (rewites using chosen rewrites) and its root
-  pub egraph_with_root: (EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id),
+  pub egraph_with_root: Vec<(EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id)>,
   /// The number of libraries learned
   pub num_libs: usize,
   /// The rewrites representing the learned libraries
@@ -234,6 +234,8 @@ where
   pub op_pack_config: OpPackConfig,
   /// ci_encoding config
   pub ci_encoding_config: CiEncodingConfig,
+  /// if to merge the beams
+  pub merge_beams: bool,
 }
 
 impl<LA, LD> Default for ParetoConfig<LA, LD>
@@ -257,6 +259,7 @@ where
       vectorize_config: VectorConfig::default(),
       op_pack_config: OpPackConfig::default(),
       ci_encoding_config: CiEncodingConfig::default(),
+      merge_beams: true,
     }
   }
 }
@@ -549,7 +552,7 @@ where
         "vectorized_time".to_string(),
         format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
       );
-      let mut cs = aeg[Id::from(root_vec[0])].data.cs.clone();
+      let cs = aeg[Id::from(root_vec[0])].data.cs.clone();
       // cs.set.sort_unstable_by_key(|elem| elem.full_cost as usize);
       println!(
         "After vectorization, root perf: {}, cs: {:#?}",
@@ -566,7 +569,7 @@ where
         final_cost.latency_gain
       );
       return ParetoResult {
-        egraph_with_root: (aeg, root_vec[0]),
+        egraph_with_root: vec![(aeg, root_vec[0])],
         num_libs: learned_libs.len(),
         rewrites_with_conditon: rewrites_with_condition,
         perf_gain: final_cost.latency_gain,
@@ -807,74 +810,89 @@ where
 
     println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
+    let mut egraphs_with_root = Vec::new();
+    let mut chosen_rewrites_beams = Vec::new();
     let mut chosen_rewrites = Vec::new();
     let mut learned_libs = Vec::new();
     let mut rewrites_map = HashMap::new();
-    for lib in &isax_cost.cs.set[0].libs {
-      // println!("lib: {}, max_lib_id: {}", lib.0.0, max_lib_id);
-      if lib.0.0 < max_lib_id {
-        // 从self.lib_rewrites中取出
-        // 打印self.lib_rewrites
-        // println!("{}: {:?}", lib.0.0, self.lib_rewrites_with_condition);
-        chosen_rewrites.push(
-          self
-            .lib_rewrites_with_condition
-            .get(&lib.0.0)
-            .unwrap()
-            .0
-            .clone(),
-        );
-        rewrites_map.insert(
-          lib.0.0,
-          self
-            .lib_rewrites_with_condition
-            .get(&lib.0.0)
-            .unwrap()
-            .clone(),
-        );
-      } else {
-        // let new_lib = lib.0.0 - max_lib_id;
-        // chosen_rewrites.push(lib_rewrites[new_lib].clone());
-        // learned_libs.push((lib.0.0, libs[new_lib].clone()));
-        // rewrites_map.insert(
-        //   lib.0.0,
-        //   (
-        //     lib_rewrites[new_lib].clone(),
-        //     rewrite_conditions[new_lib].clone(),
-        //   ),
-        // );
-        if lib.0.0 < expand_message.normal_au_count {
-          // 说明是一个正常的lib
-          let new_lib = lib.0.0 - max_lib_id;
-          // println!("new_lib: {}", new_lib);
-          chosen_rewrites.push(expand_message.all_au_rewrites[new_lib].clone());
-          learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
-          // println!(
-          //   "choose: {}",
-          //   Pattern::from(expand_message.libs[&lib.0.0].0.clone())
-          // );
+    for i in 0..isax_cost.cs.set.len() {
+      if !self.config.merge_beams {
+        chosen_rewrites.clear();
+      }
+      for lib in &isax_cost.cs.set[i].libs {
+        // println!("lib: {}, max_lib_id: {}", lib.0.0, max_lib_id);
+        if lib.0.0 < max_lib_id {
+          // 从self.lib_rewrites中取出
+          // 打印self.lib_rewrites
+          // println!("{}: {:?}", lib.0.0, self.lib_rewrites_with_condition);
+          chosen_rewrites.push(
+            self
+              .lib_rewrites_with_condition
+              .get(&lib.0.0)
+              .unwrap()
+              .0
+              .clone(),
+          );
           rewrites_map.insert(
             lib.0.0,
-            (
-              expand_message.all_au_rewrites[new_lib].clone(),
-              expand_message.conditions[&lib.0.0].clone(),
-            ),
+            self
+              .lib_rewrites_with_condition
+              .get(&lib.0.0)
+              .unwrap()
+              .clone(),
           );
         } else {
-          // 说明是一个meta lib
-          println!("We have leaned a meta lib !");
-          chosen_rewrites
-            .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
-          learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
-          for rewrite in expand_message.meta_au_rewrites[&lib.0.0].clone() {
+          // let new_lib = lib.0.0 - max_lib_id;
+          // chosen_rewrites.push(lib_rewrites[new_lib].clone());
+          // learned_libs.push((lib.0.0, libs[new_lib].clone()));
+          // rewrites_map.insert(
+          //   lib.0.0,
+          //   (
+          //     lib_rewrites[new_lib].clone(),
+          //     rewrite_conditions[new_lib].clone(),
+          //   ),
+          // );
+          if lib.0.0 < expand_message.normal_au_count {
+            // 说明是一个正常的lib
+            let new_lib = lib.0.0 - max_lib_id;
+            // println!("new_lib: {}", new_lib);
+            chosen_rewrites
+              .push(expand_message.all_au_rewrites[new_lib].clone());
+            learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
+            // println!(
+            //   "choose: {}",
+            //   Pattern::from(expand_message.libs[&lib.0.0].0.clone())
+            // );
             rewrites_map.insert(
               lib.0.0,
-              (rewrite.clone(), expand_message.conditions[&lib.0.0].clone()),
+              (
+                expand_message.all_au_rewrites[new_lib].clone(),
+                expand_message.conditions[&lib.0.0].clone(),
+              ),
             );
+          } else {
+            // 说明是一个meta lib
+            println!("We have leaned a meta lib !");
+            chosen_rewrites
+              .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
+            learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
+            for rewrite in expand_message.meta_au_rewrites[&lib.0.0].clone() {
+              rewrites_map.insert(
+                lib.0.0,
+                (rewrite.clone(), expand_message.conditions[&lib.0.0].clone()),
+              );
+            }
           }
         }
       }
+      if !self.config.merge_beams {
+        chosen_rewrites_beams.push(chosen_rewrites.clone());
+      }
     }
+
+    // deduplicate chosen_rewrites
+    chosen_rewrites.sort_unstable_by_key(|r| r.name.clone());
+    chosen_rewrites.dedup_by_key(|r| r.name.clone());
 
     println!("chosen_rewrites: {}", chosen_rewrites.len());
 
@@ -900,22 +918,41 @@ where
     //   println!("final cost: {}", final_cost);
     // }
     println!("Rewriting");
-    let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
-      .with_egraph(aeg)
-      .with_iter_limit(1)
-      .with_time_limit(timeout)
-      .with_node_limit(1_000_000)
-      .run(chosen_rewrites.iter())
-      .egraph;
-    println!("Rewriting done");
-    let bbs = egraph[root_vec[0]].data.bb.clone();
-    let mut list_op = AstNode::new(Op::list(), root_vec.iter().copied());
-    list_op.operation_mut().set_bbs_info(bbs);
-    let root = egraph.add(list_op);
-    perf_infer::perf_infer(&mut egraph, &[root]);
+    if self.config.merge_beams {
+      let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
+        .with_egraph(aeg)
+        .with_iter_limit(1)
+        .with_time_limit(timeout)
+        .with_node_limit(1_000_000)
+        .run(chosen_rewrites.iter())
+        .egraph;
+      println!("Rewriting done");
+      let bbs = egraph[root_vec[0]].data.bb.clone();
+      let mut list_op = AstNode::new(Op::list(), root_vec.iter().copied());
+      list_op.operation_mut().set_bbs_info(bbs);
+      let root = egraph.add(list_op);
+      perf_infer::perf_infer(&mut egraph, &[root]);
+      egraphs_with_root.push((egraph, root));
+    } else {
+      for chos_rewrites in chosen_rewrites_beams {
+        let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
+          .with_egraph(aeg.clone())
+          .with_iter_limit(1)
+          .with_time_limit(timeout)
+          .with_node_limit(1_000_000)
+          .run(chos_rewrites.iter())
+          .egraph;
+        println!("Rewriting done");
+        let bbs = egraph[root_vec[0]].data.bb.clone();
+        let mut list_op = AstNode::new(Op::list(), root_vec.iter().copied());
+        list_op.operation_mut().set_bbs_info(bbs);
+        let root = egraph.add(list_op);
+        perf_infer::perf_infer(&mut egraph, &[root]);
+        egraphs_with_root.push((egraph, root));
+      }
+    }
     let final_perf = isax_cost.cs.set[0].latency_gain;
     let final_area = isax_cost.cs.set[0].area_cost;
-    let egraph_with_root = (egraph, root);
 
     // let mut extractor =
     //   LibExtractor::new(&egraph, self.config.strategy,
@@ -943,7 +980,7 @@ where
     //   format!("{}ms", ex_time.elapsed().as_millis()).to_string(),
     // );
     ParetoResult {
-      egraph_with_root: egraph_with_root,
+      egraph_with_root: egraphs_with_root,
       num_libs: chosen_rewrites.len(),
       rewrites_with_conditon: rewrites_map,
       perf_gain: final_perf,
