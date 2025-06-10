@@ -436,7 +436,6 @@ where
     config.final_beams,
     config.inter_beams,
     config.lps,
-    config.strategy,
     BBQuery::default(),
   ));
 

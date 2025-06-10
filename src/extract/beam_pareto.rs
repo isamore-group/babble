@@ -3,7 +3,7 @@
 use crate::{
   analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode},
-  bb_query::{self, BBInfo, BBQuery},
+  bb_query::BBQuery,
   learn::LibId,
   runner::OperationInfo,
   schedule::rec_cost,
@@ -13,12 +13,11 @@ use bitvec::prelude::*;
 use egg::{
   Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
 };
-use indexmap::set;
 use log::debug;
 use rustc_hash::FxHashMap;
 use std::{
   cmp::Ordering,
-  collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry},
+  collections::{HashMap, HashSet, hash_map::Entry},
   fmt::{Debug, Display},
   hash::{DefaultHasher, Hash, Hasher},
 };
@@ -27,8 +26,6 @@ use std::{
 pub struct ParetoCost {
   pub latency_gain: usize,
   pub area_cost: usize,
-  pub strategy: f32,
-  pub full_cost: f32,
 }
 
 impl Default for ParetoCost {
@@ -36,8 +33,6 @@ impl Default for ParetoCost {
     ParetoCost {
       latency_gain: 0,
       area_cost: 0,
-      strategy: 1.0,
-      full_cost: f32::MAX,
     }
   }
 }
@@ -90,12 +85,12 @@ impl CostSet {
   /// each `CostSet` corresponds to an argument of a node) such that paired
   /// `LibSel`s have their libraries combined and costs added.
   #[must_use]
-  pub fn cross(&self, other: &CostSet, lps: usize, strategy: f32) -> CostSet {
+  pub fn cross(&self, other: &CostSet, lps: usize) -> CostSet {
     let mut set = Vec::new();
 
     for ls1 in &self.set {
       for ls2 in &other.set {
-        match ls1.combine(ls2, lps, strategy) {
+        match ls1.combine(ls2, lps) {
           None => continue,
           Some(ls) => {
             // println!("ls1: {:?}", ls1);
@@ -116,40 +111,43 @@ impl CostSet {
   /// Used for e.g. different `ENodes` of an `EClass`.
   pub fn combine(&mut self, other: CostSet) {
     // println!("combine");
-    let mut cix = 0;
-
-    for elem in other.set {
-      while cix < self.set.len() && elem >= self.set[cix] {
-        cix += 1;
-      } // Nadia: can't this be done with a binary search?
-
-      self.set.insert(cix, elem);
-      cix += 1;
-    }
+    self.set.append(other.set.clone().as_mut());
+    // Sort the combined set.
+    self.set.sort_by(|a, b| b.latency_gain.cmp(&a.latency_gain));
   }
 
-  /// Performs trivial partial order reduction: if `CostSet` A contains a
-  /// superset of the libs of another `CostSet` B, and A has a higher
-  /// `expr_cost` than B, remove A.
+  /// Performs trivial partial order reduction: Only keeps the Pareto frontier
   pub fn unify(&mut self) {
     // println!("unify");
+    let mut new_set = Vec::new();
     let mut i = 0;
 
     while i < self.set.len() {
-      let mut j = i + 1;
+      let mut j = 0;
 
       while j < self.set.len() {
         let ls1 = &self.set[i];
         let ls2 = &self.set[j];
 
-        if ls1.is_subset(ls2) && ls1.full_cost < ls2.full_cost {
-          self.set.remove(j);
+        if (ls1.latency_gain < ls2.latency_gain
+          && ls1.area_cost >= ls2.area_cost)
+          || (ls1.latency_gain <= ls2.latency_gain
+            && ls1.area_cost > ls2.area_cost)
+        {
+          break;
         } else {
           j += 1;
         }
       }
+      if j == self.set.len() {
+        // If we didn't find any element that dominates this one, keep it.
+        new_set.push(self.set[i].clone());
+      }
       i += 1;
     }
+
+    new_set.sort_by(|a, b| b.latency_gain.cmp(&a.latency_gain));
+    self.set = new_set;
   }
 
   #[must_use]
@@ -161,14 +159,13 @@ impl CostSet {
     id: Id,
     nested_libs: &CostSet,
     lps: usize,
-    strategy: f32,
   ) -> CostSet {
     // To add a lib, we do a modified cross.
     let mut set = Vec::new();
 
     for ls1 in &nested_libs.set {
       for ls2 in &self.set {
-        match ls2.add_lib(lib, gain, cost, id, ls1, lps, strategy) {
+        match ls2.add_lib(lib, gain, cost, id, ls1, lps) {
           None => continue,
           Some(ls) => {
             if let Err(pos) = set.binary_search(&ls) {
@@ -182,78 +179,33 @@ impl CostSet {
     CostSet { set }
   }
 
-  /// prune takes care of two different tasks to reduce the number
-  /// of functions in a `LibSel`:
-  ///
-  /// - If we have an lps limit, we remove anything that has more fns than we
-  ///   allow in a `LibSel`
-  /// - Then, if we still have too many `LibSel`s, we prune based on beam size.
-  ///
-  /// Our pruning strategy preserves n `LibSel`s per # of libs, where
-  /// n is the beam size. In other words, we preserve n `LibSel`s with
-  /// 0 libs, n `LibSel`s with 1 lib, etc.
-  pub fn prune(&mut self, n: usize, lps: usize) {
-    use std::cmp::Reverse;
-
-    let old_set = std::mem::take(&mut self.set);
-
-    // First, we create a table from # of libs to a list of LibSels
-    let mut table: HashMap<usize, BinaryHeap<Reverse<LibSelFC>>> =
-      HashMap::new();
-
-    // We then iterate over all of the LibSels in this set
-    for ls in old_set {
-      let num_libs = ls.libs.len();
-
-      // We don't need to do this anymore, because this is happening in cross:
-      // If lps is set, if num_libs > lps, give up immediately
-      // if num_libs > lps {
-      //     panic!("LibSels that are too large should have been filtered out by
-      // cross!"); }
-
-      let h = table.entry(num_libs).or_default();
-
-      h.push(Reverse(LibSelFC(ls)));
+  /// If the set is too large, prune it down to the best `beam_size` items.
+  pub fn prune(&mut self, beam_size: usize) {
+    // println!("prune");
+    if self.set.len() > beam_size {
+      // Keeps the `beam_size` `LibSel` with the highest latency gain.
+      self.set.sort_by(|a, b| b.latency_gain.cmp(&a.latency_gain));
+      self.set.truncate(beam_size);
     }
-
-    // From our table, recombine into a sorted vector
-    let mut set = Vec::new();
-    let beams_per_size = std::cmp::max(1, n / lps);
-
-    for (_sz, mut h) in table {
-      // Take the first n items from the heap
-      let mut i = 0;
-      while i < beams_per_size {
-        if let Some(ls) = h.pop() {
-          let ls = ls.0.0;
-
-          if let Err(pos) = set.binary_search(&ls) {
-            set.insert(pos, ls);
-          }
-
-          i += 1;
-        } else {
-          break;
-        }
-      }
-    }
-
-    self.set = set;
   }
 
-  pub fn update_cost(&mut self, strategy: f32, exe_count: usize) {
+  pub fn update_cost(&mut self, exe_count: usize) {
     for ls in &mut self.set {
-      let mut full_cost = 0.0;
+      let mut latency_gain: usize = 0;
+      let mut area_cost: usize = 0;
       for (_, (gain, cost, set)) in &mut ls.libs {
         // println!("update_cost");
-        full_cost += (1.0 - strategy) * (*cost as f32);
+        area_cost += *cost;
         for (_id, count) in set.iter_mut() {
           *count = std::cmp::max(exe_count, *count);
-          full_cost -= *count as f32 * *gain as f32 * strategy;
+          latency_gain += *count * *gain;
         }
       }
-      if full_cost < ls.full_cost {
-        ls.full_cost = full_cost;
+      if latency_gain > ls.latency_gain {
+        ls.latency_gain = latency_gain;
+      }
+      if area_cost < ls.area_cost {
+        ls.area_cost = area_cost;
       }
     }
   }
@@ -284,11 +236,9 @@ impl CostSet {
 /// corresponding cost values: the cost of the expression without the library
 /// functions, and the cost of the library functions themselves
 #[derive(Debug, Clone)]
-
 pub struct LibSel {
-  /// The full cost of the expression, balancing the latency gain and area
-  /// cost.
-  pub full_cost: f32,
+  pub latency_gain: usize,
+  pub area_cost: usize,
   /// The libraries used in this expression. Each library is binded with its
   /// gain, cost and the instances.
   pub libs: HashMap<LibId, (usize, usize, HashMap<Id, usize>)>,
@@ -298,13 +248,15 @@ impl Eq for LibSel {}
 
 impl PartialEq for LibSel {
   fn eq(&self, other: &Self) -> bool {
-    self.full_cost == other.full_cost && self.libs == other.libs
+    self.latency_gain == other.latency_gain
+      && self.area_cost == other.area_cost
+      && self.libs == other.libs
   }
 }
 
 impl PartialOrd for LibSel {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    let r = self.full_cost.partial_cmp(&other.full_cost);
+    let r = self.latency_gain.partial_cmp(&other.latency_gain);
     match r {
       Some(ord) => Some(ord),
       None => None,
@@ -314,16 +266,11 @@ impl PartialOrd for LibSel {
 
 impl Ord for LibSel {
   fn cmp(&self, other: &Self) -> Ordering {
-    let r = self.full_cost.partial_cmp(&other.full_cost);
+    let r = self.latency_gain.partial_cmp(&other.latency_gain);
     match r {
       Some(ord) => ord,
       None => {
-        // If the full cost is NaN, we want to sort it to the end.
-        if self.full_cost.is_nan() {
-          Ordering::Greater
-        } else {
-          Ordering::Less
-        }
+        Ordering::Equal // If we can't compare, treat as equal
       }
     }
   }
@@ -333,7 +280,8 @@ impl LibSel {
   #[must_use]
   pub fn new() -> LibSel {
     LibSel {
-      full_cost: 0.0,
+      latency_gain: 0,
+      area_cost: 0,
       libs: HashMap::new(),
     }
   }
@@ -341,12 +289,7 @@ impl LibSel {
   /// Combines two `LibSel`s. Unions the lib sets, adds
   /// the expr
   #[must_use]
-  pub fn combine(
-    &self,
-    other: &LibSel,
-    lps: usize,
-    strategy: f32,
-  ) -> Option<LibSel> {
+  pub fn combine(&self, other: &LibSel, lps: usize) -> Option<LibSel> {
     let mut res = self.clone();
 
     for (lib_id, lib_info) in &other.libs {
@@ -356,15 +299,15 @@ impl LibSel {
           for (id, count) in lib_info.2.iter() {
             if let None = set.get_mut(id) {
               set.insert(*id, *count);
-              res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+              res.latency_gain += *count * lib_info.0;
             }
           }
         }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
-          res.full_cost += lib_info.1 as f32 * (1.0 - strategy);
+          res.area_cost += lib_info.1;
           for (_, count) in lib_info.2.iter() {
-            res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+            res.latency_gain += *count * lib_info.0;
           }
           if res.libs.len() > lps {
             return None;
@@ -385,7 +328,6 @@ impl LibSel {
     id: Id,
     nested_libs: &LibSel,
     lps: usize,
-    strategy: f32,
   ) -> Option<LibSel> {
     let mut res = self.clone();
 
@@ -397,15 +339,15 @@ impl LibSel {
           for (id, count) in lib_info.2.iter() {
             if let None = set.get_mut(id) {
               set.insert(*id, *count);
-              res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+              res.latency_gain += *count * lib_info.0;
             }
           }
         }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
-          res.full_cost += lib_info.1 as f32 * (1.0 - strategy);
+          res.area_cost += lib_info.1;
           for (_, count) in lib_info.2.iter() {
-            res.full_cost -= *count as f32 * lib_info.0 as f32 * strategy;
+            res.latency_gain += *count * lib_info.0;
           }
           if res.libs.len() > lps {
             return None;
@@ -418,14 +360,14 @@ impl LibSel {
       Entry::Occupied(mut entry) => {
         let (_, _, set) = entry.get_mut();
         set.insert(id, 1);
-        res.full_cost -= gain as f32 * strategy;
+        res.latency_gain += gain;
       }
       Entry::Vacant(entry) => {
         let mut set = HashMap::new();
         set.insert(id, 1);
         entry.insert((gain, cost, set));
-        res.full_cost +=
-          cost as f32 * (1.0 - strategy) - gain as f32 * strategy;
+        res.area_cost += cost;
+        res.latency_gain += gain;
         if res.libs.len() > lps {
           return None;
         }
@@ -458,7 +400,7 @@ struct LibSelFC(pub(crate) LibSel);
 
 impl PartialOrd for LibSelFC {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    self.0.full_cost.partial_cmp(&other.0.full_cost)
+    self.0.latency_gain.partial_cmp(&other.0.latency_gain)
   }
 }
 
@@ -483,7 +425,6 @@ where
   /// The maximum number of libs per lib selection. Any lib selections with a
   /// larger amount will be pruned.
   lps: usize,
-  strategy: f32,
   bb_query: BBQuery,
   /// Marker to indicate that this struct uses the Op type parameter
   op_phantom: PhantomData<Op>,
@@ -499,14 +440,12 @@ where
     beam_size: usize,
     inter_beam: usize,
     lps: usize,
-    strategy: f32,
     bb_query: BBQuery,
   ) -> ISAXAnalysis<Op, T> {
     ISAXAnalysis {
       beam_size,
       inter_beam,
       lps,
-      strategy,
       bb_query,
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
@@ -519,7 +458,6 @@ where
       beam_size: 0,
       inter_beam: 0,
       lps: 1,
-      strategy: 1.0,
       bb_query: BBQuery::default(),
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
@@ -712,8 +650,6 @@ where
     // Merging consists of combination, followed by unification and beam
     // pruning.
     to.cs.combine(from.cs.clone());
-    to.cs.unify();
-    to.cs.prune(self.beam_size, self.lps);
 
     let exe_count = match to.bb.len() {
       0 => 1,
@@ -725,7 +661,9 @@ where
         None => 1,
       },
     };
-    to.cs.update_cost(self.strategy, exe_count);
+    to.cs.update_cost(exe_count);
+    to.cs.unify();
+    to.cs.prune(self.beam_size);
 
     // we also need to merge the type information
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
@@ -786,24 +724,16 @@ where
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
-        let mut e = x(b).add_lib(
-          id,
-          gain,
-          cost,
-          *b,
-          x(f),
-          self_ref.lps,
-          self_ref.strategy,
-        );
+        let mut e = x(b).add_lib(id, gain, cost, *b, x(f), self_ref.lps);
         // println!("new cost set: {:#?}", e);
-        e.unify();
-        e.prune(self_ref.beam_size, self_ref.lps);
         let bbs = enode.operation().get_bbs_info();
         if bbs.len() > 0 {
           if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
-            e.update_cost(self_ref.strategy, bb_entry.execution_count);
+            e.update_cost(bb_entry.execution_count);
           }
         }
+        e.unify();
+        e.prune(self_ref.beam_size);
         ISAXCost::new(e, ty, bbs, hash)
       }
       Some(_) | None => {
@@ -823,7 +753,7 @@ where
           let bbs = enode.operation().get_bbs_info();
           if bbs.len() > 0 {
             if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
-              e.update_cost(self_ref.strategy, bb_entry.execution_count);
+              e.update_cost(bb_entry.execution_count);
             }
           }
           ISAXCost::new(e, ty, bbs, hash)
@@ -832,20 +762,16 @@ where
           let mut e = x(&enode.args()[0]).clone();
 
           for cs in &enode.args()[1..] {
-            e = e.cross(x(cs), self_ref.lps, self_ref.strategy);
-            // Intermediate prune.
-            e.unify();
-            e.prune(self_ref.inter_beam, self_ref.lps);
+            e = e.cross(x(cs), self_ref.lps);
           }
-
-          e.unify();
-          e.prune(self_ref.beam_size, self_ref.lps);
           let bbs = enode.operation().get_bbs_info();
           if bbs.len() > 0 {
             if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
-              e.update_cost(self_ref.strategy, bb_entry.execution_count);
+              e.update_cost(bb_entry.execution_count);
             }
           }
+          e.unify();
+          e.prune(self_ref.beam_size);
           ISAXCost::new(e, ty, bbs, hash)
         }
       }
@@ -943,7 +869,7 @@ pub struct LibExtractor<
   /// found an expression for it (but it might still be improved).
   memo: FxHashMap<CacheKey, usize>,
   all_exprs: Vec<MaybeExpr<Op>>,
-  all_costs: Vec<Option<f32>>,
+  all_costs: Vec<Option<usize>>,
   /// Current lib context:
   /// contains all lib ids inside whose definitions we are currently
   /// extracting.
@@ -954,7 +880,6 @@ pub struct LibExtractor<
   indent: usize,
   /// The relative weight of area cost and delay cost, from 0.0 (all areaa) to
   /// 1.0 (all delay)
-  strategy: f32,
   bb_query: BBQuery,
   _phantom: PhantomData<T>,
 }
@@ -974,11 +899,7 @@ where
   AstNode<Op>: TypeInfo<T>,
 {
   /// Create a lib extractor for the given egraph
-  pub fn new(
-    egraph: &'a EGraph<AstNode<Op>, N>,
-    strategy: f32,
-    bb_query: BBQuery,
-  ) -> Self {
+  pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, bb_query: BBQuery) -> Self {
     Self {
       memo: FxHashMap::default(),
       all_exprs: Vec::with_capacity(10000),
@@ -986,7 +907,6 @@ where
       lib_context: LibContext::new(),
       egraph,
       indent: 0,
-      strategy,
       bb_query,
       _phantom: PhantomData,
     }
@@ -1008,7 +928,7 @@ where
     &mut self,
     id: Id,
     val: MaybeExpr<Op>,
-    cost: Option<f32>,
+    cost: Option<usize>,
   ) {
     // let start = Instant::now();
     // 使用prune进行修剪
@@ -1069,14 +989,9 @@ where
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> ParetoCost {
     let (latency_gain, area) = rec_cost(expr, &self.bb_query);
-    // println!("used {}ms to get the cost", start.elapsed().as_millis());
-    let full_cost = (1.0 - self.strategy) * (area as f32)
-      - self.strategy * (latency_gain as f32);
     ParetoCost {
       latency_gain,
       area_cost: area,
-      strategy: self.strategy,
-      full_cost,
     }
   }
 
@@ -1117,16 +1032,14 @@ where
                 let prev_cost = if let Some(cost) = self.all_costs[*index] {
                   cost
                 } else {
-                  let cost = Self::cost(&self, &prev).full_cost;
+                  let cost = Self::cost(&self, &prev).latency_gain;
                   prev_msg = (index.clone(), Some(cost));
                   renew_flag = true;
                   cost
                 };
                 // 接下来计算cand的cost，并赋给cand_cost
-                let c_cost = Self::cost(&self, &cand).full_cost;
-                // 如果prev_cost < c_cost，说明cand的cost更大,
-                // 将flag置为false,否则就将c_cost赋给cand_cost
-                if prev_cost < c_cost {
+                let c_cost = Self::cost(&self, &cand).latency_gain;
+                if prev_cost > c_cost {
                   flag = false;
                 } else {
                   cand_cost = Some(c_cost);

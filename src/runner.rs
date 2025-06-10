@@ -160,7 +160,8 @@ where
   pub rewrites_with_conditon:
     HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
   /// The final cost of the expression
-  pub final_cost: f32,
+  pub perf_gain: usize,
+  pub area: usize,
   /// when vectorizing, vectorized_expr is needed
   pub vectorized_expr: Option<RecExpr<AstNode<Op>>>,
   /// The time taken to run the experiment
@@ -191,7 +192,8 @@ where
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("ParetoResult")
       .field("num_libs", &self.num_libs)
-      .field("final_cost", &self.final_cost)
+      .field("perf_gain", &self.perf_gain)
+      .field("area", &self.area)
       .field("run_time", &self.run_time)
       .finish()
   }
@@ -216,8 +218,6 @@ where
   pub learn_constants: bool,
   /// Maximum arity of a library function
   pub max_arity: Option<usize>,
-  /// Strategy of balancing area and delay
-  pub strategy: f32,
   /// clock period used for scheduling
   pub clock_period: usize,
   /// area estimator
@@ -249,7 +249,6 @@ where
       lps: 1,
       learn_constants: false,
       max_arity: None,
-      strategy: 0.8,
       clock_period: 1000,
       area_estimator: LA::default(),
       delay_estimator: LD::default(),
@@ -509,7 +508,6 @@ where
         self.config.final_beams,
         self.config.inter_beams,
         usize::MAX,
-        self.config.strategy,
         self.bb_query.clone(),
       ));
 
@@ -531,7 +529,6 @@ where
         self.config.final_beams,
         self.config.inter_beams,
         self.config.lps,
-        self.config.strategy,
         self.bb_query.clone(),
       ))
       .with_egraph(new_egraph)
@@ -553,24 +550,27 @@ where
         format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
       );
       let mut cs = aeg[Id::from(root_vec[0])].data.cs.clone();
-      cs.set.sort_unstable_by_key(|elem| elem.full_cost as usize);
+      // cs.set.sort_unstable_by_key(|elem| elem.full_cost as usize);
       println!(
-        "After vectorization, root cost: {}, cs: {:#?}",
-        cs.set[0].full_cost, cs.set
+        "After vectorization, root perf: {}, cs: {:#?}",
+        cs.set[0].latency_gain, cs.set
       );
       let (_cost, expr) = Extractor::new(&aeg, VectorCF).find_best(root_vec[0]);
 
       // // TODO: 目前直接使用了Extract
-      let extractor =
-        LibExtractor::new(&aeg, self.config.strategy, self.bb_query.clone());
+      let extractor = LibExtractor::new(&aeg, self.bb_query.clone());
       // let best = extractor.best(root_vec[0]);
       let final_cost = extractor.cost(&expr);
-      println!("Final cost after vectorization: {}", final_cost.full_cost);
+      println!(
+        "Final perf after vectorization: {}",
+        final_cost.latency_gain
+      );
       return ParetoResult {
         egraph_with_root: (aeg, root_vec[0]),
         num_libs: learned_libs.len(),
         rewrites_with_conditon: rewrites_with_condition,
-        final_cost: cs.set[0].full_cost,
+        perf_gain: final_cost.latency_gain,
+        area: final_cost.area_cost,
         vectorized_expr: Some(vectorized_expr),
         run_time: start_time.elapsed(),
         learned_lib: learned_libs,
@@ -758,7 +758,6 @@ where
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
-      self.config.strategy,
       self.bb_query.clone(),
     ))
     .with_egraph(aeg.clone())
@@ -794,14 +793,10 @@ where
       list_op.operation_mut().set_bbs_info(bbs);
       egraph.add(list_op)
     };
-    let mut isax_cost = egraph[egraph.find(root)].data.clone();
+    let isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root_vec: {:?}", root_vec);
     // println!("cs: {:#?}", cs);
     // println!("cs: {:#?}", isax_cost.cs.set);
-    isax_cost
-      .cs
-      .set
-      .sort_unstable_by_key(|elem| elem.full_cost as usize);
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
     info!("Number of nodes: {}", egraph.total_size());
@@ -885,7 +880,7 @@ where
 
     debug!(
       "upper bound ('full') cost: {}",
-      isax_cost.cs.set[0].full_cost
+      isax_cost.cs.set[0].latency_gain
     );
 
     // for (id, rewrite) in lib_rewrites.clone().iter().enumerate() {
@@ -918,7 +913,8 @@ where
     list_op.operation_mut().set_bbs_info(bbs);
     let root = egraph.add(list_op);
     perf_infer::perf_infer(&mut egraph, &[root]);
-    let final_cost = isax_cost.cs.set[0].full_cost;
+    let final_perf = isax_cost.cs.set[0].latency_gain;
+    let final_area = isax_cost.cs.set[0].area_cost;
     let egraph_with_root = (egraph, root);
 
     // let mut extractor =
@@ -933,13 +929,13 @@ where
     // let lifted = extract::lift_libs(&best);
 
     // info!("Finished in {}ms", ex_time.elapsed().as_millis());
-    debug!("final cost: {}", final_cost);
+    debug!("final perf: {}, final area: {}", final_perf, final_area);
     // debug!("{}", Pretty::new(Arc::new(Expr::from(best.clone()))));
     info!("round time: {}ms", start_time.elapsed().as_millis());
 
     message.insert(
-      "final_cost".to_string(),
-      format!("{}", final_cost).to_string(),
+      "final_perf".to_string(),
+      format!("{}", final_perf).to_string(),
     );
 
     // message.insert(
@@ -950,7 +946,8 @@ where
       egraph_with_root: egraph_with_root,
       num_libs: chosen_rewrites.len(),
       rewrites_with_conditon: rewrites_map,
-      final_cost: final_cost,
+      perf_gain: final_perf,
+      area: final_area,
       vectorized_expr: None,
       run_time: start_time.elapsed(),
       learned_lib: learned_libs,
@@ -1005,7 +1002,6 @@ where
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
-      self.config.strategy,
       self.bb_query.clone(),
     ));
     let roots = recexprs
@@ -1079,7 +1075,6 @@ where
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
-      self.config.strategy,
       self.bb_query.clone(),
     ));
 
