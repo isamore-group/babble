@@ -658,13 +658,6 @@ where
 
   // 推导bbs信息
   perf_infer::perf_infer(&mut egraph, roots);
-  for ecls in egraph.classes() {
-    for node in ecls.nodes.clone() {
-      if node.operation().get_bbs_info().is_empty() {
-        println!("eclass {} has no bbs info, node: {:?}", ecls.id, node);
-      }
-    }
-  }
 
   // // 进行向量化组发现
 

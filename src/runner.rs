@@ -23,7 +23,7 @@ use crate::{
     ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet,
   },
   perf_infer,
-  rewrites::TypeMatch,
+  rewrites::{self, TypeMatch},
   schedule::Schedulable,
   vectorize::{VectorCF, VectorConfig, vectorize},
 };
@@ -118,7 +118,7 @@ where
     + Send
     + DiscriminantEq
     + 'static,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash + 'static + Send + Sync,
   AstNode<Op>: TypeInfo<T>,
 {
   /// Run the experiment on a single expression
@@ -132,6 +132,93 @@ where
     &self,
     expr_groups: Vec<Vec<Expr<Op>>>,
   ) -> ParetoResult<Op, T>;
+}
+
+/// A Egraph with (root, latency, area) information
+#[derive(Clone, Debug)]
+pub struct AnnotatedEGraph<Op, T>
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + Arity
+    + Debug
+    + 'static
+    + OperationInfo
+    + Send
+    + Sync,
+  T: Debug + Ord + Clone + Default + Hash + 'static + Send + Sync,
+  AstNode<Op>: TypeInfo<T>,
+{
+  pub egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  pub rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  pub root: Id,
+  pub latency_gain: usize,
+  pub area: usize,
+}
+
+impl<Op, T> PartialEq for AnnotatedEGraph<Op, T>
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + Arity
+    + Debug
+    + 'static
+    + OperationInfo
+    + Send
+    + Sync,
+  T: Debug + Ord + Clone + Default + Hash + 'static + Send + Sync,
+  AstNode<Op>: TypeInfo<T>,
+{
+  fn eq(&self, other: &Self) -> bool {
+    let self_rewrites_name_set: HashSet<_> =
+      self.rewrites.iter().map(|r| r.name.clone()).collect();
+    let other_rewrites_name_set: HashSet<_> =
+      other.rewrites.iter().map(|r| r.name.clone()).collect();
+    self_rewrites_name_set == other_rewrites_name_set
+      && self.root == other.root
+      && self.latency_gain == other.latency_gain
+      && self.area == other.area
+      && self.egraph.classes().len() == other.egraph.classes().len()
+  }
+}
+
+impl<Op, T> AnnotatedEGraph<Op, T>
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + Arity
+    + Debug
+    + 'static
+    + OperationInfo
+    + Send
+    + Sync,
+  T: Debug + Ord + Clone + Default + Hash + 'static + Send + Sync,
+  AstNode<Op>: TypeInfo<T>,
+{
+  pub fn new(
+    egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+    rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+    root: Id,
+    latency_gain: usize,
+    area: usize,
+  ) -> Self {
+    Self {
+      egraph,
+      rewrites,
+      root,
+      latency_gain,
+      area,
+    }
+  }
 }
 
 /// Result of running a BabbleRunner experiment
@@ -149,19 +236,16 @@ where
     + OperationInfo
     + Send
     + Sync,
-  T: Debug + Ord + Clone + Default + Hash,
+  T: Debug + Ord + Clone + Default + Hash + 'static + Send + Sync,
   AstNode<Op>: TypeInfo<T>,
 {
-  /// the egraph (rewites using chosen rewrites) and its root
-  pub egraph_with_root: Vec<(EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id)>,
   /// The number of libraries learned
   pub num_libs: usize,
   /// The rewrites representing the learned libraries
   pub rewrites_with_conditon:
     HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
-  /// The final cost of the expression
-  pub perf_gain: usize,
-  pub area: usize,
+  /// The final result of pareto: a series of AnnotatedEGraph
+  pub annotated_egraphs: Vec<AnnotatedEGraph<Op, T>>,
   /// when vectorizing, vectorized_expr is needed
   pub vectorized_expr: Option<RecExpr<AstNode<Op>>>,
   /// The time taken to run the experiment
@@ -186,14 +270,14 @@ where
     + OperationInfo
     + Send
     + Sync,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash + 'static + Send + Sync,
   AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("ParetoResult")
       .field("num_libs", &self.num_libs)
-      .field("perf_gain", &self.perf_gain)
-      .field("area", &self.area)
+      // .field("perf_gain", &self.perf_gain)
+      // .field("area", &self.area)
       .field("run_time", &self.run_time)
       .finish()
   }
@@ -234,8 +318,6 @@ where
   pub op_pack_config: OpPackConfig,
   /// ci_encoding config
   pub ci_encoding_config: CiEncodingConfig,
-  /// if to merge the beams
-  pub merge_beams: bool,
 }
 
 impl<LA, LD> Default for ParetoConfig<LA, LD>
@@ -259,7 +341,6 @@ where
       vectorize_config: VectorConfig::default(),
       op_pack_config: OpPackConfig::default(),
       ci_encoding_config: CiEncodingConfig::default(),
-      merge_beams: true,
     }
   }
 }
@@ -534,7 +615,7 @@ where
         self.config.lps,
         self.bb_query.clone(),
       ))
-      .with_egraph(new_egraph)
+      .with_egraph(new_egraph.clone())
       .with_iter_limit(self.config.lib_iter_limit)
       .with_time_limit(timeout)
       .with_node_limit(1_000_000)
@@ -552,28 +633,34 @@ where
         "vectorized_time".to_string(),
         format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
       );
+
       let cs = aeg[Id::from(root_vec[0])].data.cs.clone();
       // cs.set.sort_unstable_by_key(|elem| elem.full_cost as usize);
-      println!(
-        "After vectorization, root perf: {}, cs: {:#?}",
-        cs.set[0].latency_gain, cs.set
-      );
+      // println!(
+      //   "After vectorization, root perf: {}, cs: {:#?}",
+      //   cs.set[0].latency_gain, cs.set
+      // );
       let (_cost, expr) = Extractor::new(&aeg, VectorCF).find_best(root_vec[0]);
 
       // // TODO: 目前直接使用了Extract
       let extractor = LibExtractor::new(&aeg, self.bb_query.clone());
       // let best = extractor.best(root_vec[0]);
       let final_cost = extractor.cost(&expr);
+      let annotated_egraphs = vec![AnnotatedEGraph::new(
+        new_egraph,
+        rewrites,
+        root_vec[0],
+        final_cost.latency_gain,
+        final_cost.area_cost,
+      )];
       println!(
         "Final perf after vectorization: {}",
         final_cost.latency_gain
       );
       return ParetoResult {
-        egraph_with_root: vec![(aeg, root_vec[0])],
         num_libs: learned_libs.len(),
         rewrites_with_conditon: rewrites_with_condition,
-        perf_gain: final_cost.latency_gain,
-        area: final_cost.area_cost,
+        annotated_egraphs,
         vectorized_expr: Some(vectorized_expr),
         run_time: start_time.elapsed(),
         learned_lib: learned_libs,
@@ -810,22 +897,19 @@ where
 
     println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
-    let mut egraphs_with_root = Vec::new();
-    let mut chosen_rewrites_beams = Vec::new();
+    let mut annotated_egraphs = Vec::new();
     let mut chosen_rewrites = Vec::new();
     let mut learned_libs = Vec::new();
     let mut rewrites_map = HashMap::new();
     for i in 0..isax_cost.cs.set.len() {
-      if !self.config.merge_beams {
-        chosen_rewrites.clear();
-      }
+      let mut chosen_rewrites_per_libsel = vec![];
       for lib in &isax_cost.cs.set[i].libs {
         // println!("lib: {}, max_lib_id: {}", lib.0.0, max_lib_id);
         if lib.0.0 < max_lib_id {
           // 从self.lib_rewrites中取出
           // 打印self.lib_rewrites
           // println!("{}: {:?}", lib.0.0, self.lib_rewrites_with_condition);
-          chosen_rewrites.push(
+          chosen_rewrites_per_libsel.push(
             self
               .lib_rewrites_with_condition
               .get(&lib.0.0)
@@ -856,7 +940,7 @@ where
             // 说明是一个正常的lib
             let new_lib = lib.0.0 - max_lib_id;
             // println!("new_lib: {}", new_lib);
-            chosen_rewrites
+            chosen_rewrites_per_libsel
               .push(expand_message.all_au_rewrites[new_lib].clone());
             learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
             // println!(
@@ -873,7 +957,7 @@ where
           } else {
             // 说明是一个meta lib
             println!("We have leaned a meta lib !");
-            chosen_rewrites
+            chosen_rewrites_per_libsel
               .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
             learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
             for rewrite in expand_message.meta_au_rewrites[&lib.0.0].clone() {
@@ -885,9 +969,15 @@ where
           }
         }
       }
-      if !self.config.merge_beams {
-        chosen_rewrites_beams.push(chosen_rewrites.clone());
-      }
+      chosen_rewrites.extend(chosen_rewrites_per_libsel.clone());
+      // 更新annotated_egraphs
+      annotated_egraphs.push(AnnotatedEGraph::new(
+        aeg.clone(),
+        chosen_rewrites_per_libsel,
+        root.clone(),
+        isax_cost.cs.set[i].latency_gain,
+        isax_cost.cs.set[i].area_cost,
+      ));
     }
 
     // deduplicate chosen_rewrites
@@ -901,90 +991,15 @@ where
       isax_cost.cs.set[0].latency_gain
     );
 
-    // for (id, rewrite) in lib_rewrites.clone().iter().enumerate() {
-    //   println!("lib{}", id);
-    //   let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
-    //     .with_egraph(aeg.clone())
-    //     .with_iter_limit(1)
-    //     .with_time_limit(timeout)
-    //     .with_node_limit(1_000_000)
-    //     .run(&[rewrite.clone()])
-    //     .egraph;
-    //   let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
-    //   let mut extractor =
-    //     LibExtractor::new(&egraph, self.config.strategy);
-    //   let best = extractor.best(root);
-    //   let final_cost = extractor.cost(&best);
-    //   println!("final cost: {}", final_cost);
-    // }
-    println!("Rewriting");
-    if self.config.merge_beams {
-      let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
-        .with_egraph(aeg)
-        .with_iter_limit(1)
-        .with_time_limit(timeout)
-        .with_node_limit(1_000_000)
-        .run(chosen_rewrites.iter())
-        .egraph;
-      println!("Rewriting done");
-      let bbs = egraph[root_vec[0]].data.bb.clone();
-      let mut list_op = AstNode::new(Op::list(), root_vec.iter().copied());
-      list_op.operation_mut().set_bbs_info(bbs);
-      let root = egraph.add(list_op);
-      perf_infer::perf_infer(&mut egraph, &[root]);
-      egraphs_with_root.push((egraph, root));
-    } else {
-      for chos_rewrites in chosen_rewrites_beams {
-        let mut egraph = EggRunner::<_, _, ()>::new(ISAXAnalysis::default())
-          .with_egraph(aeg.clone())
-          .with_iter_limit(1)
-          .with_time_limit(timeout)
-          .with_node_limit(1_000_000)
-          .run(chos_rewrites.iter())
-          .egraph;
-        println!("Rewriting done");
-        let bbs = egraph[root_vec[0]].data.bb.clone();
-        let mut list_op = AstNode::new(Op::list(), root_vec.iter().copied());
-        list_op.operation_mut().set_bbs_info(bbs);
-        let root = egraph.add(list_op);
-        perf_infer::perf_infer(&mut egraph, &[root]);
-        egraphs_with_root.push((egraph, root));
-      }
-    }
-    let final_perf = isax_cost.cs.set[0].latency_gain;
-    let final_area = isax_cost.cs.set[0].area_cost;
-
-    // let mut extractor =
-    //   LibExtractor::new(&egraph, self.config.strategy,
-    // self.bb_query.clone()); println!("Extracting");
-    // let best = extractor.best(root);
-    // let final_cost = extractor.cost(&best);
-    // println!("Extracting done");
-
-    // println!("extracting using {}s", extract_time.elapsed().as_secs());
-    // Lifting the lib will result in incorrect cost
-    // let lifted = extract::lift_libs(&best);
-
-    // info!("Finished in {}ms", ex_time.elapsed().as_millis());
-    debug!("final perf: {}, final area: {}", final_perf, final_area);
-    // debug!("{}", Pretty::new(Arc::new(Expr::from(best.clone()))));
-    info!("round time: {}ms", start_time.elapsed().as_millis());
-
-    message.insert(
-      "final_perf".to_string(),
-      format!("{}", final_perf).to_string(),
-    );
-
+    println!("annotated_egraphs: {}", annotated_egraphs.len());
     // message.insert(
     //   "extract_time".to_string(),
     //   format!("{}ms", ex_time.elapsed().as_millis()).to_string(),
     // );
     ParetoResult {
-      egraph_with_root: egraphs_with_root,
       num_libs: chosen_rewrites.len(),
       rewrites_with_conditon: rewrites_map,
-      perf_gain: final_perf,
-      area: final_area,
+      annotated_egraphs: annotated_egraphs,
       vectorized_expr: None,
       run_time: start_time.elapsed(),
       learned_lib: learned_libs,
