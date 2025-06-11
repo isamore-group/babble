@@ -11,6 +11,8 @@ use std::{
   time::{Duration, Instant},
 };
 
+use bitvec::vec;
+use lexpr::print;
 use serde::Deserialize;
 
 use crate::{
@@ -101,6 +103,18 @@ pub trait OperationInfo {
   /// 设置bbs信息
   fn set_bbs_info(&mut self, bbs: Vec<String>);
   fn is_arithmetic(&self) -> bool;
+  /// 是不是tuple节点
+  fn is_tuple(&self) -> bool {
+    false
+  }
+  /// 是不是get节点
+  fn is_get(&self) -> bool {
+    false
+  }
+  /// 是不是arg节点
+  fn is_arg(&self) -> bool {
+    false
+  }
 }
 
 /// A trait for running library learning experiments with Pareto optimization
@@ -349,11 +363,12 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LiblearnCost {
-  /// type of cost : "delay", "Match", "size"
+  /// type of cost : "delay", "Match", "size"， "latencygainarea"
   #[serde(rename = "match")]
   Match,
   Delay,
   Size,
+  LatencyGainArea,
 }
 impl Default for LiblearnCost {
   fn default() -> Self {
@@ -574,11 +589,13 @@ where
 
     let mut aeg = runner.egraph;
     let mut root_vec = roots.to_vec();
+    let mut vectorized_liblearn_messages = vec![];
+    let mut vectorized_expr = None;
 
     // aeg.dot().to_png("target/initial_egraph.png").unwrap();
     if self.config.vectorize_config.vectorize {
       let vectorize_time = Instant::now();
-      let (vectorized_expr, lib_messages) = vectorize(
+      let (expr, roots, vectorized_egraph, lib_messages) = vectorize(
         aeg.clone(),
         roots,
         &self.lift_dsrs,
@@ -586,95 +603,18 @@ where
         self.config.clone(),
         self.bb_query.clone(),
       );
-
-      // 新建一个EGraph，将expr加入
-      let mut new_egraph = EGraph::new(ISAXAnalysis::new(
-        self.config.final_beams,
-        self.config.inter_beams,
-        usize::MAX,
-        self.bb_query.clone(),
-      ));
-
-      root_vec = vec![new_egraph.add_expr(&vectorized_expr)];
-
-      let mut rewrites_with_condition = HashMap::new();
-      let mut learned_libs = Vec::new();
-      let mut rewrites = Vec::new();
-
-      for msg in lib_messages {
-        rewrites.push(msg.rewrite.clone());
-        rewrites_with_condition
-          .insert(msg.lib_id, (msg.rewrite.clone(), msg.condition.clone()));
-        learned_libs
-          .push((msg.lib_id, (msg.searcher_pe, Pattern::from(msg.applier_pe))));
-      }
-      // 应用重写规则
-      let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
-        self.config.final_beams,
-        self.config.inter_beams,
-        self.config.lps,
-        self.bb_query.clone(),
-      ))
-      .with_egraph(new_egraph.clone())
-      .with_iter_limit(self.config.lib_iter_limit)
-      .with_time_limit(timeout)
-      .with_node_limit(1_000_000)
-      .run(&rewrites);
-
-      let aeg = runner.egraph;
-
+      aeg = vectorized_egraph;
+      vectorized_liblearn_messages = lib_messages;
+      root_vec = roots;
+      vectorized_expr = Some(expr);
       println!(
-        "After adding vectorized rewrites, egraph size: {}, eclasses: {}",
-        aeg.total_size(),
-        aeg.classes().len()
+        "Vectorized egraph in {}ms",
+        vectorize_time.elapsed().as_millis()
       );
-
       message.insert(
-        "vectorized_time".to_string(),
+        "vectorize_time".to_string(),
         format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
       );
-
-      let cs = aeg[Id::from(root_vec[0])].data.cs.clone();
-      // cs.set.sort_unstable_by_key(|elem| elem.full_cost as usize);
-      // println!(
-      //   "After vectorization, root perf: {}, cs: {:#?}",
-      //   cs.set[0].latency_gain, cs.set
-      // );
-      let (_cost, expr) = Extractor::new(&aeg, VectorCF).find_best(root_vec[0]);
-
-      // // TODO: 目前直接使用了Extract
-      let extractor = LibExtractor::new(&aeg, self.bb_query.clone());
-      // let best = extractor.best(root_vec[0]);
-      let final_cost = extractor.cost(&expr);
-      let annotated_egraphs = vec![AnnotatedEGraph::new(
-        new_egraph,
-        rewrites,
-        root_vec[0],
-        final_cost.latency_gain,
-        final_cost.area_cost,
-      )];
-      println!(
-        "Final perf after vectorization: {}",
-        final_cost.latency_gain
-      );
-      return ParetoResult {
-        num_libs: learned_libs.len(),
-        rewrites_with_conditon: rewrites_with_condition,
-        annotated_egraphs,
-        vectorized_expr: Some(vectorized_expr),
-        run_time: start_time.elapsed(),
-        learned_lib: learned_libs,
-        message,
-      };
-      // println!("in Vectorization phase, dsrs len: {}", self.dsrs.len());
-      // 使用部分transform_dsr进行重写
-      // let new_runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
-      //   .with_egraph(new_egraph)
-      //   .with_time_limit(timeout)
-      //   .with_iter_limit(3)
-      //   .run(&self.dsrs);
-
-      // aeg = new_runner.egraph;
     }
 
     println!(
@@ -732,38 +672,66 @@ where
         max_lib_id,
       )
     } else {
-      let learned_lib = LearnedLibraryBuilder::default()
-        .learn_constants(self.config.learn_constants)
-        .max_arity(self.config.max_arity)
-        // .with_co_occurs(co_occurs)
-        .with_last_lib_id(max_lib_id)
-        .with_liblearn_config(self.config.liblearn_config.clone())
-        .with_ci_encoding_config(self.config.ci_encoding_config.clone())
-        .with_clock_period(self.config.clock_period)
-        .with_area_estimator(self.config.area_estimator.clone())
-        .with_delay_estimator(self.config.delay_estimator.clone())
-        .with_bb_query(self.bb_query.clone())
-        .build(&aeg);
+      let liblearn_messages = if self.config.vectorize_config.vectorize {
+        vectorized_liblearn_messages
+      } else {
+        let mut learned_lib = LearnedLibraryBuilder::default()
+          .learn_constants(self.config.learn_constants)
+          .max_arity(self.config.max_arity)
+          // .with_co_occurs(co_occurs)
+          .with_last_lib_id(max_lib_id)
+          .with_liblearn_config(self.config.liblearn_config.clone())
+          // .with_ci_encoding_config(self.config.ci_encoding_config.clone())
+          .with_clock_period(self.config.clock_period)
+          .with_area_estimator(self.config.area_estimator.clone())
+          .with_delay_estimator(self.config.delay_estimator.clone())
+          .with_bb_query(self.bb_query.clone())
+          .build(&aeg);
 
-      println!(
-        "Found {} patterns in {}ms",
-        learned_lib.size(),
-        au_time.elapsed().as_millis()
-      );
+        println!(
+          "Found {} patterns in {}ms",
+          learned_lib.size(),
+          au_time.elapsed().as_millis()
+        );
 
-      message.insert(
-        "au_time".to_string(),
-        format!("{}ms", au_time.elapsed().as_millis()).to_string(),
-      );
+        message.insert(
+          "au_time".to_string(),
+          format!("{}ms", au_time.elapsed().as_millis()).to_string(),
+        );
 
-      // info!("Deduplicating patterns... ");
-      let dedup_time = Instant::now();
-      // learned_lib.deduplicate(&aeg);
+        info!("Deduplicating patterns... ");
+        let dedup_time = Instant::now();
+        learned_lib.deduplicate(&aeg);
+
+        println!(
+          "Deduplicated to {} patterns in {}ms",
+          learned_lib.size(),
+          dedup_time.elapsed().as_millis()
+        );
+        info!(
+          "Reduced to {} patterns in {}ms",
+          learned_lib.size(),
+          dedup_time.elapsed().as_millis()
+        );
+
+        message.insert(
+          "dedup_time".to_string(),
+          format!("{}ms", dedup_time.elapsed().as_millis()).to_string(),
+        );
+        println!("learned {} libs", learned_lib.size());
+
+        message.insert(
+          "learned_libs".to_string(),
+          format!("{}", learned_lib.size()).to_string(),
+        );
+        learned_lib.messages()
+      };
+
       let mut lib_rewrites = Vec::new();
       let mut rewrite_conditions = HashMap::new();
       let mut libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<_>)> =
         HashMap::new();
-      for msg in learned_lib.messages() {
+      for msg in liblearn_messages {
         lib_rewrites.push(msg.rewrite.clone());
         rewrite_conditions.insert(msg.lib_id, msg.condition.clone());
         libs.insert(
@@ -777,23 +745,7 @@ where
       // for lib in libs.clone() {
       //   println!("lib: {}", Pattern::from(lib.1.0));
       // }
-      info!(
-        "Reduced to {} patterns in {}ms",
-        learned_lib.size(),
-        dedup_time.elapsed().as_millis()
-      );
 
-      message.insert(
-        "dedup_time".to_string(),
-        format!("{}ms", dedup_time.elapsed().as_millis()).to_string(),
-      );
-
-      println!("learned {} libs", learned_lib.size());
-
-      message.insert(
-        "learned_libs".to_string(),
-        format!("{}", learned_lib.size()).to_string(),
-      );
       ExpandMessage {
         all_au_rewrites: lib_rewrites,
         conditions: rewrite_conditions.clone(),
@@ -1000,7 +952,7 @@ where
       num_libs: chosen_rewrites.len(),
       rewrites_with_conditon: rewrites_map,
       annotated_egraphs: annotated_egraphs,
-      vectorized_expr: None,
+      vectorized_expr: vectorized_expr,
       run_time: start_time.elapsed(),
       learned_lib: learned_libs,
       message,

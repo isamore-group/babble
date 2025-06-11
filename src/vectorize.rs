@@ -11,7 +11,7 @@ use crate::{
   rewrites::TypeMatch,
   runner::{
     AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
-    ParetoConfig,
+    ParetoConfig, ParetoResult,
   },
   schedule::{Schedulable, Scheduler},
   teachable::{ShieldingOp, Teachable},
@@ -564,6 +564,8 @@ pub fn vectorize<Op, T, LA, LD>(
   bb_query: BBQuery,
 ) -> (
   RecExpr<AstNode<Op>>,
+  Vec<Id>,
+  EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   Vec<LiblearnMessage<Op, T, ISAXAnalysis<Op, T>>>,
 )
 where
@@ -890,6 +892,17 @@ where
   let (cost, expr) = Extractor::new(&egraph, VectorCF).find_best(new_root);
   debug!("cost: {:?}", cost);
 
+  // 除此之外还可以提取一些其他节点的表达式，用来扩充vec_lib
+  let mut other_exprs = Vec::new();
+  for class in egraph.classes() {
+    // println!("class id: {}", class.id);
+    if class.id == new_root {
+      continue; // 跳过根节点
+    }
+    let (_, expr) = Extractor::new(&egraph, VectorCF).find_best(class.id);
+    other_exprs.push(expr);
+  }
+
   let mut vecop_cnt = 0;
   for (id, node) in expr.iter().enumerate() {
     debug!("{}: {:?}", id, node);
@@ -898,7 +911,7 @@ where
     }
   }
 
-  println!("Vectorized Nodes: {}", vecop_cnt);
+  println!("Vectorized Nodes in root_expr: {}", vecop_cnt);
   println!(
     "Vectorized egraph size: {}, eclasses: {}",
     egraph.total_size(),
@@ -913,8 +926,29 @@ where
       );
     }
   }
-
-  let aus = expr_vec2lib(&(expr.clone().into()));
+  let mut aus = Vec::new();
+  let mut pe_hash = HashSet::new();
+  let mut insert_into_aus =
+    |pe: PartialExpr<Op, Var>, type_map: HashMap<Var, Vec<String>>| {
+      // 检查是否已经存在相同的pe
+      if !pe_hash.contains(&pe) {
+        pe_hash.insert(pe.clone());
+        aus.push((pe, type_map));
+      }
+    };
+  let root_aus = expr_vec2lib(&(expr.clone().into()));
+  for (pe, type_map) in root_aus {
+    // 将根表达式的au添加到aus中
+    insert_into_aus(pe, type_map);
+  }
+  for expr in other_exprs.clone() {
+    let new_aus = expr_vec2lib(&expr.clone().into());
+    // 将其他表达式的au添加到root_aus中
+    for (pe, type_map) in new_aus {
+      // 检查是否已经存在相同的pe
+      insert_into_aus(pe, type_map);
+    }
+  }
   let mut lib_messages = Vec::new();
   for (i, au) in aus.iter().enumerate() {
     let searcher: Pattern<_> = au.0.clone().into();
@@ -959,8 +993,8 @@ where
       bb_query.clone(),
     );
     let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
-    println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
-    println!("lib: {}", searcher);
+    // println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
+    // println!("lib: {}", searcher);
     for node in applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
@@ -1002,7 +1036,24 @@ where
   }
   println!("Vectorize:: There are {} vec_libs", lib_messages.len());
 
-  (expr.into(), lib_messages)
+  // 新建一个EGraph，将expr加入
+  let mut new_egraph = EGraph::new(ISAXAnalysis::new(
+    config.final_beams,
+    config.inter_beams,
+    usize::MAX,
+    bb_query.clone(),
+  ));
+
+  let root_vec = vec![new_egraph.add_expr(&(expr.clone().into()))];
+
+  // 加入其他的向量化表达式
+  for expr in other_exprs {
+    egraph.add_expr(&expr.into());
+  }
+
+  // 挑选出根节点
+
+  (expr.into(), root_vec, new_egraph, lib_messages)
 }
 
 // 本函数输入一个Expr，返回一个Expr(为转换后的Expr)，

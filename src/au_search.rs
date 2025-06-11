@@ -89,6 +89,17 @@ impl<Op: Eq + OperationInfo + Clone + Ord, Type: Eq> PartialOrd
           other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
         self_size.cmp(&other_size)
       }
+      LiblearnCost::LatencyGainArea => {
+        let self_latency_gain =
+          self.aus.iter().map(|x| x.latency_gain()).sum::<usize>();
+        let other_latency_gain =
+          other.aus.iter().map(|x| x.latency_gain()).sum::<usize>();
+        let self_area = self.aus.iter().map(|x| x.area_cost()).sum::<usize>();
+        let other_area = other.aus.iter().map(|x| x.area_cost()).sum::<usize>();
+        self_area
+          .cmp(&other_area)
+          .then_with(|| self_latency_gain.cmp(&other_latency_gain))
+      }
     }
     .then(other_holes.cmp(&self_holes));
     Some(ord)
@@ -98,33 +109,8 @@ impl<Op: Eq + OperationInfo + Clone + Ord, Type: Eq> PartialOrd
 /// 为VecPE实现Ord
 impl<Op: Eq + OperationInfo + Clone + Ord, Type: Eq> Ord for VecPE<Op, Type> {
   fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-    // self.matches.cmp(&other.matches)
-    // let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
-    // let other_size = other.aus.iter().map(|x|
-    // x.expr().size()).sum::<usize>(); self_size.cmp(&other_size)
-    // let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
-    // let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
-    // self_delay.cmp(&other_delay)
-    match self.cost_config {
-      LiblearnCost::Match => {
-        let self_matched =
-          self.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
-        let other_matched =
-          other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
-        self_matched.cmp(&other_matched)
-      }
-      LiblearnCost::Size => {
-        let self_size = self.aus.iter().map(|x| x.expr().size()).sum::<usize>();
-        let other_size =
-          other.aus.iter().map(|x| x.expr().size()).sum::<usize>();
-        self_size.cmp(&other_size)
-      }
-      LiblearnCost::Delay => {
-        let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
-        let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
-        self_delay.cmp(&other_delay)
-      }
-    }
+    // 直接使用PartialOrd的实现
+    self.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
   }
 }
 
@@ -253,8 +239,8 @@ where
   selected_elements
     .push(upper_bound.iter().map(|x| x.expr().clone()).collect());
   // 加入下界
-  // selected_elements
-  //   .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
+  selected_elements
+    .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
   selected_elements
 }
 
@@ -443,49 +429,50 @@ where
     info!("insert into BTreeSet cost: {:?}", start_time.elapsed());
     candidates
   } else {
-    // 首先，对lgm求上界得到递归次数
+    // // 首先，对lgm求上界得到递归次数
     let depth = (m as f64).log2().ceil() as usize;
-    // 接下来确定每个集合被切分的次数
-    let n = aus.len();
-    // 基础次数为depth/n
-    let base = depth / n;
-    // 创建切分次数数组，每个集合切分base次
-    let mut split_times = vec![base; n];
-    // depth%n次的切分加到前面的集合中
-    for i in 0..depth % n {
-      split_times[i] += 1;
-    }
+    // // 接下来确定每个集合被切分的次数
+    // let n = aus.len();
+    // // 基础次数为depth/n
+    // let base = depth / n;
+    // // 创建切分次数数组，每个集合切分base次
+    // let mut split_times = vec![base; n];
+    // // depth%n次的切分加到前面的集合中
+    // for i in 0..depth % n {
+    //   split_times[i] += 1;
+    // }
     // FIXME:为什么使用了优先队列之后反倒效果不是特别好？
     // // 维护一个优先队列，存储维度i和aus[i]切分后当前的长度，
-    // 这个优先队列根据长度从大到小进行排序 let mut pq =
-    // std::collections::BinaryHeap::new(); for i in 0..aus.len() {
-    //     pq.push((aus[i].len(), i));
-    // }
-    // let n = aus.len();
-    // // 进行n次切分，每次切分取出最大的集合进行切分，并更新相应split_times
-    // let mut split_times = vec![0; n];
-    // let mut cnt = 0;
-    // for _ in 0..depth {
-    //     let (len, i) = pq.pop().unwrap();
-    //     // 如果len为1，直接跳出
-    //     if len == 1 {
-    //         break;
-    //     }
-    //     split_times[i] += 1;
-    //     pq.push((len / 2, i));
-    //     cnt += 1;
-    // }
-    // // 如果cnt < depth,
+    // 这个优先队列根据长度从大到小进行排序
+    let mut pq = std::collections::BinaryHeap::new();
+    for i in 0..aus.len() {
+      pq.push((aus[i].len(), i));
+    }
+    let n = aus.len();
+    // 进行n次切分，每次切分取出最大的集合进行切分，并更新相应split_times
+    let mut split_times = vec![0; n];
+    let mut cnt = 0;
+    for _ in 0..depth {
+      let (len, i) = pq.pop().unwrap();
+      // 如果len为1，直接跳出
+      if len == 1 {
+        break;
+      }
+      split_times[i] += 1;
+      pq.push((len / 2, i));
+      cnt += 1;
+    }
+    // 如果cnt < depth,
     // 那么说明有集合的长度为1，那么剩下的切分次数平摊到每个集合
-    // if cnt < depth {
-    //     let base = (depth - cnt) / n;
-    //     for i in 0..n {
-    //         split_times[i] += base;
-    //     }
-    //     for i in 0..(depth - cnt) % n {
-    //         split_times[i] += 1;
-    //     }
-    // }
+    if cnt < depth {
+      let base = (depth - cnt) / n;
+      for i in 0..n {
+        split_times[i] += base;
+      }
+      for i in 0..(depth - cnt) % n {
+        split_times[i] += 1;
+      }
+    }
     // 初始化结果数组
     let mut results = BTreeSet::new();
     let mut segments = Vec::new();
@@ -554,8 +541,8 @@ where
   }
   selected_elements
     .push(upper_bound.iter().map(|x| x.expr().clone()).collect());
-  // selected_elements
-  //   .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
+  selected_elements
+    .push(lower_bound.iter().map(|x| x.expr().clone()).collect());
   selected_elements
 }
 
@@ -594,6 +581,8 @@ where
     // 如果上下界相同，直接返回
     return vec![lower_bound.iter().map(|x| x.expr().clone()).collect()];
   }
+
+  // println!("lower_bound: {:?}", lower_bound);
 
   result.push(lower_bound);
   result.push(upper_bound);

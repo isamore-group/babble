@@ -483,7 +483,7 @@ where
   let max_lib_id = max_lib_id + learned_lib.size();
 
   // 进行meta_au-search
-  let learn_meta_lib = LearnedLibraryBuilder::default()
+  let mut learn_meta_lib = LearnedLibraryBuilder::default()
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
     .with_liblearn_config(meta_au_lib_config)
@@ -496,6 +496,9 @@ where
     .build(&meta_egraph);
 
   let meta_messages: Vec<_> = learn_meta_lib.messages();
+
+  // 进行去重
+  learn_meta_lib.deduplicate(&meta_egraph);
 
   println!("expand::learned {} meta libs", learn_meta_lib.size());
   // for lib in learn_meta_lib.libs() {
