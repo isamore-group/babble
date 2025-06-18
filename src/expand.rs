@@ -413,6 +413,7 @@ where
     config.liblearn_config.hamming_threshold,
     config.liblearn_config.jaccard_threshold,
     config.liblearn_config.max_libs,
+    config.liblearn_config.min_lib_size,
     config.liblearn_config.max_lib_size,
   );
   let learned_lib = LearnedLibraryBuilder::default()
@@ -476,6 +477,7 @@ where
     config.liblearn_config.hamming_threshold,
     config.liblearn_config.jaccard_threshold,
     config.liblearn_config.max_libs,
+    config.liblearn_config.min_lib_size,
     config.liblearn_config.max_lib_size,
   );
 

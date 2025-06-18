@@ -35,6 +35,7 @@ use egg::{
 use log::{debug, info};
 
 pub trait OperationInfo {
+  fn is_liblearn_banned_op(&self) -> bool;
   fn is_lib(&self) -> bool;
   fn is_lib_op(&self) -> bool;
   /// Get the library ID of the operation
@@ -114,6 +115,18 @@ pub trait OperationInfo {
   /// 是不是arg节点
   fn is_arg(&self) -> bool {
     false
+  }
+  /// 是不是external_arg
+  fn is_external_arg(&self) -> bool {
+    false
+  }
+  /// 通过节点op和其子节点的Op的类型，判断这个节点是不是有用的
+  fn is_useful_expr(&self, children_ops: &[Self]) -> bool
+  where
+    Self: Sized,
+  {
+    // 默认返回true
+    true
   }
 }
 
@@ -412,6 +425,8 @@ pub struct LiblearnConfig {
   pub jaccard_threshold: f64,
   /// every liblearn, we learn at most this number of libs
   pub max_libs: usize,
+  /// a lib must have at least this number of nodes
+  pub min_lib_size: usize,
   /// a lib can have at most this number of nodes
   pub max_lib_size: usize,
 }
@@ -426,6 +441,7 @@ impl Default for LiblearnConfig {
       hamming_threshold: 36,
       jaccard_threshold: 0.67,
       max_libs: 500,
+      min_lib_size: 4,
       max_lib_size: 500,
     }
   }
@@ -441,6 +457,7 @@ impl LiblearnConfig {
     hamming_threshold: usize,
     jaccard_threshold: f64,
     max_libs: usize,
+    min_lib_size: usize,
     max_lib_size: usize,
   ) -> Self {
     Self {
@@ -451,6 +468,7 @@ impl LiblearnConfig {
       hamming_threshold,
       jaccard_threshold,
       max_libs,
+      min_lib_size,
       max_lib_size,
     }
   }
@@ -681,7 +699,7 @@ where
           // .with_co_occurs(co_occurs)
           .with_last_lib_id(max_lib_id)
           .with_liblearn_config(self.config.liblearn_config.clone())
-          // .with_ci_encoding_config(self.config.ci_encoding_config.clone())
+          .with_ci_encoding_config(self.config.ci_encoding_config.clone())
           .with_clock_period(self.config.clock_period)
           .with_area_estimator(self.config.area_estimator.clone())
           .with_delay_estimator(self.config.delay_estimator.clone())

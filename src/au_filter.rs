@@ -196,6 +196,11 @@ pub fn io_filter<T: TypeAnalysis>(
   // if the total inputs exceeds the maximum allowed inputs, we can just return
   // false
   if reg_types.len() as u32 > max_inputs(config) {
+    // println!(
+    //   "Too many inputs: {} > {}",
+    //   reg_types.len(),
+    //   max_inputs(config)
+    // );
     return false;
   }
   // if the total bits satisfies the max_total_bits, we can just return true

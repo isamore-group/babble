@@ -5,7 +5,7 @@ use crate::{
   ast_node::{Arity, AstNode},
   au_filter::TypeAnalysis,
   bb_query::{self, BBInfo, BBQuery},
-  extract::beam_pareto::{ClassMatch, ISAXAnalysis, TypeInfo},
+  extract::beam_pareto::{ClassMatch, ISAXAnalysis, TypeInfo, VecInfo},
   learn::{LearnedLibraryBuilder, LiblearnMessage, reify},
   perf_infer,
   rewrites::TypeMatch,
@@ -618,6 +618,7 @@ where
     config.liblearn_config.hamming_threshold,
     config.liblearn_config.jaccard_threshold,
     config.liblearn_config.max_libs,
+    config.liblearn_config.min_lib_size,
     config.liblearn_config.max_lib_size,
   );
   // let mut vec_finder = VecGroupFinder::<Op, T>::new(&[]);
@@ -686,10 +687,11 @@ where
   println!("learned {} libs", lib_rewrites.len());
   let mut id_set = HashSet::new();
   let mut pack_cnt = 0;
+  let egraph_clone = egraph.clone();
   for (id, rewrite) in lib_rewrites.clone().into_iter().enumerate() {
     // let rewrite = rewrite.0.clone();
     let (tx, rx) = mpsc::channel();
-    let egraph_clone = egraph.clone();
+    let egraph_clone = egraph_clone.clone();
     let searcher = rewrite.1.clone();
     std::thread::spawn(move || {
       let results: Vec<egg::SearchMatches<'_, AstNode<Op>>> =
@@ -894,12 +896,27 @@ where
 
   // 除此之外还可以提取一些其他节点的表达式，用来扩充vec_lib
   let mut other_exprs = Vec::new();
-  for class in egraph.classes() {
-    // println!("class id: {}", class.id);
-    if class.id == new_root {
-      continue; // 跳过根节点
-    }
-    let (_, expr) = Extractor::new(&egraph, VectorCF).find_best(class.id);
+  let k = 10; // 取vec_cnt最大的10个class_id
+  let mut vec_cnts: Vec<(Id, u64)> = egraph
+    .classes()
+    .map(|class| (class.id, class.data.vec_info))
+    .filter(|(id, vec_info)| vec_info.vec_op_cnt > 0 && *id != new_root) // 只保留vec_op_cnt大于0的
+    .map(|(id, vec_info)| (id, vec_info.vec_hash.clone()))
+    .collect();
+  vec_cnts.sort_by(|a, b| b.1.cmp(&a.1)); // 按vec_op_cnt降序排序
+  // 均匀取k个
+  let step = vec_cnts.len() / k;
+  vec_cnts = vec_cnts
+    .into_iter()
+    .enumerate()
+    .filter_map(|(i, x)| if i % step == 0 { Some(x) } else { None })
+    .collect();
+  for class_id in vec_cnts.iter().map(|x| x.0) {
+    println!(
+      "class_id: {}, vec_op_cnt: {}",
+      class_id, egraph[class_id].data.vec_info.vec_op_cnt
+    );
+    let (_, expr) = Extractor::new(&egraph, VectorCF).find_best(class_id);
     other_exprs.push(expr);
   }
 
@@ -912,11 +929,6 @@ where
   }
 
   println!("Vectorized Nodes in root_expr: {}", vecop_cnt);
-  println!(
-    "Vectorized egraph size: {}, eclasses: {}",
-    egraph.total_size(),
-    egraph.classes().len()
-  );
 
   for node in expr.clone() {
     if node.operation().get_bbs_info().len() == 0 {
@@ -936,12 +948,14 @@ where
         aus.push((pe, type_map));
       }
     };
+  println!("Vectorizing root expression...");
   let root_aus = expr_vec2lib(&(expr.clone().into()));
+  println!("vectorize root expression done, size: {}", root_aus.len());
   for (pe, type_map) in root_aus {
     // 将根表达式的au添加到aus中
     insert_into_aus(pe, type_map);
   }
-  for expr in other_exprs.clone() {
+  for expr in other_exprs.clone().iter() {
     let new_aus = expr_vec2lib(&expr.clone().into());
     // 将其他表达式的au添加到root_aus中
     for (pe, type_map) in new_aus {
@@ -1043,6 +1057,11 @@ where
     usize::MAX,
     bb_query.clone(),
   ));
+  println!(
+    "Vectorized egraph size: {}, eclasses: {}",
+    new_egraph.total_size(),
+    new_egraph.classes().len()
+  );
 
   let root_vec = vec![new_egraph.add_expr(&(expr.clone().into()))];
 
