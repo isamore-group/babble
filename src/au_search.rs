@@ -146,8 +146,11 @@ where
   info!("get_random_aus");
   let range = 10 * m;
 
-  // 计算aus中每个Vec的size的乘积
-  let cartesian_product_size: usize = aus.iter().map(|x| x.len()).product();
+  // 计算aus中每个Vec的size的乘积, 乘的时候不要溢出usize的范围
+  let cartesian_product_size: usize = aus
+    .iter()
+    .map(|x| x.len())
+    .fold(1, |acc, x| acc.saturating_mul(x));
 
   let cal_cartesian_flag = cartesian_product_size < range;
 
@@ -388,7 +391,10 @@ where
   }
 
   // 计算aus中每个Vec的size的乘积
-  let cartesian_product_size: usize = aus.iter().map(|x| x.len()).product();
+  let cartesian_product_size: usize = aus
+    .iter()
+    .map(|x| x.len())
+    .fold(1, |acc, x| acc.saturating_mul(x));
 
   let cal_cartesian_flag = cartesian_product_size < m;
 

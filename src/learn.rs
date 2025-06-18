@@ -1413,7 +1413,7 @@ where
         } else {
           format!("anti-unify {new_i}")
         };
-        let applier_pe = msg.applier_pe.clone();
+        let applier_pe = applier.into();
         LiblearnMessage {
           lib_id: new_i,
           rewrite: Rewrite::new(name, searcher, conditional_applier)
@@ -1516,12 +1516,15 @@ where
     let mut cache: BTreeMap<Vec<Match>, AUWithType<Op, Type>> = BTreeMap::new();
     let mut i = 0;
     for au in &self.aus {
+      // println!("Processing anti-unification {i}");
+      i += 1;
+      // println!("expr: {}", Pattern::from(au.au.expr.clone()));
       if au.au.expr.size() < self.liblearn_config.min_lib_size {
-        // println!("{}: size filter failed", i);
+        // println!("{}: size filter failed, too small", i);
         continue;
       }
       if au.au.expr.size() > self.liblearn_config.max_lib_size {
-        // println!("{}: size filter failed", i);
+        // println!("{}: size filter failed, too large", i);
         continue;
       }
       // 如果latency_gain和area_cost有一项为0，就直接去掉
@@ -1544,8 +1547,6 @@ where
         );
         continue;
       }
-
-      i += 1;
 
       let pattern: Pattern<_> = au.au.expr.clone().into();
       // A key in `cache` is a set of matches
@@ -1654,6 +1655,12 @@ where
     } else {
       self.aus = deduplicated_aus;
     }
+    // for au in &self.aus {
+    //   println!(
+    //     "latency_gain: {}, area_cost: {}",
+    //     au.au.latency_gain, au.au.area_cost
+    //   );
+    // }
   }
 
   // 这个函数可以用，只不过将Hole排除在外就可以

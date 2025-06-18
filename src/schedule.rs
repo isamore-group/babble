@@ -227,10 +227,7 @@ impl<LA, LD> Scheduler<LA, LD> {
       area += node.op_area(&self.area_estimator, node.get_op_args(expr));
     }
     // println!("Number of nodes: {}", expr.len());
-    // println!(
-    //   "Latency Accelerator: {}, Latency CPU: {}, Area: {}",
-    //   latency_accelerator, latency_cpu, area
-    // );
+
     if latency_accelerator > latency_cpu {
       (0, 0) // If the accelerator is slower, return a large cost
     } else if area == 0 {

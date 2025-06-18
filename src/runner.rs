@@ -583,6 +583,20 @@ where
     roots: &[Id],
     egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   ) -> ParetoResult<Op, T> {
+    // 首先将roots变成root，想EGraph中加入list节点实现
+    let mut egraph = egraph;
+    assert!(!roots.is_empty(), "Roots cannot be empty");
+    let mut root = if roots.len() == 1 {
+      roots[0]
+    } else {
+      let bbs = roots
+        .iter()
+        .map(|id| egraph[*id].data.bb.join(","))
+        .collect::<Vec<_>>();
+      let mut list_op = AstNode::new(Op::list(), roots.iter().copied());
+      list_op.operation_mut().set_bbs_info(bbs);
+      egraph.add(list_op)
+    };
     let mut message = HashMap::new();
     let timeout = Duration::from_secs(60 * 100_000);
     // let mut egraph = egraph.clone();
@@ -606,7 +620,7 @@ where
       .run(&self.dsrs);
 
     let mut aeg = runner.egraph;
-    let mut root_vec = roots.to_vec();
+
     let mut vectorized_liblearn_messages = vec![];
     let mut vectorized_expr = None;
 
@@ -615,7 +629,7 @@ where
       let vectorize_time = Instant::now();
       let (expr, roots, vectorized_egraph, lib_messages) = vectorize(
         aeg.clone(),
-        roots,
+        &[root],
         &self.lift_dsrs,
         &self.transform_dsrs,
         self.config.clone(),
@@ -623,7 +637,7 @@ where
       );
       aeg = vectorized_egraph;
       vectorized_liblearn_messages = lib_messages;
-      root_vec = roots;
+      root = roots[0];
       vectorized_expr = Some(expr);
       println!(
         "Vectorized egraph in {}ms",
@@ -657,7 +671,7 @@ where
       aeg.total_size()
     );
 
-    perf_infer::perf_infer(&mut aeg, &root_vec);
+    perf_infer::perf_infer(&mut aeg, &vec![root]);
 
     // println!("Running co-occurrence analysis... ");
     // let co_time = Instant::now();
@@ -760,8 +774,14 @@ where
           ),
         );
       }
-      // for lib in libs.clone() {
-      //   println!("lib: {}", Pattern::from(lib.1.0));
+      // for (i, lib) in libs.clone().iter().enumerate() {
+      //   // println!("lib: {}", Pattern::from(lib.1.0.clone()));
+      //   let rewrite = lib_rewrites[i].clone();
+      //   // println!("rewrite: {:?}", rewrite);
+      //   let resultes = rewrite.search(&aeg);
+      //   println!("there are {} matches", resultes.len());
+      //   // let pt = lib.1.1.clone();
+      //   // println!("pt: {:?}", pt.ast);
       // }
 
       ExpandMessage {
@@ -845,14 +865,8 @@ where
       egraph.classes().len()
     );
     // egraph.dot().to_png("target/final_egraph.png").unwrap();
-    let root = if root_vec.len() == 1 {
-      root_vec[0]
-    } else {
-      let bbs = egraph[root_vec[0]].data.bb.clone();
-      let mut list_op = AstNode::new(Op::list(), root_vec.iter().copied());
-      list_op.operation_mut().set_bbs_info(bbs);
-      egraph.add(list_op)
-    };
+    // println!("roots: {:?}", roots);
+
     let isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root_vec: {:?}", root_vec);
     // println!("cs: {:#?}", cs);
@@ -944,7 +958,7 @@ where
       annotated_egraphs.push(AnnotatedEGraph::new(
         aeg.clone(),
         chosen_rewrites_per_libsel,
-        root.clone(),
+        root,
         isax_cost.cs.set[i].latency_gain,
         isax_cost.cs.set[i].area_cost,
       ));

@@ -912,10 +912,10 @@ where
     .filter_map(|(i, x)| if i % step == 0 { Some(x) } else { None })
     .collect();
   for class_id in vec_cnts.iter().map(|x| x.0) {
-    println!(
-      "class_id: {}, vec_op_cnt: {}",
-      class_id, egraph[class_id].data.vec_info.vec_op_cnt
-    );
+    // println!(
+    //   "class_id: {}, vec_op_cnt: {}",
+    //   class_id, egraph[class_id].data.vec_info.vec_op_cnt
+    // );
     let (_, expr) = Extractor::new(&egraph, VectorCF).find_best(class_id);
     other_exprs.push(expr);
   }

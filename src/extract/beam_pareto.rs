@@ -13,6 +13,7 @@ use bitvec::{prelude::*, vec};
 use egg::{
   Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
 };
+use lexpr::print;
 use log::debug;
 use rustc_hash::FxHashMap;
 use seahash::SeaHasher;
@@ -310,8 +311,27 @@ impl LibSel {
           for (_, count) in lib_info.2.iter() {
             res.latency_gain += *count * lib_info.0;
           }
+          // 修复，不能超过lps就返回None，这样如果原来就有lps个，
+          // 那么就会直接返回空 这会导致无法添加新的lib
+          // 我们需要更改策略，如果超过lps个(此时必然是lps+1个)，
+          // 那么就需要替换掉原来中的一个
           if res.libs.len() > lps {
-            return None;
+            // 寻找latency_gain最小的扔掉，注意同时要把area信息记录下来
+            let mut min_gain = usize::MAX;
+            let mut min_lib_id = None;
+            for (lib, (gain, _, _set)) in &res.libs {
+              if *gain < min_gain {
+                min_gain = *gain;
+                min_lib_id = Some(*lib);
+              }
+            }
+            if let Some(lib_id) = min_lib_id {
+              res.area_cost -= res.libs[&lib_id].1;
+              res.latency_gain -= res.libs[&lib_id].0;
+              res.libs.remove(&lib_id);
+            } else {
+              return None; // This should not happen, but just in case
+            }
           }
         }
       }
@@ -681,7 +701,7 @@ where
       0 => 1,
       _ => match self.bb_query.get(&to.bb[0]) {
         Some(bb) => {
-          // println!("bb: {:?}, exe count: {}", bb.name, bb.execution_count);
+          // println!("bb: {:?}, exe count: {}", bb.name,bb.execution_count);
           bb.execution_count
         }
         None => 1,
@@ -704,6 +724,7 @@ where
     // println!("{:?}", to);
     // println!("{} {}", &a0 != to, to != &from);
     // TODO: be more efficient with how we do this
+    // println!("merge done");
     DidMerge(&a0 != to, to != &from)
     // DidMerge(false, false)
   }
@@ -712,6 +733,7 @@ where
     egraph: &mut EGraph<AstNode<Op>, Self>,
     enode: &AstNode<Op>,
   ) -> Self::Data {
+    // println!("make");
     // 计算当前enode及其子节点含有vec操作的数量
     let mut vec_op_cnt = 0;
     let mut hasher = SeaHasher::default();
@@ -759,6 +781,7 @@ where
     let x = |i: &Id| &egraph[*i].data.cs;
 
     let self_ref = &egraph.analysis;
+    // println!("begin cal cost");
 
     match Teachable::as_binding_expr(enode) {
       Some(BindingExpr::Lib(id, f, b, gain, cost)) => {
@@ -781,6 +804,7 @@ where
         // This is some other operation of some kind.
         // We test the arity of the function
         if enode.is_empty() {
+          // println!("make done");
           // 0 args. Return new.
           ISAXCost::new(
             CostSet::new(),
@@ -798,22 +822,25 @@ where
               e.update_cost(bb_entry.execution_count);
             }
           }
+          // println!("make done");
           ISAXCost::new(e, ty, bbs, hash, vec_info)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
-
+          let bbs = enode.operation().get_bbs_info();
+          // println!("begin cross,args.len: {}", enode.args().len());
           for cs in &enode.args()[1..] {
             e = e.cross(x(cs), self_ref.lps);
-          }
-          let bbs = enode.operation().get_bbs_info();
-          if bbs.len() > 0 {
-            if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
-              e.update_cost(bb_entry.execution_count);
+            if bbs.len() > 0 {
+              if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
+                e.update_cost(bb_entry.execution_count);
+              }
             }
+            e.unify();
           }
-          e.unify();
+
           e.prune(self_ref.beam_size);
+          // println!("make done");
           ISAXCost::new(e, ty, bbs, hash, vec_info)
         }
       }
