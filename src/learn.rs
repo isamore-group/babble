@@ -1003,7 +1003,7 @@ where
               let (ecls1, _, cls_hash1, subtree_levels1) = &class_data[i];
               let popcount1 = cls_hash1.count_ones();
               let subtree_cnt1 = subtree_levels1.count_ones();
-              for j in i..end {
+              for j in i + 1..end {
                 let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
                 if op_pack_config.pack_expand
                   && !op_pack_config.prune_eclass_pair
@@ -1200,7 +1200,6 @@ where
       }
       learned_lib.aus = sampled_aus;
     }
-
     learned_lib
   }
 }
@@ -2309,9 +2308,13 @@ where
           if learn_trivial
             || (self.op_pack_config.pack_expand
               && self.op_pack_config.learn_trivial)
+            || self.enable_vectorize
             || num_vars < au.num_holes()
             || au.num_nodes() > 1 + num_vars
           {
+            if au.size() == 1 {
+              return None;
+            }
             // FIXME: 现在是debug模式！！！
             // if true {
             // println!("learn_trivial: {}, num_vars < au.num_holes(): {},
@@ -2559,6 +2562,20 @@ where
         }
       })
       .collect();
+    // 如果aus为空，就插入一个Hole
+    if aus.is_empty() {
+      let new_expr = PartialExpr::Hole(state);
+      self
+        .aus_by_state
+        .get_mut(&state)
+        .unwrap()
+        .insert(AU::new_with_expr(
+          new_expr,
+          &self.egraph,
+          self.liblearn_config.cost.clone(),
+        ));
+      return;
+    }
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
   }
 }

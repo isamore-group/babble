@@ -570,23 +570,6 @@ impl LevelConflictState {
   }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct VecInfo {
-  pub vec_op_cnt: usize, // 记录vec操作的数量
-  pub vec_hash: u64,     // 记录vec操作的哈希
-}
-
-impl VecInfo {
-  pub fn merge(&mut self, other: &VecInfo) {
-    self.vec_op_cnt += other.vec_op_cnt;
-    // 使用hash合并vec_hash
-    let mut hasher = SeaHasher::default();
-    self.vec_hash.hash(&mut hasher);
-    other.vec_hash.hash(&mut hasher);
-    self.vec_hash = hasher.finish();
-  }
-}
-
 #[derive(Debug, Clone)]
 pub struct ISAXCost<T>
 where
@@ -596,7 +579,6 @@ where
   pub ty: T,
   pub bb: Vec<String>,
   pub hash: StructuralHash,
-  pub vec_info: VecInfo,
 }
 
 impl<T> PartialEq for ISAXCost<T>
@@ -624,15 +606,8 @@ impl<T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
     ty: T,
     bb: Vec<String>,
     hash: StructuralHash,
-    vec_info: VecInfo,
   ) -> Self {
-    ISAXCost {
-      cs,
-      ty,
-      bb,
-      hash,
-      vec_info,
-    }
+    ISAXCost { cs, ty, bb, hash }
   }
 }
 
@@ -718,8 +693,6 @@ where
     // to.hash.cls_hash = max(to.hash.cls_hash, from.hash.cls_hash);
     // to.hash.subtree_levels |= from.clone().hash.subtree_levels;
     to.hash.merge(&from.hash);
-    // 合并vec操作计数，求和
-    to.vec_info.merge(&from.vec_info);
     // 合并v
     // println!("{:?}", to);
     // println!("{} {}", &a0 != to, to != &from);
@@ -741,10 +714,6 @@ where
       vec_op_cnt += 1;
       enode.operation().hash(&mut hasher);
     }
-    let vec_info = VecInfo {
-      vec_op_cnt,
-      vec_hash: hasher.finish(),
-    };
 
     // calculate the type
     // println!("enode: {:?}", enode);
@@ -798,7 +767,7 @@ where
         }
         e.unify();
         e.prune(self_ref.beam_size);
-        ISAXCost::new(e, ty, bbs, hash, vec_info)
+        ISAXCost::new(e, ty, bbs, hash)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
@@ -811,7 +780,6 @@ where
             ty,
             enode.operation().get_bbs_info(),
             hash,
-            vec_info,
           )
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
@@ -823,7 +791,7 @@ where
             }
           }
           // println!("make done");
-          ISAXCost::new(e, ty, bbs, hash, vec_info)
+          ISAXCost::new(e, ty, bbs, hash)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
@@ -841,7 +809,7 @@ where
 
           e.prune(self_ref.beam_size);
           // println!("make done");
-          ISAXCost::new(e, ty, bbs, hash, vec_info)
+          ISAXCost::new(e, ty, bbs, hash)
         }
       }
     }

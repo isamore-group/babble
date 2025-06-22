@@ -5,7 +5,7 @@ use crate::{
   ast_node::{Arity, AstNode},
   au_filter::TypeAnalysis,
   bb_query::{self, BBInfo, BBQuery},
-  extract::beam_pareto::{ClassMatch, ISAXAnalysis, TypeInfo, VecInfo},
+  extract::beam_pareto::{ClassMatch, ISAXAnalysis, ISAXCost, TypeInfo},
   learn::{LearnedLibraryBuilder, LiblearnMessage, reify},
   perf_infer,
   rewrites::TypeMatch,
@@ -17,17 +17,22 @@ use crate::{
   teachable::{ShieldingOp, Teachable},
 };
 
+use bitvec::vec;
 use egg::{
-  ConditionalApplier, CostFunction, EGraph, Extractor, Id, Language, Pattern,
-  RecExpr, Rewrite, Runner, Searcher, Subst, Var, rewrite,
+  Analysis, AstDepth, AstSize, ConditionalApplier, CostFunction, EClass,
+  EGraph, Extractor, Id, Language, Pattern, RecExpr, Rewrite, Runner, Searcher,
+  Subst, Var, rewrite,
 };
 
+use indexmap::IndexSet;
 use lexpr::print;
 use log::debug;
 
 use serde::Deserialize;
 use std::{
+  cmp::{self, Ordering},
   collections::{BTreeMap, HashMap, HashSet},
+  convert::Infallible,
   fmt::{Debug, Display},
   hash::{Hash, Hasher},
   str::FromStr,
@@ -335,27 +340,35 @@ where
     C: FnMut(Id) -> Self::Cost,
   {
     let op = enode.operation();
+
     let mut base_cost = op.get_simple_cost();
 
     // ——计算“原向量奖励”——
-    let vector_bonus = if op.is_vector_op() {
-      if op.is_vec() {
-        let vec_len = enode.args().len();
-        10.0 + (vec_len * vec_len) as f64
-      } else {
-        let vec_len = op.get_vec_len();
-        base_cost = base_cost / vec_len as f64;
-        base_cost
-      }
-    } else {
-      0.0
-    };
+    // let vector_bonus = if op.is_vector_op() {
+    //   let vec_len = if op.is_vec() {
+    //     enode.args().len()
+    //   } else if op.is_vector_op() {
+    //     enode.operation().get_vec_len()
+    //   } else {
+    //     0
+    //   };
+    //   (20.0 + vec_len as f64 * 10.0) / 10.0 // 最大是10
+    // } else {
+    //   0.0
+    // };
+
+    // let punishment = 10.0; // 每个节点都需要加入惩罚
 
     // 子节点成本
-    let children_cost: f64 = enode.fold(0.01, |sum, id| sum + costs(id));
+    let mut children_cost: f64 = enode.fold(0.0, |sum, id| sum + costs(id));
+    if !op.is_vec() {
+      children_cost += 10.0;
+    }
     // println!("cost: {}", children_cost);
     // 最终成本：基准 + 子节点 + 惩罚
-    (base_cost + children_cost - vector_bonus).max(children_cost)
+    // base_cost + children_cost //+ punishment -
+    // vector_bonus).max(children_cost)
+    base_cost + children_cost
   }
 }
 
@@ -663,7 +676,7 @@ where
   perf_infer::perf_infer(&mut egraph, roots);
 
   // // 进行向量化组发现
-
+  // egraph.dot().to_png("target/foo1.png").unwrap();
   // 进行库学习
   let learned_lib = LearnedLibraryBuilder::default()
     .learn_trivial(true)
@@ -685,6 +698,9 @@ where
     .map(|m| (m.rewrite.clone(), m.searcher_pe.clone().into()))
     .collect::<Vec<_>>();
   println!("learned {} libs", lib_rewrites.len());
+  // for lib in learned_lib.libs() {
+  //   println!("lib: {}", lib);
+  // }
   let mut id_set = HashSet::new();
   let mut pack_cnt = 0;
   let egraph_clone = egraph.clone();
@@ -783,8 +799,8 @@ where
     .with_iter_limit(1)
     .run(lift_dsrs);
 
-  // 目前已经实现了各类vec的构建，现在需要去寻找egraph中含有的vec
-  // enode，然后加入gather节点
+  // // 目前已经实现了各类vec的构建，现在需要去寻找egraph中含有的vec
+  // // enode，然后加入gather节点
   let mut egraph = runner.egraph.clone();
   if config.vectorize_config.enable_gather {
     let (vec_containments, vec_gathers) =
@@ -891,34 +907,14 @@ where
   // 推导bbs信息
   perf_infer::perf_infer(&mut egraph, roots);
 
-  let (cost, expr) = Extractor::new(&egraph, VectorCF).find_best(new_root);
-  debug!("cost: {:?}", cost);
+  // egraph.dot().to_png("target/foo3.png").unwrap();
 
-  // 除此之外还可以提取一些其他节点的表达式，用来扩充vec_lib
-  let mut other_exprs = Vec::new();
-  let k = 10; // 取vec_cnt最大的10个class_id
-  let mut vec_cnts: Vec<(Id, u64)> = egraph
-    .classes()
-    .map(|class| (class.id, class.data.vec_info))
-    .filter(|(id, vec_info)| vec_info.vec_op_cnt > 0 && *id != new_root) // 只保留vec_op_cnt大于0的
-    .map(|(id, vec_info)| (id, vec_info.vec_hash.clone()))
-    .collect();
-  vec_cnts.sort_by(|a, b| b.1.cmp(&a.1)); // 按vec_op_cnt降序排序
-  // 均匀取k个
-  let step = vec_cnts.len() / k;
-  vec_cnts = vec_cnts
-    .into_iter()
-    .enumerate()
-    .filter_map(|(i, x)| if i % step == 0 { Some(x) } else { None })
-    .collect();
-  for class_id in vec_cnts.iter().map(|x| x.0) {
-    // println!(
-    //   "class_id: {}, vec_op_cnt: {}",
-    //   class_id, egraph[class_id].data.vec_info.vec_op_cnt
-    // );
-    let (_, expr) = Extractor::new(&egraph, VectorCF).find_best(class_id);
-    other_exprs.push(expr);
-  }
+  let (cost, expr) = VecExtractor::new(&egraph, VectorCF).find_best(new_root);
+  // for node in expr.iter() {
+  //   println!("node: {:?}", node);
+  // }
+
+  debug!("cost: {:?}", cost);
 
   let mut vecop_cnt = 0;
   for (id, node) in expr.iter().enumerate() {
@@ -955,14 +951,7 @@ where
     // 将根表达式的au添加到aus中
     insert_into_aus(pe, type_map);
   }
-  for expr in other_exprs.clone().iter() {
-    let new_aus = expr_vec2lib(&expr.clone().into());
-    // 将其他表达式的au添加到root_aus中
-    for (pe, type_map) in new_aus {
-      // 检查是否已经存在相同的pe
-      insert_into_aus(pe, type_map);
-    }
-  }
+
   let mut lib_messages = Vec::new();
   for (i, au) in aus.iter().enumerate() {
     let searcher: Pattern<_> = au.0.clone().into();
@@ -1057,18 +1046,13 @@ where
     usize::MAX,
     bb_query.clone(),
   ));
+  let root_vec = vec![new_egraph.add_expr(&(expr.clone().into()))];
+
   println!(
     "Vectorized egraph size: {}, eclasses: {}",
     new_egraph.total_size(),
     new_egraph.classes().len()
   );
-
-  let root_vec = vec![new_egraph.add_expr(&(expr.clone().into()))];
-
-  // 加入其他的向量化表达式
-  for expr in other_exprs {
-    egraph.add_expr(&expr.into());
-  }
 
   // 挑选出根节点
 
@@ -1137,5 +1121,305 @@ fn expr_vec2lib<
     let mut type_map: HashMap<Var, Vec<String>> = HashMap::new();
     let body = lib_body_get(expr, &mut var_index, &mut type_map);
     vec![(body, type_map)]
+  }
+}
+
+pub struct VecExtractor<'a, Op, T>
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + BBInfo
+    + Arity
+    + Send
+    + Sync
+    + Debug
+    + OperationInfo
+    + 'static,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash + Send + Sync,
+  AstNode<Op>: TypeInfo<T>,
+{
+  cost_function: VectorCF,
+  costs: HashMap<Id, (f64, AstNode<Op>)>,
+  costs_get_vec: HashMap<Id, (f64, AstNode<Op>)>,
+  egraph: &'a EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+}
+
+impl<'a, Op, T> VecExtractor<'a, Op, T>
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + BBInfo
+    + Arity
+    + Send
+    + Sync
+    + Debug
+    + OperationInfo
+    + 'static,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash + Send + Sync,
+  AstNode<Op>: TypeInfo<T>,
+{
+  /// Create a new `VecExtractor` given an `EGraph`.
+  pub fn new(
+    egraph: &'a EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+    cost_function: VectorCF,
+  ) -> Self {
+    let mut extractor = VecExtractor {
+      costs: HashMap::default(),
+      costs_get_vec: HashMap::default(),
+      egraph,
+      cost_function,
+    };
+    extractor.find_costs();
+    // 打印costs和 costs_get_vec
+    for (id, (cost, node)) in extractor.costs.iter() {
+      println!("Cost for eclass {}: {:?} = {}", id, node, cost);
+    }
+    for (id, (cost, node)) in extractor.costs_get_vec.iter() {
+      println!("GetVec Cost for eclass {}: {:?} = {}", id, node, cost);
+    }
+    extractor
+  }
+
+  /// Find the cheapest (lowest cost) represented `RecExpr` in the
+  /// given eclass.
+  pub fn find_best(&self, eclass: Id) -> (f64, RecExpr<AstNode<Op>>) {
+    // println!("Finding best for eclass: {}", &self.egraph.find(eclass));
+    let (cost, root) = self.costs[&self.egraph.find(eclass)].clone();
+    // println!("Best cost: {}", cost);
+    let expr = self.build_recexpr_from_node(&root);
+    (cost, expr)
+  }
+
+  /// Find the cheapest e-node in the given e-class.
+  pub fn find_best_normal_node(&self, eclass: Id) -> &AstNode<Op> {
+    let node = &self.costs[&self.egraph.find(eclass)].1;
+    node
+  }
+
+  /// Find the cheapest e-node in the given e-class that is a `get` operation
+  /// and has a vector operation as its child.
+  pub fn find_best_get_vec_node(&self, eclass: Id) -> &AstNode<Op> {
+    let node = &self.costs_get_vec[&self.egraph.find(eclass)].1;
+    node
+  }
+
+  /// Find the cost of the term that would be extracted from this e-class.
+  pub fn find_best_cost(&self, eclass: Id) -> f64 {
+    let (cost, _) = &self.costs[&self.egraph.find(eclass)];
+    cost.clone()
+  }
+
+  fn node_total_cost(&mut self, node: &AstNode<Op>) -> Option<f64> {
+    let eg = &self.egraph;
+    let has_cost = |id| self.costs.contains_key(&eg.find(id));
+    if node.all(has_cost) {
+      let costs = &self.costs;
+      let cost_f = |id| costs[&eg.find(id)].0.clone();
+      Some(self.cost_function.cost(node, cost_f))
+    } else {
+      None
+    }
+  }
+
+  fn find_costs(&mut self) {
+    let mut did_something = true;
+    while did_something {
+      did_something = false;
+
+      for class in self.egraph.classes() {
+        let (normal_pass, vec_pass) = self.make_pass(class);
+        match (self.costs.get(&class.id), normal_pass) {
+          (None, Some(new)) => {
+            self.costs.insert(class.id, new);
+            did_something = true;
+          }
+          (Some(old), Some(new)) => {
+            if new.0 < old.0 {
+              self.costs.insert(class.id, new);
+              did_something = true;
+            }
+          }
+          _ => {
+            // println!("Skipping eclass {}: {:?} ", class.id, class.nodes)
+          }
+        }
+        match (self.costs_get_vec.get(&class.id), vec_pass) {
+          (None, Some(new)) => {
+            self.costs_get_vec.insert(class.id, new);
+            did_something = true;
+          }
+          (Some(old), Some(new)) => {
+            if new.0 < old.0 {
+              self.costs_get_vec.insert(class.id, new);
+              did_something = true;
+            }
+          }
+          _ => {
+            // println!("Skipping eclass {}: {:?} ", class.id, class.nodes)
+          }
+        }
+      }
+    }
+
+    for class in self.egraph.classes() {
+      if !self.costs.contains_key(&class.id) {
+        log::warn!(
+          "Failed to compute cost for eclass {}: {:?}",
+          class.id,
+          class.nodes
+        )
+      }
+    }
+  }
+
+  fn make_pass(
+    &mut self,
+    eclass: &EClass<AstNode<Op>, ISAXCost<T>>,
+  ) -> (Option<(f64, AstNode<Op>)>, Option<(f64, AstNode<Op>)>) {
+    // println!("Making pass for eclass: {}", eclass.id);
+    // 先不用 clone 整个 Vec，若 EClass 支持.iter()，应优先 iter
+    let mut get_vec_nodes = Vec::new();
+    let mut other_nodes = Vec::new();
+    for node in eclass.iter().cloned() {
+      // 确保 args 至少有一个
+      if node.operation().is_get() && node.args().len() >= 1 {
+        let child_id = node.args()[0];
+        // self.egraph[child_id] 取子 e-class，再检查其中是否含 vec op
+        if self.egraph[child_id].iter().any(|n| n.operation().is_vec()) {
+          get_vec_nodes.push(node);
+          continue;
+        }
+      }
+      other_nodes.push(node);
+    }
+
+    // helper: 选最小成本节点
+    let select_best = |nodes: &[AstNode<Op>],
+                       extractor: &mut Self|
+     -> Option<(f64, AstNode<Op>)> {
+      // 过滤出 node_total_cost 有 Some 的
+      let mut best: Option<(f64, AstNode<Op>)> = None;
+      for n in nodes.iter() {
+        if let Some(c) = extractor.node_total_cost(n) {
+          if c.is_nan() {
+            continue; // 或者 treat as None
+          }
+          match &best {
+            None => best = Some((c, n.clone())),
+            Some((best_c, _)) => {
+              // 小于才替换
+              if c < *best_c {
+                best = Some((c, n.clone()));
+              }
+            }
+          }
+        }
+      }
+      best
+    };
+
+    // 先看 get_vec_nodes
+    let vec_pass = if !get_vec_nodes.is_empty() {
+      if let Some(best) = select_best(&get_vec_nodes, self) {
+        // println!("选中了 get->vec 节点：cost={}, node={:?}", best.0, best.1);
+        Some(best)
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    // 再选 other_nodes
+    let normal_pass = if !other_nodes.is_empty() {
+      if let Some(best) = select_best(&other_nodes, self) {
+        // println!("选中了普通节点：cost={}, node={:?}", best.0, best.1);
+        Some(best)
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+    (normal_pass, vec_pass)
+  }
+
+  /// 给定一个根 AstNode<Op>（通常是 costs 中存储的最佳节点），以及
+  /// 一个回调 get_node: FnMut(Id) -> AstNode<Op>（负责返回子 eclass
+  /// 对应最佳节点）， 构建 RecExpr<AstNode<Op>>。此函数不会返回 Err，因为
+  /// get_node 返回非 Result。
+  fn build_recexpr_from_node(
+    &self,
+    root: &AstNode<Op>,
+  ) -> RecExpr<AstNode<Op>> {
+    // 把 get_node 包装成一个总是 Ok 的版本，再调用 try 版
+    self
+      .try_build_recexpr_from_node::<Infallible>(root)
+      .unwrap()
+  }
+
+  /// 可 fallible 版本：get_node 可能返回 Err，则整个构建可以失败。
+  fn try_build_recexpr_from_node<Err>(
+    &self,
+    root: &AstNode<Op>,
+  ) -> Result<RecExpr<AstNode<Op>>, Err> {
+    let get_node = |id: Id| -> Result<AstNode<Op>, Err> {
+      // 直接从 costs 中获取最佳节点
+      Ok(self.find_best_normal_node(id).clone())
+    };
+    // IndexSet 用于去重并保持插入顺序
+    let mut set = IndexSet::<AstNode<Op>>::default();
+    // ids: 原 eclass Id -> RecExpr 中对应的新 Id
+    let mut ids = HashMap::<Id, Id>::default();
+    // todo 栈：初始化为根节点的子节点列表
+    let mut todo = root.children().to_vec();
+
+    // 处理栈，直到空
+    while let Some(id) = todo.last().copied() {
+      // 如果已处理过，即 ids 中存在，则跳过
+      if ids.contains_key(&id) {
+        todo.pop();
+        continue;
+      }
+      // 通过 get_node 回调获得 AstNode<Op>，若 Err 则返回 Err
+      let node = get_node(id)?;
+
+      // 检查 node 的所有子 id 是否都已在 ids 中
+      let mut all_ready = true;
+      for &child in node.children() {
+        if !ids.contains_key(&child) {
+          all_ready = false;
+          todo.push(child);
+        }
+      }
+      // 如果所有子已就绪，则可以安全插入
+      if all_ready {
+        // 将子节点引用替换为已在 RecExpr 中的 Id
+        let mapped = node.map_children(|child_id| ids[&child_id]);
+        // 插入 set，获取新插入位置 index
+        let new_index = set.insert_full(mapped).0;
+        // 记录原 eclass id -> RecExpr Id
+        ids.insert(id, Id::from(new_index));
+        // 弹出栈顶
+        todo.pop();
+      }
+      // 否则已把未就绪的子 push 入 todo，下一轮先处理子
+    }
+
+    // 构造 RecExpr：先把 set 中的所有节点按顺序收集
+    let mut expr: RecExpr<AstNode<Op>> = set.into_iter().collect();
+    // 最后插入根节点自身，map_children 映射子 id
+    let root_mapped = root.clone().map_children(|child_id| {
+      // child_id 必定在 ids 中
+      ids[&child_id]
+    });
+    expr.add(root_mapped);
+    Ok(expr)
   }
 }
