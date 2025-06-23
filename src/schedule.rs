@@ -176,7 +176,11 @@ impl<LA, LD> Scheduler<LA, LD> {
     // println!("Root node: {:?}", nodes[root].operation().get_bbs_info());
     let min_exe_count = nodes[root].op_execution_count(&self.bb_query);
     let mut max_exe_count = 0;
+    let mut have_loop = false;
     for node in expr.iter() {
+      if node.operation().is_dowhile() {
+        have_loop = true;
+      }
       let bb_info = node.operation().get_bbs_info();
       if bb_info.len() >= 1 {
         let bb_entry = self.bb_query.get(&bb_info[0]);
@@ -210,14 +214,20 @@ impl<LA, LD> Scheduler<LA, LD> {
         latency_accelerator = cmp::max(latency_accelerator, sc[i] + 1);
       }
     }
-    latency_accelerator += loop_length - 1;
+    if have_loop {
+      latency_accelerator += loop_length - 1;
+    }
 
     let mut latency_cpu = 0;
     for node in expr {
       if node.operation().is_arithmetic() {
-        latency_cpu += node.op_latency_cpu(&self.bb_query)
-          * node.op_execution_count(&self.bb_query)
-          / min_exe_count;
+        if have_loop {
+          latency_cpu += node.op_latency_cpu(&self.bb_query)
+            * node.op_execution_count(&self.bb_query)
+            / min_exe_count;
+        } else {
+          latency_cpu += node.op_latency_cpu(&self.bb_query);
+        }
       }
     }
     // Calculate the area

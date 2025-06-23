@@ -35,6 +35,7 @@ use egg::{
 use log::{debug, info};
 
 pub trait OperationInfo {
+  fn is_dowhile(&self) -> bool;
   fn is_liblearn_banned_op(&self) -> bool;
   fn is_lib(&self) -> bool;
   fn is_lib_op(&self) -> bool;
