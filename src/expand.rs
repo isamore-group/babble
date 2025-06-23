@@ -18,7 +18,7 @@ use crate::{
   au_filter::TypeAnalysis,
   bb_query::{self, BBQuery},
   extract::beam_pareto::{ISAXAnalysis, TypeInfo},
-  learn::{self, LearnedLibraryBuilder},
+  learn::{self, AUWithType, LearnedLibraryBuilder},
   rewrites::TypeMatch,
   runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo},
   schedule::{Schedulable, Scheduler},
@@ -57,7 +57,10 @@ impl Default for OpPackConfig {
   }
 }
 
-fn au2expr<Op>(pe: PartialExpr<Op, Var>, idx: usize) -> Expr<Op>
+fn au2expr<Op, T>(
+  pe: (PartialExpr<Op, Var>, TypeMatch<T>),
+  idx: usize,
+) -> Expr<Op>
 where
   Op: Display
     + Hash
@@ -69,14 +72,16 @@ where
     + Sync
     + Debug
     + OperationInfo,
+  T: Clone + Display,
 {
-  match pe {
+  let cond = pe.1;
+  match pe.0 {
     PartialExpr::Node(astnode) => {
       let operation = astnode.operation().clone();
       let args = astnode.args();
       let mut new_args = Vec::with_capacity(args.len());
       for arg in args {
-        let expr: Expr<Op> = au2expr(arg.clone(), idx);
+        let expr: Expr<Op> = au2expr((arg.clone(), cond.clone()), idx);
         new_args.push(Arc::new(expr));
       }
       let node = AstNode::new(operation, new_args);
@@ -86,7 +91,16 @@ where
       // 首先，我们将PE转化为Expr只是为了转化成Recexpr进行delay计算，
       // 所以Hole可以不需要在意，将其作为一个叶节点处理就好，
       // 目前直接使用rulevar表示
-      let s = var.to_string(); //format!("{}_{}", var.to_string(), idx).to_string();
+      let ty = cond.type_map.get(&var).unwrap_or_else(|| {
+        panic!("Type for variable {:?} not found in condition", var)
+      });
+      // 将Vec<T>转化为String
+      let ty_str = ty
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<String>>()
+        .join(",");
+      let s = format!("{}_{}", var.to_string(), ty_str).to_string();
       let node = AstNode::leaf(Op::make_rule_var(s));
       node.into()
     }
@@ -118,7 +132,7 @@ where
     + Default
     + 'static,
 {
-  pub fn new(searcher: Pattern<AstNode<Op>>) -> Self {
+  fn new(searcher: Pattern<AstNode<Op>>) -> Self {
     MetaAUOpSearcher {
       searcher,
       mask_results: HashSet::new(),
@@ -126,7 +140,7 @@ where
     }
   }
 
-  pub fn search<T: Debug + Default + Clone + Ord + Hash>(
+  fn search<T: Debug + Default + Clone + Ord + Hash>(
     &mut self,
     egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   ) where
@@ -229,6 +243,10 @@ where
           if enode.operation().is_opmask() {
             // 这里需要将Opmask节点的操作符加入到mask_results中
             let op = node.operation().clone();
+            // op也需要是arithmetic operation
+            if !op.is_arithmetic() {
+              continue; // 如果不是算术操作符，就跳过
+            }
             self.mask_results.insert(op);
           }
           break;
@@ -402,6 +420,7 @@ where
     egraph.classes().len(),
     egraph.total_size()
   );
+  // egraph.dot().to_png("target/expand_before.png").unwrap();
   // 使用learned_library进行库学习，因为和vetorize的目标一致，
   // 所以直接套用vectorize的learn部分
   let expansion_lib_config = LiblearnConfig::new(
@@ -416,14 +435,14 @@ where
     config.liblearn_config.min_lib_size,
     config.liblearn_config.max_lib_size,
   );
+  // 第一次是包搜索模式
   let learned_lib = LearnedLibraryBuilder::default()
+    .find_packs()
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
     .with_last_lib_id(max_lib_id)
     .with_liblearn_config(expansion_lib_config)
     .with_clock_period(config.clock_period)
-    .with_area_estimator(config.area_estimator.clone())
-    .with_delay_estimator(config.delay_estimator.clone())
     .with_bb_query(bb_query.clone())
     .build(&egraph);
   println!("expand::learned {} libs", learned_lib.size());
@@ -432,7 +451,16 @@ where
   //   println!("lib: {}", lib);
   // }
 
-  let learned_aus: Vec<_> = learned_lib.anti_unifications().collect();
+  let learned_aus: Vec<_> = learned_lib
+    .messages()
+    .iter()
+    .map(|msg| {
+      // 将每个AU转化成PartialExpr<Op, Var>
+      let expr: PartialExpr<Op, Var> = msg.searcher_pe.clone();
+      let condition = msg.condition.clone();
+      (expr, condition)
+    })
+    .collect();
   let mut meta_egraph = EGraph::new(ISAXAnalysis::new(
     config.final_beams,
     config.inter_beams,
@@ -454,7 +482,7 @@ where
     let au = learned_aus[i].clone();
     // 在转化的过程中，需要考虑每一个Var如何转化，
     // 目前只是转化成了一个RuleVar，   // 但是不同au中的RuleVar理应是不一样的
-    let expr = au2expr(au.clone(), i);
+    let expr = au2expr(au, i);
     let recexpr = RecExpr::from(expr);
     meta_egraph.add_expr(&recexpr);
 
@@ -470,7 +498,7 @@ where
 
   let meta_au_lib_config = LiblearnConfig::new(
     LiblearnCost::Size,
-    AUMergeMod::Greedy,
+    AUMergeMod::Random,
     EnumMode::PruningGold,
     // 后面的配置直接使用config.liblearn中的配置
     config.liblearn_config.sample_num,
@@ -485,12 +513,12 @@ where
   let max_lib_id = max_lib_id + learned_lib.size();
 
   // 进行meta_au-search
-  let mut learn_meta_lib = LearnedLibraryBuilder::default()
+  let learn_meta_lib = LearnedLibraryBuilder::default()
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
     .with_liblearn_config(meta_au_lib_config)
     .with_clock_period(config.clock_period)
-    .with_op_pack_config(config.op_pack_config)
+    .with_meta_au_config(config.op_pack_config)
     .with_last_lib_id(max_lib_id)
     .with_area_estimator(config.area_estimator.clone())
     .with_delay_estimator(config.delay_estimator.clone())
@@ -500,7 +528,7 @@ where
   let meta_messages: Vec<_> = learn_meta_lib.messages();
 
   // 进行去重
-  learn_meta_lib.deduplicate(&meta_egraph);
+  // learn_meta_lib.deduplicate(&meta_egraph);
 
   println!("expand::learned {} meta libs", learn_meta_lib.size());
   // for lib in learn_meta_lib.libs() {
@@ -532,18 +560,22 @@ where
     // TODO: 目前只对mask_results进行处理，后续可能需要对var_results进行处理
     // 第一步，拿到OpPack具体需要Pack的操作符
     if mask_results.len() == 0 {
+      // println!("No mask results found for lib_id: {}, skipping", msg.lib_id);
       continue; // 如果没有mask结果，就跳过
     }
     if mask_results.len() > config.op_pack_config.max_operation {
+      // println!("Too many mask results for lib_id: {}, skipping", msg.lib_id);
       continue; // 如果操作符的个数超过了限制，就直接跳过
     }
-
+    // 打印lib
+    // println!("Processing lib: {}", Pattern::from(msg.searcher_pe.clone()));
     // 否则新建一个OpPack节点和一个OpSelect节点
     let op_pack =
       Op::make_op_pack(mask_results.iter().map(|x| x.to_string()).collect());
     // 将新的partial_expr转化成applier
     let mut new_applier: Pattern<_> =
       add_op_pack(msg.applier_pe.clone(), op_pack.clone()).into();
+    // println!("new_applier: {}", new_applier);
     // Calculate the gain and cost of the new applier
     let ast = &searcher.searcher.ast;
     let new_expr = ast
@@ -561,6 +593,10 @@ where
       bb_query.clone(),
     );
     let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+    // println!(
+    //   "Meta_AU:: lib_id: {}, latency_gain: {}, area: {}",
+    //   msg.lib_id, latency_gain, area
+    // );
     for node in new_applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
@@ -589,7 +625,7 @@ where
     conditions.insert(msg.lib_id.clone(), msg.condition.clone());
     libs.insert(
       msg.lib_id.clone(),
-      (msg.searcher_pe.clone(), msg.applier_pe.clone().into()),
+      (msg.searcher_pe.clone(), new_applier.into()),
     );
     meta_au_rewrites.insert(msg.lib_id.clone(), rewrites);
   }

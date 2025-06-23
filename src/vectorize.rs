@@ -691,7 +691,7 @@ where
     .with_last_lib_id(0)
     .with_liblearn_config(vetorize_lib_config)
     .with_clock_period(config.clock_period)
-    .vectorize()
+    .find_packs()
     .with_bb_query(bb_query.clone())
     .build(&egraph);
   let lib_rewrites: Vec<(

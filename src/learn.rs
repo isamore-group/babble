@@ -35,8 +35,8 @@ use crate::{
 use crate::{ast_node, vectorize};
 use bitvec::prelude::*;
 use egg::{
-  Analysis, ConditionalApplier, EGraph, Id, Language, Pattern, RecExpr,
-  Rewrite, Runner, Searcher, Subst, Var,
+  Analysis, ConditionalApplier, EGraph, Id, Language, LanguageMapper, Pattern,
+  RecExpr, Rewrite, Runner, Searcher, SimpleLanguageMapper, Subst, Var,
 };
 use itertools::Itertools;
 use lexpr::print;
@@ -199,7 +199,7 @@ where
   }
   pub fn new_with_expr(
     expr: PartialExpr<Op, T>,
-    egraph: &EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
     liblearn_cost: LiblearnCost,
   ) -> Self
   where
@@ -276,7 +276,7 @@ impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> PartialOrd
         .then(other.latency_gain.cmp(&self.latency_gain)),
       // area从小到大，延迟增益从大到小
     }
-    .then(self_holes.cmp(&other_holes))
+    .then(other_holes.cmp(&self_holes))
     .then(self.expr.cmp(&other.expr));
     Some(ord)
   }
@@ -334,7 +334,7 @@ where
   LD: Debug + Clone + Default,
   AstNode<Op>: TypeInfo<Type>,
 {
-  egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+  _phantom: std::marker::PhantomData<Type>,
   learn_trivial: bool,
   learn_constants: bool,
   max_arity: Option<usize>,
@@ -347,10 +347,10 @@ where
   delay_estimator: LD,
   bb_query: BBQuery,
   liblearn_config: LiblearnConfig,
-  op_pack_config: OpPackConfig,
+  meta_au_config: OpPackConfig,
   ci_encoding_config: CiEncodingConfig,
-  /// 是否启用向量化
-  enable_vectorize: bool,
+  /// 是否在暴搜索模式，在这个模式下，需要放松一些限制
+  find_packs: bool,
 }
 
 impl<Op, Type, LA, LD> Default for LearnedLibraryBuilder<Op, Type, LA, LD>
@@ -383,7 +383,7 @@ where
 {
   fn default() -> Self {
     Self {
-      egraph: EGraph::default(),
+      _phantom: std::marker::PhantomData,
       learn_trivial: false,
       learn_constants: false,
       max_arity: None,
@@ -396,65 +396,9 @@ where
       delay_estimator: LD::default(),
       bb_query: BBQuery::default(),
       liblearn_config: LiblearnConfig::default(),
-      op_pack_config: OpPackConfig::default(),
+      meta_au_config: OpPackConfig::default(),
       ci_encoding_config: CiEncodingConfig::default(),
-      enable_vectorize: false,
-    }
-  }
-}
-
-// 为 LearnedLibraryBuilder 实现自定义的构造函数make_with_egraph
-impl<Op, Type, LA, LD> LearnedLibraryBuilder<Op, Type, LA, LD>
-where
-  Op: Arity
-    + Clone
-    + Debug
-    + Ord
-    + Sync
-    + Send
-    + Display
-    + std::hash::Hash
-    + DiscriminantEq
-    + 'static
-    + Teachable
-    + OperationInfo,
-  LA: Debug + Clone + Default,
-  LD: Debug + Clone + Default,
-  AstNode<Op>: Language,
-  Type: Debug
-    + Default
-    + Clone
-    + PartialEq
-    + Ord
-    + Hash
-    + Send
-    + Sync
-    + 'static
-    + Display
-    + FromStr,
-  TypeSet<Type>: ClassMatch,
-  AstNode<Op>: TypeInfo<Type>,
-{
-  pub fn make_with_egraph_ld(
-    egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
-  ) -> Self {
-    Self {
-      egraph,
-      learn_trivial: false,
-      learn_constants: false,
-      max_arity: None,
-      banned_ops: vec![],
-      roots: vec![],
-      co_occurences: None,
-      last_lib_id: 0,
-      clock_period: 1000,
-      area_estimator: LA::default(),
-      delay_estimator: LD::default(),
-      bb_query: BBQuery::default(),
-      liblearn_config: LiblearnConfig::default(),
-      op_pack_config: OpPackConfig::default(),
-      ci_encoding_config: CiEncodingConfig::default(),
-      enable_vectorize: false,
+      find_packs: false,
     }
   }
 }
@@ -574,8 +518,8 @@ where
   }
 
   #[must_use]
-  pub fn with_op_pack_config(mut self, op_pack_config: OpPackConfig) -> Self {
-    self.op_pack_config = op_pack_config;
+  pub fn with_meta_au_config(mut self, meta_au_config: OpPackConfig) -> Self {
+    self.meta_au_config = meta_au_config;
     self
   }
 
@@ -589,18 +533,16 @@ where
   }
 
   #[must_use]
-  pub fn vectorize(mut self) -> Self {
-    self.enable_vectorize = true;
+  pub fn find_packs(mut self) -> Self {
+    self.find_packs = true;
     self
   }
 
-  pub fn build<A>(
+  pub fn build(
     self,
-    egraph: &EGraph<AstNode<Op>, A>,
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
   ) -> LearnedLibrary<Op, (Id, Id), Type, LA, LD>
   where
-    A: Analysis<AstNode<Op>> + Clone + Sync + Send + 'static,
-    <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
     AstNode<Op>: Language,
     <AstNode<Op> as Language>::Discriminant: Sync + Send,
     Op: crate::ast_node::Printable + OperationInfo,
@@ -615,7 +557,6 @@ where
     debug!("Constructing learned libraries");
     LearnedLibrary::new(
       egraph,
-      self.egraph,
       self.learn_trivial,
       self.learn_constants,
       self.max_arity,
@@ -627,9 +568,9 @@ where
       self.delay_estimator,
       self.bb_query,
       self.liblearn_config,
-      self.op_pack_config,
+      self.meta_au_config,
       self.ci_encoding_config,
-      self.enable_vectorize,
+      self.find_packs,
     )
   }
 }
@@ -739,7 +680,7 @@ where
   AstNode<Op>: TypeInfo<Type>,
   T: Clone + Ord,
 {
-  egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+  egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
   /// A map from DFTA states (i.e. pairs of enodes) to their antiunifications.
   aus_by_state: BTreeMap<T, BTreeSet<AU<Op, T, Type>>>,
   /// A set of all the antiunifications discovered.
@@ -767,12 +708,12 @@ where
   bb_query: BBQuery,
   /// config for liblearn
   liblearn_config: LiblearnConfig,
-  /// op_pack_config
-  op_pack_config: OpPackConfig,
+  /// meta_au_config
+  meta_au_config: OpPackConfig,
   /// IO filter config
   ci_encoding_config: CiEncodingConfig,
   /// vectorized library
-  enable_vectorize: bool,
+  find_packs: bool,
 }
 
 #[allow(unused)]
@@ -788,7 +729,7 @@ where
   (x, after_mem - before_mem)
 }
 
-impl<'a, Op, Type, LA, LD> LearnedLibrary<Op, (Id, Id), Type, LA, LD>
+impl<Op, Type, LA, LD> LearnedLibrary<Op, (Id, Id), Type, LA, LD>
 where
   Op: Arity
     + Clone
@@ -823,9 +764,8 @@ where
 {
   /// Constructs a [`LearnedLibrary`] from an [`EGraph`] by antiunifying pairs
   /// of enodes to find their common structure.
-  fn new<A: Analysis<AstNode<Op>> + Clone>(
-    egraph: &'a EGraph<AstNode<Op>, A>,
-    my_egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+  fn new(
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
     learn_trivial: bool,
     learn_constants: bool,
     max_arity: Option<usize>,
@@ -837,18 +777,16 @@ where
     delay_estimator: LD,
     bb_query: BBQuery,
     liblearn_config: LiblearnConfig,
-    op_pack_config: OpPackConfig,
+    meta_au_config: OpPackConfig,
     ci_encoding_config: CiEncodingConfig,
-    enable_vectorize: bool,
+    find_packs: bool,
   ) -> Self
   where
-    <A as Analysis<AstNode<Op>>>::Data: ClassMatch + Sync + Send,
     Op: crate::ast_node::Printable,
-    A: Sync + Send + 'static,
     <AstNode<Op> as Language>::Discriminant: Sync + Send,
   {
     let mut learned_lib = Self {
-      egraph: my_egraph,
+      egraph: egraph.clone(),
       aus_by_state: BTreeMap::new(),
       aus: BTreeSet::new(),
       learn_trivial,
@@ -862,9 +800,9 @@ where
       delay_estimator,
       bb_query,
       liblearn_config: liblearn_config.clone(),
-      op_pack_config,
+      meta_au_config,
       ci_encoding_config,
-      enable_vectorize,
+      find_packs,
     };
     let classes: Vec<_> = egraph.classes().map(|cls| cls.id).collect();
 
@@ -926,7 +864,7 @@ where
           .cartesian_product(classes.iter())
           .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)))
           .collect::<Vec<_>>();
-        if op_pack_config.pack_expand {
+        if meta_au_config.pack_expand {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -1003,11 +941,10 @@ where
               let (ecls1, _, cls_hash1, subtree_levels1) = &class_data[i];
               let popcount1 = cls_hash1.count_ones();
               let subtree_cnt1 = subtree_levels1.count_ones();
-              for j in i + 1..end {
+              for j in i..end {
                 let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
-                if op_pack_config.pack_expand
-                  && !op_pack_config.prune_eclass_pair
-                {
+                // 包搜索模式下，只使用类型匹配
+                if find_packs {
                   // 不进行后面的检查，直接插入
                   local_pairs.push((**ecls1, **ecls2));
                   continue;
@@ -1049,7 +986,7 @@ where
           .collect();
         let eclass_pairs = all_pairs.clone();
         let start = Instant::now();
-        if op_pack_config.pack_expand {
+        if meta_au_config.pack_expand {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -1140,7 +1077,7 @@ where
         }
         let enum_start = Instant::now();
 
-        if op_pack_config.pack_expand {
+        if meta_au_config.pack_expand {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -1167,7 +1104,7 @@ where
     // for (state, aus) in &learned_lib.aus_by_state {
     //   println!("state{:?}: {:?}", state, aus);
     // }
-    if op_pack_config.pack_expand {
+    if meta_au_config.pack_expand {
       // 如果是meta_au_search，首先将aus分成两部分，一部分Opmask为1，
       // 另外一部分为0
       let mut has_mask_aus = BTreeSet::new();
@@ -1189,9 +1126,9 @@ where
       }
       // 如果has_mask_aus和no_mask_aus中有一个数量大于50，就选择前50个
       let mut sampled_aus = BTreeSet::new();
-      if has_mask_aus.len() > op_pack_config.num_meta_au_mask {
+      if has_mask_aus.len() > meta_au_config.num_meta_au_mask {
         let aus = has_mask_aus.iter().collect::<Vec<_>>();
-        let step = aus.len() / op_pack_config.num_meta_au_mask;
+        let step = aus.len() / meta_au_config.num_meta_au_mask;
         for i in (0..aus.len()).step_by(step) {
           sampled_aus.insert(aus[i].clone());
         }
@@ -1241,7 +1178,7 @@ where
 {
   /// Get the maximum bitwidth of the lib in a saturated egraph
   fn get_max_bitwidth(
-    egraph: EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+    egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
   ) -> HashMap<LibId, usize> {
     let mut max_bitwidths = HashMap::new();
     for eclass in egraph.classes() {
@@ -1362,7 +1299,7 @@ where
         condition: TypeMatch::new(au.ty_map.clone()),
         applier: applier.clone(),
       };
-      let name = if self.op_pack_config.pack_expand {
+      let name = if self.meta_au_config.pack_expand {
         format!("meta_anti-unify {new_i}")
       } else {
         format!("anti-unify {new_i}")
@@ -1383,8 +1320,8 @@ where
     let rules = msgs
       .clone()
       .map(|msg| msg.rewrite)
-      .collect::<Vec<Rewrite<AstNode<Op>, SimpleAnalysis<Op, Type>>>>();
-    let runner = Runner::<_, _, ()>::new(SimpleAnalysis::default())
+      .collect::<Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, Type>>>>();
+    let runner = Runner::<_, _, ()>::new(ISAXAnalysis::default())
       .with_egraph(self.egraph.clone())
       .with_time_limit(Duration::from_secs(1000))
       .with_iter_limit(1)
@@ -1407,7 +1344,7 @@ where
           condition: msg.condition.clone(),
           applier: applier.clone(),
         };
-        let name = if self.op_pack_config.pack_expand {
+        let name = if self.meta_au_config.pack_expand {
           format!("meta_anti-unify {new_i}")
         } else {
           format!("anti-unify {new_i}")
@@ -1714,6 +1651,8 @@ where
             && cached.au.expr.size() > au.au.expr.size()
           {
             cache.insert(key, au);
+          } else if cached.au.expr.clone().hole() > au.au.expr.clone().hole() {
+            cache.insert(key, au);
           } else {
             // 如果cached的au比au小，就不做任何操作
             debug!(
@@ -2015,7 +1954,8 @@ where
               });
 
             info!("aus_state.len() is {}", self.aus_by_state.len());
-            info!("deduplicating new_aus last: {} ", new_aus.clone().count());
+            // info!("deduplicating new_aus last: {} ",
+            // new_aus.clone().count());
 
             // let new_aus_dedu = self
             //   .deduplicate_from_candidates::<SimpleAnalysis<Op,
@@ -2075,10 +2015,6 @@ where
     }
 
     self.aus_by_state.insert(state, BTreeSet::new());
-
-    if !self.co_occurrences.may_co_occur(state.0, state.1) {
-      return;
-    }
 
     let mut aus: BTreeSet<AU<Op, (Id, Id), Type>> = BTreeSet::new();
 
@@ -2206,7 +2142,7 @@ where
               )
             }));
             // println!("aus_size: {}", aus.len());
-            // println!("{:?}", new_aus_dedu);
+
             // aus.extend(new_aus_dedu);
             debug!(
               "Total processing time: {:?}, lenth of new_aus and aus is {}",
@@ -2230,7 +2166,6 @@ where
     }
 
     debug!("aus size: {}", aus.len());
-
     self.filter_aus(aus, state, egraph);
   }
 
@@ -2298,17 +2233,18 @@ where
           // corresponds to an anti-unification containing at least n
           // + 1 nodes.
           // if learn_trivial
-          //   || (self.op_pack_config.pack_expand
-          //     && self.op_pack_config.learn_trivial)
+          //   || (self.meta_au_config.pack_expand
+          //     && self.meta_au_config.learn_trivial)
           //   || num_vars < au.num_holes()
           //   || au.num_nodes() > 1 + num_vars
           let mut flag = true;
           let mut ty_map = HashMap::new();
           let mut ty_vec = vec![];
+
           if learn_trivial
-            || (self.op_pack_config.pack_expand
-              && self.op_pack_config.learn_trivial)
-            || self.enable_vectorize
+            || (self.meta_au_config.pack_expand
+              && self.meta_au_config.learn_trivial)
+            || self.find_packs
             || num_vars < au.num_holes()
             || au.num_nodes() > 1 + num_vars
           {
@@ -2472,7 +2408,7 @@ where
           op.is_useful_expr(children_ops.as_slice())
         })
         .filter(|au| {
-          if !self.op_pack_config.pack_expand {
+          if !self.meta_au_config.pack_expand {
             true
           } else {
             // 计算每一个au中含有的opmask的数目，如果超过1个，就不加入
@@ -2495,11 +2431,12 @@ where
       // 最后使用deduplicate_from_candidates去重
       let nontrivial_aus =
         self.deduplicate_from_candidates(nontrivial_aus.collect());
+
       // info!(
       //   "length of nontrivial_aus is {}",
       //   nontrivial_aus.clone().count()
       // );
-      let nontrivial_aus = if self.op_pack_config.pack_expand {
+      let nontrivial_aus = if self.meta_au_config.pack_expand {
         // 不需要完善类型
         nontrivial_aus.into_iter().collect::<Vec<_>>()
       } else {

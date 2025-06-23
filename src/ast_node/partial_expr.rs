@@ -1,4 +1,5 @@
 use crate::analysis::SimpleAnalysis;
+use crate::extract::beam_pareto::ISAXAnalysis;
 use crate::extract::beam_pareto::TypeInfo;
 use crate::runner::OperationInfo;
 use crate::teachable::BindingExpr;
@@ -48,7 +49,7 @@ where
 {
   pub fn get_match<Type>(
     self,
-    egraph: &EGraph<AstNode<Op>, SimpleAnalysis<Op, Type>>,
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
   ) -> Vec<Match>
   where
     Type: Debug + Default + Clone + Ord + Hash,
