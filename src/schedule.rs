@@ -33,7 +33,7 @@ where
 
   /// Returns the latency of the operation in the case of running on cpu
   #[must_use]
-  fn op_latency_cpu(&self, bb_query: &BBQuery) -> usize;
+  fn op_latency_cpu(&self, bb_query: &BBQuery) -> f64;
 
   /// Returns the execution count of the operation.
   #[must_use]
@@ -218,23 +218,28 @@ impl<LA, LD> Scheduler<LA, LD> {
       latency_accelerator += loop_length - 1;
     }
 
-    let mut latency_cpu = 0;
+    let mut latency_cpu_f64 = 0.0;
     for node in expr {
       if node.operation().is_arithmetic() {
+        let node_latency = node.op_latency_cpu(&self.bb_query);
+        // println!("Node {:?} latency: {}", node, node_latency);
         if have_loop {
-          latency_cpu += node.op_latency_cpu(&self.bb_query)
-            * node.op_execution_count(&self.bb_query)
-            / min_exe_count;
+          latency_cpu_f64 += node_latency
+            * node.op_execution_count(&self.bb_query) as f64
+            / min_exe_count as f64;
         } else {
-          latency_cpu += node.op_latency_cpu(&self.bb_query);
+          latency_cpu_f64 += node_latency;
         }
       }
     }
+    let latency_cpu = latency_cpu_f64.round() as usize;
     // Calculate the area
     // println!("Calculating area...");
     let mut area = 0;
     for node in expr {
-      area += node.op_area(&self.area_estimator, node.get_op_args(expr));
+      let node_area =
+        node.op_area(&self.area_estimator, node.get_op_args(expr));
+      area += node_area;
     }
     // println!("Number of nodes: {}", expr.len());
 
@@ -300,7 +305,8 @@ where
       Some(BindingExpr::Lib(_, _, _, gain, _)) => gain,
       _ => 0,
     };
-    let cost = args_cost + node_latency * exe_count - perf_gain * exe_count; // Subtract the gain from the cost
+    let cost = args_cost + node_latency.round() as usize * exe_count
+      - perf_gain * exe_count; // Subtract the gain from the cost
     costs.insert(Id::from(i), cost);
   }
   costs.get(&expr.root()).cloned().unwrap_or(0)
