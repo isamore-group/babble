@@ -147,7 +147,7 @@ pub trait TypeAnalysis {
 
 /// this function is used to calculate the maximum number of bits according
 /// the config
-fn max_inputs(config: &CiEncodingConfig) -> u32 {
+pub fn max_inputs(config: &CiEncodingConfig) -> u32 {
   let mut count = config.max_total_bits;
   if config.register_grouping.enabled {
     count /= config.register_grouping.dis_bits as u32;

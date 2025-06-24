@@ -20,7 +20,7 @@ use crate::{
   PartialExpr, Pretty, Printable, Teachable,
   au_filter::{CiEncodingConfig, TypeAnalysis},
   bb_query::{BBInfo, BBQuery},
-  expand::{ExpandMessage, OpPackConfig, expand},
+  expand::{ExpandMessage, MetaAUConfig, expand},
   extract::beam_pareto::{
     ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet,
   },
@@ -81,7 +81,7 @@ pub trait OperationInfo {
     1
   }
   /// 加入Op_pack节点
-  fn make_op_pack(ops: Vec<String>) -> Self;
+  fn make_op_pack(ops: Vec<String>, bbs: Vec<String>) -> Self;
   /// 加入Op_select节点
   fn make_op_select() -> Self;
   /// 加入rule_var节点
@@ -182,6 +182,7 @@ where
 {
   pub egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   pub rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  pub libs: HashMap<usize, Pattern<AstNode<Op>>>,
   pub root: Id,
   pub latency_gain: usize,
   pub area: usize,
@@ -235,6 +236,7 @@ where
   pub fn new(
     egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
     rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+    libs: HashMap<usize, Pattern<AstNode<Op>>>,
     root: Id,
     latency_gain: usize,
     area: usize,
@@ -242,6 +244,7 @@ where
     Self {
       egraph,
       rewrites,
+      libs,
       root,
       latency_gain,
       area,
@@ -343,9 +346,11 @@ where
   /// vectorize config
   pub vectorize_config: VectorConfig,
   /// op_pack config
-  pub op_pack_config: OpPackConfig,
+  pub op_pack_config: MetaAUConfig,
   /// ci_encoding config
   pub ci_encoding_config: CiEncodingConfig,
+  /// find_pack config
+  pub find_pack_config: FindPackConfig,
 }
 
 impl<LA, LD> Default for ParetoConfig<LA, LD>
@@ -367,8 +372,9 @@ where
       enable_widths_merge: false,
       liblearn_config: LiblearnConfig::default(),
       vectorize_config: VectorConfig::default(),
-      op_pack_config: OpPackConfig::default(),
+      op_pack_config: MetaAUConfig::default(),
       ci_encoding_config: CiEncodingConfig::default(),
+      find_pack_config: FindPackConfig::default(),
     }
   }
 }
@@ -377,9 +383,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LiblearnCost {
-  /// type of cost : "delay", "Match", "size"， "latencygainarea"
-  #[serde(rename = "match")]
-  Match,
+  /// type of cost : "delay", "size"， "latencygainarea"
   Delay,
   Size,
   LatencyGainArea,
@@ -392,10 +396,10 @@ impl Default for LiblearnCost {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AUMergeMod {
-  /// type of AU merge : "random", "kd", "greedy", "cartesian"
+  /// type of AU merge : "random", "kd", "boundary", "cartesian"
   Random,
   Kd,
-  Greedy,
+  Boundary,
   #[serde(rename = "cartesian")]
   Cartesian,
 }
@@ -436,7 +440,7 @@ impl Default for LiblearnConfig {
   fn default() -> Self {
     Self {
       cost: LiblearnCost::Delay,
-      au_merge_mod: AUMergeMod::Greedy,
+      au_merge_mod: AUMergeMod::Boundary,
       enum_mode: EnumMode::All,
       sample_num: 10,
       hamming_threshold: 36,
@@ -475,6 +479,25 @@ impl LiblearnConfig {
   }
 }
 
+/// FindPackConfig用于在向量化和MetaAU的过程中使用，会对lib-learn做出一些放宽，
+/// 这些放宽会增加学到的库的数量，但是会对性能造成影响
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct FindPackConfig {
+  // 是否要根据相似度剪枝
+  pub prune_similar: bool,
+  // 是否学习trivial的表达式
+  pub learn_trivial: bool,
+}
+
+impl Default for FindPackConfig {
+  fn default() -> Self {
+    Self {
+      prune_similar: true,
+      learn_trivial: true,
+    }
+  }
+}
+
 /// A Pareto Runner that uses Pareto optimization with beam search
 pub struct ParetoRunner<Op, T, LA, LD>
 where
@@ -501,6 +524,7 @@ where
   /// lib rewrites
   lib_rewrites_with_condition:
     HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
+  past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
   /// Configuration for the beam search
   config: ParetoConfig<LA, LD>,
   /// lift_dsrs
@@ -552,6 +576,7 @@ where
       usize,
       (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>),
     >,
+    past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
     config: ParetoConfig<LA, LD>,
   ) -> Self
   where
@@ -563,6 +588,7 @@ where
       dsrs,
       bb_query,
       lib_rewrites_with_condition,
+      past_libs,
       config,
       lift_dsrs: vec![],
       transform_dsrs: vec![],
@@ -888,6 +914,8 @@ where
     let mut rewrites_map = HashMap::new();
     for i in 0..isax_cost.cs.set.len() {
       let mut chosen_rewrites_per_libsel = vec![];
+      let mut chosen_libs_per_libsel: HashMap<usize, Pattern<AstNode<Op>>> =
+        HashMap::new();
       for lib in &isax_cost.cs.set[i].libs {
         // println!("lib: {}, max_lib_id: {}", lib.0.0, max_lib_id);
         if lib.0.0 < max_lib_id {
@@ -902,6 +930,8 @@ where
               .0
               .clone(),
           );
+          chosen_libs_per_libsel
+            .insert(lib.0.0, self.past_libs.get(&lib.0.0).unwrap().clone());
           rewrites_map.insert(
             lib.0.0,
             self
@@ -928,6 +958,8 @@ where
             chosen_rewrites_per_libsel
               .push(expand_message.all_au_rewrites[new_lib].clone());
             learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
+            chosen_libs_per_libsel
+              .insert(lib.0.0, expand_message.libs[&lib.0.0].clone().1);
             // println!(
             //   "choose: {}",
             //   Pattern::from(expand_message.libs[&lib.0.0].0.clone())
@@ -945,6 +977,8 @@ where
             chosen_rewrites_per_libsel
               .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
             learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
+            chosen_libs_per_libsel
+              .insert(lib.0.0, expand_message.libs[&lib.0.0].clone().1);
             for rewrite in expand_message.meta_au_rewrites[&lib.0.0].clone() {
               rewrites_map.insert(
                 lib.0.0,
@@ -959,6 +993,7 @@ where
       annotated_egraphs.push(AnnotatedEGraph::new(
         aeg.clone(),
         chosen_rewrites_per_libsel,
+        chosen_libs_per_libsel,
         root,
         isax_cost.cs.set[i].latency_gain,
         isax_cost.cs.set[i].area_cost,

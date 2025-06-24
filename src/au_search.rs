@@ -70,14 +70,6 @@ impl<Op: Eq + OperationInfo + Clone + Ord, Type: Eq> PartialOrd
       .map(|x| x.expr().num_holes())
       .sum::<usize>();
     let ord = match self.cost_config {
-      LiblearnCost::Match => {
-        // 将matches收集起来
-        let self_matched =
-          self.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
-        let other_matched =
-          other.aus.iter().map(|x| x.matches()).collect::<Vec<_>>();
-        self_matched.cmp(&other_matched)
-      }
       LiblearnCost::Delay => {
         let self_delay = self.aus.iter().map(|x| x.delay()).sum::<usize>();
         let other_delay = other.aus.iter().map(|x| x.delay()).sum::<usize>();
@@ -553,8 +545,8 @@ where
 }
 
 // 一个小测试，因为实验中发现好像采样方法改变好像对于结果影响不大，
-// 所以此处写一个greedy_aus,对于给定的aus，只只取最大值和最小值
-pub fn greedy_aus<Op, Type>(
+// 所以此处写一个boundary_aus,对于给定的aus，只只取最大值和最小值
+pub fn boundary_aus<Op, Type>(
   aus: Vec<Vec<AU<Op, (Id, Id), Type>>>,
 ) -> Vec<Vec<PartialExpr<Op, (Id, Id)>>>
 where

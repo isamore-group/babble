@@ -232,7 +232,12 @@ impl<LA, LD> Scheduler<LA, LD> {
         }
       }
     }
-    let latency_cpu = latency_cpu_f64.round() as usize;
+    // println!(
+    //   "Latency accelerator: {}, Latency CPU: {}",
+    //   latency_accelerator, latency_cpu_f64
+    // );
+    // 取上界
+    let latency_cpu = latency_cpu_f64.ceil() as usize;
     // Calculate the area
     // println!("Calculating area...");
     let mut area = 0;
@@ -248,6 +253,10 @@ impl<LA, LD> Scheduler<LA, LD> {
     } else if area == 0 {
       (0, 0)
     } else {
+      // println!(
+      //   "Latency accelerator: {}, Latency CPU: {}, Area: {}",
+      //   latency_accelerator, latency_cpu, area
+      // );
       (latency_cpu - latency_accelerator, area)
     }
   }

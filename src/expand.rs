@@ -16,9 +16,10 @@ use crate::{
   Arity, AstNode, BindingExpr, DiscriminantEq, Expr, ParetoConfig, PartialExpr,
   Printable, Teachable,
   au_filter::TypeAnalysis,
-  bb_query::{self, BBQuery},
+  bb_query::{self, BBInfo, BBQuery},
   extract::beam_pareto::{ISAXAnalysis, TypeInfo},
   learn::{self, AUWithType, LearnedLibraryBuilder},
+  perf_infer::expr_perf_infer,
   rewrites::TypeMatch,
   runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo},
   schedule::{Schedulable, Scheduler},
@@ -32,7 +33,7 @@ use log::debug;
 use nom::lib;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
-pub struct OpPackConfig {
+pub struct MetaAUConfig {
   /// 是否进行expand
   pub pack_expand: bool,
   /// 是否进行eclass pair剪枝
@@ -45,9 +46,9 @@ pub struct OpPackConfig {
   pub max_operation: usize,
 }
 
-impl Default for OpPackConfig {
+impl Default for MetaAUConfig {
   fn default() -> Self {
-    OpPackConfig {
+    MetaAUConfig {
       pack_expand: false,
       prune_eclass_pair: true,
       learn_trivial: true,
@@ -398,7 +399,8 @@ where
     + DiscriminantEq
     + Default
     + Printable
-    + OperationInfo,
+    + OperationInfo
+    + BBInfo,
   T: Debug
     + Default
     + Clone
@@ -425,7 +427,7 @@ where
   // 所以直接套用vectorize的learn部分
   let expansion_lib_config = LiblearnConfig::new(
     LiblearnCost::Size,
-    AUMergeMod::Greedy,
+    AUMergeMod::Boundary,
     EnumMode::PruningGold,
     // 后面的配置直接使用config.liblearn中的配置
     config.liblearn_config.sample_num,
@@ -438,6 +440,7 @@ where
   // 第一次是包搜索模式
   let learned_lib = LearnedLibraryBuilder::default()
     .find_packs()
+    .with_find_pack_config(config.find_pack_config.clone())
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
     .with_last_lib_id(max_lib_id)
@@ -570,14 +573,22 @@ where
     // 打印lib
     // println!("Processing lib: {}", Pattern::from(msg.searcher_pe.clone()));
     // 否则新建一个OpPack节点和一个OpSelect节点
-    let op_pack =
-      Op::make_op_pack(mask_results.iter().map(|x| x.to_string()).collect());
+    let mut pack_bbs = Vec::new();
+    for op in &mask_results {
+      pack_bbs.extend(op.get_bbs_info());
+    }
+    let op_pack = Op::make_op_pack(
+      mask_results.iter().map(|x| x.to_string()).collect(),
+      pack_bbs,
+    );
     // 将新的partial_expr转化成applier
     let mut new_applier: Pattern<_> =
       add_op_pack(msg.applier_pe.clone(), op_pack.clone()).into();
+    let new_searcher: Pattern<_> =
+      add_op_pack(msg.searcher_pe.clone(), op_pack.clone()).into();
     // println!("new_applier: {}", new_applier);
     // Calculate the gain and cost of the new applier
-    let ast = &searcher.searcher.ast;
+    let ast = &new_searcher.ast;
     let new_expr = ast
       .iter()
       .map(|node| match node {
@@ -585,18 +596,20 @@ where
         egg::ENodeOrVar::Var(_) => Op::var(0),
       })
       .collect::<Vec<AstNode<Op>>>();
-    let rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
+    let mut rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
     let scheduler = Scheduler::new(
       config.clock_period,
       config.area_estimator.clone(),
       config.delay_estimator.clone(),
       bb_query.clone(),
     );
+    expr_perf_infer(&mut rec_expr);
     let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
-    // println!(
-    //   "Meta_AU:: lib_id: {}, latency_gain: {}, area: {}",
-    //   msg.lib_id, latency_gain, area
-    // );
+    // 如果latency_gain为0，直接跳过
+    // if latency_gain == 0 {
+    //   // println!("Latency gain is zero for lib_id: {}, skipping",
+    // msg.lib_id);   continue; // 如果延迟增益为0，就跳过
+    // }
     for node in new_applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {

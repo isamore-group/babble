@@ -629,7 +629,7 @@ where
   );
   let vetorize_lib_config = LiblearnConfig::new(
     LiblearnCost::Size,
-    AUMergeMod::Greedy,
+    AUMergeMod::Boundary,
     EnumMode::PruningGold,
     // 后面的配置直接使用config.liblearn中的配置
     config.liblearn_config.sample_num,
@@ -692,6 +692,7 @@ where
     .with_liblearn_config(vetorize_lib_config)
     .with_clock_period(config.clock_period)
     .find_packs()
+    .with_find_pack_config(config.find_pack_config.clone())
     .with_bb_query(bb_query.clone())
     .build(&egraph);
   let lib_rewrites: Vec<(
@@ -1002,7 +1003,7 @@ where
       bb_query.clone(),
     );
     let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
-    // println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
+    println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
     // println!("lib: {}", searcher);
     for node in applier.ast.iter_mut() {
       match node {
