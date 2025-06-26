@@ -647,8 +647,22 @@ where
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
       .with_egraph(egraph)
       .with_time_limit(timeout)
-      .with_iter_limit(1)
+      .with_iter_limit(4)
       .run(&self.dsrs);
+
+    let origin_aeg = runner.egraph;
+
+    // 接下来使用lib_rewrites_with_condition在进行重写, Analysis不能是空
+    let past_lib_rewrites = self
+      .lib_rewrites_with_condition
+      .iter()
+      .map(|(_, (rewrite, _))| rewrite.clone())
+      .collect::<Vec<_>>();
+    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
+      .with_egraph(origin_aeg.clone())
+      .with_time_limit(timeout)
+      .with_iter_limit(1)
+      .run(&past_lib_rewrites);
 
     let mut aeg = runner.egraph;
 
@@ -859,19 +873,21 @@ where
     //   .run(&vec![rewrite.clone()]);
     // }
     // println!("beginning to run lib rewrites");
-    let new_all_rewrites = expand_message
+    let mut new_all_rewrites = expand_message
       .all_au_rewrites
       .clone()
       .into_iter()
       .rev()
       .collect::<Vec<_>>();
+    // 将past_lib_rewrites加入，同台竞技，使用的是origin_aeg
+    new_all_rewrites.extend(past_lib_rewrites);
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
       self.config.lps,
       self.bb_query.clone(),
     ))
-    .with_egraph(aeg.clone())
+    .with_egraph(origin_aeg.clone())
     .with_iter_limit(self.config.lib_iter_limit)
     .with_time_limit(timeout)
     .with_node_limit(1_000_000)
@@ -888,7 +904,7 @@ where
     //   }
     // }
 
-    let mut egraph = runner.egraph;
+    let egraph = runner.egraph;
 
     println!(
       "Final egraph size: {}, eclasses: {}",
@@ -995,7 +1011,7 @@ where
       chosen_rewrites.extend(chosen_rewrites_per_libsel.clone());
       // 更新annotated_egraphs
       annotated_egraphs.push(AnnotatedEGraph::new(
-        aeg.clone(),
+        origin_aeg.clone(),
         chosen_rewrites_per_libsel,
         chosen_libs_per_libsel,
         root,

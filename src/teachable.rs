@@ -267,6 +267,7 @@ pub enum ShieldingBop {
 pub enum ShieldingUop {
   Abs,
   Not,
+  Neg,
   Cast(CastOp),
 }
 
@@ -288,6 +289,7 @@ pub enum VectorOp {
   VecDiv,
   VecMac,
   VecNeg,
+  VecNot,
   VecSext,
   VecZext,
   VecTrunc,
