@@ -548,11 +548,11 @@ where
     Op: crate::ast_node::Printable + OperationInfo,
   {
     let roots = &self.roots;
-    debug!("Computing co-occurences");
-    let co_occurs = self.co_occurences.unwrap_or_else(|| {
-      let co_ext = COBuilder::new(egraph, roots);
-      co_ext.run()
-    });
+    // debug!("Computing co-occurences");
+    // let co_occurs = self.co_occurences.unwrap_or_else(|| {
+    //   let co_ext = COBuilder::new(egraph, roots);
+    //   co_ext.run()
+    // });
 
     debug!("Constructing learned libraries");
     LearnedLibrary::new(
@@ -561,7 +561,6 @@ where
       self.learn_constants,
       self.max_arity,
       self.banned_ops,
-      co_occurs,
       self.last_lib_id,
       self.clock_period,
       self.area_estimator,
@@ -694,8 +693,6 @@ where
   max_arity: Option<usize>,
   /// Operations that must never appear in learned abstractions.
   banned_ops: Vec<Op>,
-  /// Data about which e-classes can co-occur.
-  co_occurrences: CoOccurrences,
   // /// 存储deduplicate_from_candidates中cache已经存储过的值
   // pattern_cache: HashMap<PartialExpr<Op, (Id, Id)>, Vec<Match>>,
   last_lib_id: usize,
@@ -773,7 +770,6 @@ where
     learn_constants: bool,
     max_arity: Option<usize>,
     banned_ops: Vec<Op>,
-    co_occurrences: CoOccurrences,
     last_lib_id: usize,
     clock_period: usize,
     area_estimator: LA,
@@ -797,7 +793,6 @@ where
       learn_constants,
       max_arity,
       banned_ops,
-      co_occurrences,
       last_lib_id,
       clock_period,
       area_estimator,
@@ -907,9 +902,6 @@ where
             ) {
               continue;
             }
-            if !learned_lib.co_occurrences.may_co_occur(*ecls1, *ecls2) {
-              continue;
-            }
             if !type_match(&ty1, &ty2) {
               continue;
             }
@@ -978,10 +970,6 @@ where
                   continue;
                 }
 
-                if !learned_lib.co_occurrences.may_co_occur(**ecls1, **ecls2) {
-                  continue;
-                }
-
                 local_pairs.push((**ecls1, **ecls2));
               }
             }
@@ -1033,9 +1021,6 @@ where
               liblearn_config.hamming_threshold,
               liblearn_config.jaccard_threshold,
             ) {
-              continue;
-            }
-            if !learned_lib.co_occurrences.may_co_occur(*ecls1, *ecls2) {
               continue;
             }
             let pattern = egraph[*ecls1].data.get_pattern(&egraph[*ecls2].data);
@@ -2293,7 +2278,8 @@ where
             // au.num_holes(), au.num_nodes() > num_vars);
             // 从var2id中取出变量对应的eclassId，
             // 从Id对应的eclass中拿到data作为变量类型
-
+            // 在进行过滤的过程中，需要严格控制变量的类型，
+            // 如果位宽难以合并，那么就直接返回None
             for (k, v) in var2id.iter() {
               let id = v.clone();
               let ty0 = egraph[id.0].data.get_type()[0]
@@ -2313,8 +2299,15 @@ where
                   );
                 });
 
+              // 如果不能合并，就直接return None
+              if !AstNode::can_merge_types(&ty0, &ty1) {
+                flag = false;
+                break;
+              }
+
               let ty_neglecting_width =
                 AstNode::merge_types_neglecting_width(&ty0, &ty1);
+
               let ty_merged = AstNode::merge_types(&ty0, &ty1);
               if !ty_merged.is_state_type() {
                 ty_vec.push(ty_merged.clone());
@@ -2548,14 +2541,13 @@ where
 {
   match pe {
     PartialExpr::Node(node) => {
-      if node.operation().is_get() {
+      if node.operation().is_get_from_arg() {
         let arg_pe = node.args()[0].clone();
         match arg_pe {
           PartialExpr::Node(arg_node) => {
-            if arg_node.operation().is_arg() {
-              // 如果是external的arg，就过滤掉
-              return !arg_node.operation().is_external_arg();
-            }
+            // 一定是arg节点
+            // 如果是external的arg，就过滤掉
+            return !arg_node.operation().is_external_arg();
           }
           PartialExpr::Hole(_) => {}
         }

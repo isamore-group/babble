@@ -45,8 +45,12 @@ pub trait OperationInfo {
   fn make_lib(id: LibId, gain: usize, cost: usize) -> Self;
   /// make a list op
   fn make_vec(result_tys: Vec<String>, bbs: Vec<String>) -> Self;
-  /// make a get op
-  fn make_get(id: usize, result_tys: Vec<String>, bbs: Vec<String>) -> Self;
+  /// make a get_from_vec op
+  fn make_get_from_vec(
+    id: usize,
+    result_tys: Vec<String>,
+    bbs: Vec<String>,
+  ) -> Self;
   /// Get the constant value of the operation
   fn get_const(&self) -> Option<(i64, u32)>;
   /// Make an AST node for type-awared Const
@@ -109,12 +113,12 @@ pub trait OperationInfo {
   fn is_tuple(&self) -> bool {
     false
   }
-  /// 是不是get节点
-  fn is_get(&self) -> bool {
+  /// 是不是get_from_arg节点
+  fn is_get_from_arg(&self) -> bool {
     false
   }
-  /// 是不是arg节点
-  fn is_arg(&self) -> bool {
+  /// 是不是get_from_vec节点
+  fn is_get_from_vec(&self) -> bool {
     false
   }
   /// 是不是external_arg

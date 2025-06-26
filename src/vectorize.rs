@@ -684,15 +684,16 @@ where
   // egraph.dot().to_png("target/foo1.png").unwrap();
   // 进行库学习
   let learned_lib = LearnedLibraryBuilder::default()
-    .learn_trivial(true)
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
     // .with_co_occurs(co_occurs)
     .with_last_lib_id(0)
     .with_liblearn_config(vetorize_lib_config)
     .with_clock_period(config.clock_period)
-    .find_packs()
-    .with_find_pack_config(config.find_pack_config.clone())
+    .with_area_estimator(config.area_estimator.clone())
+    .with_delay_estimator(config.delay_estimator.clone())
+    // .find_packs()
+    // .with_find_pack_config(config.find_pack_config.clone())
     .with_bb_query(bb_query.clone())
     .build(&egraph);
   let lib_rewrites: Vec<(
@@ -769,7 +770,7 @@ where
           // 针对每个id，构造一个get节点
           for i in 0..matched_eclass_id.len() {
             let get_node = AstNode::new(
-              Op::make_get(i, vec![tys[i].clone()], bbs.clone()),
+              Op::make_get_from_vec(i, vec![tys[i].clone()], bbs.clone()),
               vec![list_id],
             );
             // println!("tys[i]: {:?}", tys[i]);
@@ -902,6 +903,12 @@ where
     }
   }
 
+  println!(
+    "after transform, egraph size: {}, class size: {}",
+    egraph.total_size(),
+    egraph.classes().len()
+  );
+
   // 进行extract
   let new_root = if roots.len() == 1 {
     roots[0]
@@ -913,6 +920,8 @@ where
   };
   // 推导bbs信息
   perf_infer::perf_infer(&mut egraph, roots);
+
+  println!("begin vectorize root expression");
 
   // egraph.dot().to_png("target/foo3.png").unwrap();
 
@@ -952,9 +961,13 @@ where
       }
     };
   println!("Vectorizing root expression...");
-  let root_aus = expr_vec2lib(&(expr.clone().into()));
+  // for (i, node) in expr.iter().enumerate() {
+  //   println!("{}: {:?}", i, node);
+  // }
+  let root_aus = expr_vec2lib(&expr);
   println!("vectorize root expression done, size: {}", root_aus.len());
   for (pe, type_map) in root_aus {
+    // println!("pe: {:?}", pe);
     // 将根表达式的au添加到aus中
     insert_into_aus(pe, type_map);
   }
@@ -1003,7 +1016,7 @@ where
       bb_query.clone(),
     );
     let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
-    println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
+    // println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
     // println!("lib: {}", searcher);
     for node in applier.ast.iter_mut() {
       match node {
@@ -1066,70 +1079,70 @@ where
   (expr.into(), root_vec, new_egraph, lib_messages)
 }
 
-// 本函数输入一个Expr，返回一个Expr(为转换后的Expr)，
-fn lib_body_get<Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable>(
-  expr: &Expr<Op>,
-  var_index: &mut usize,
-  type_map: &mut HashMap<Var, Vec<String>>,
-) -> PartialExpr<Op, Var> {
-  let op = expr.0.operation();
-  // println!("Processing op: {:?}", op);
-  if !op.is_vector_op() || op.is_vec() {
-    *var_index += 1;
-    type_map.insert(
-      format!("?x{}", *var_index - 1)
-        .parse()
-        .unwrap_or_else(|_| unreachable!()),
-      op.get_result_type(),
-    );
-    PartialExpr::Hole(
-      format!("?x{}", *var_index - 1)
-        .parse()
-        .unwrap_or_else(|_| unreachable!()),
-    )
-  } else {
-    // 对每个arg进行expr转化
-    let mut new_args = Vec::new();
-    for arg in expr.0.args() {
-      let new_arg = lib_body_get(arg.as_ref(), var_index, type_map);
-      new_args.push(new_arg);
-    }
-    // 创建一个新的Expr
-    let new_expr = PartialExpr::Node(AstNode::new(op.clone(), new_args));
-    return new_expr;
-  }
-}
+// // 本函数输入一个Expr，返回一个Expr(为转换后的Expr)，
+// fn lib_body_get<Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable>(
+//   expr: &Expr<Op>,
+//   var_index: &mut usize,
+//   type_map: &mut HashMap<Var, Vec<String>>,
+// ) -> PartialExpr<Op, Var> {
+//   let op = expr.0.operation();
+//   // println!("Processing op: {:?}", op);
+//   if !op.is_vector_op() || op.is_vec() {
+//     *var_index += 1;
+//     type_map.insert(
+//       format!("?x{}", *var_index - 1)
+//         .parse()
+//         .unwrap_or_else(|_| unreachable!()),
+//       op.get_result_type(),
+//     );
+//     PartialExpr::Hole(
+//       format!("?x{}", *var_index - 1)
+//         .parse()
+//         .unwrap_or_else(|_| unreachable!()),
+//     )
+//   } else {
+//     // 对每个arg进行expr转化
+//     let mut new_args = Vec::new();
+//     for arg in expr.0.args() {
+//       let new_arg = lib_body_get(arg.as_ref(), var_index, type_map);
+//       new_args.push(new_arg);
+//     }
+//     // 创建一个新的Expr
+//     let new_expr = PartialExpr::Node(AstNode::new(op.clone(), new_args));
+//     return new_expr;
+//   }
+// }
 
-fn expr_vec2lib<
-  Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable + Hash,
->(
-  expr: &Expr<Op>,
-) -> Vec<(PartialExpr<Op, Var>, HashMap<Var, Vec<String>>)> {
-  let op = expr.0.operation();
-  // println!("Processing op: {:?}", op);
-  if !op.is_vector_op() {
-    let mut pes = HashSet::new();
-    let mut pes_with_condition = Vec::new();
-    expr.0.args().iter().for_each(|arg| {
-      let sub_pes = expr_vec2lib(arg.as_ref());
-      for sub_pe in sub_pes {
-        // 对每个子表达式进行处理
-        let (pe, type_map) = sub_pe;
-        // 检查是否已经存在相同的表达式
-        if !pes.contains(&pe) {
-          pes.insert(pe.clone());
-          pes_with_condition.push((pe, type_map));
-        }
-      }
-    });
-    pes_with_condition
-  } else {
-    let mut var_index = 0;
-    let mut type_map: HashMap<Var, Vec<String>> = HashMap::new();
-    let body = lib_body_get(expr, &mut var_index, &mut type_map);
-    vec![(body, type_map)]
-  }
-}
+// fn expr_vec2lib<
+//   Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable + Hash,
+// >(
+//   expr: &Expr<Op>,
+// ) -> Vec<(PartialExpr<Op, Var>, HashMap<Var, Vec<String>>)> {
+//   let op = expr.0.operation();
+//   // println!("Processing op: {:?}", op);
+//   if !op.is_vector_op() {
+//     let mut pes = HashSet::new();
+//     let mut pes_with_condition = Vec::new();
+//     expr.0.args().iter().for_each(|arg| {
+//       let sub_pes = expr_vec2lib(arg.as_ref());
+//       for sub_pe in sub_pes {
+//         // 对每个子表达式进行处理
+//         let (pe, type_map) = sub_pe;
+//         // 检查是否已经存在相同的表达式
+//         if !pes.contains(&pe) {
+//           pes.insert(pe.clone());
+//           pes_with_condition.push((pe, type_map));
+//         }
+//       }
+//     });
+//     pes_with_condition
+//   } else {
+//     let mut var_index = 0;
+//     let mut type_map: HashMap<Var, Vec<String>> = HashMap::new();
+//     let body = lib_body_get(expr, &mut var_index, &mut type_map);
+//     vec![(body, type_map)]
+//   }
+// }
 
 pub struct VecExtractor<'a, Op, T>
 where
@@ -1315,7 +1328,7 @@ where
     let mut other_nodes = Vec::new();
     for node in eclass.iter().cloned() {
       // 确保 args 至少有一个
-      if node.operation().is_get() && node.args().len() >= 1 {
+      if node.operation().is_get_from_vec() && node.args().len() >= 1 {
         let child_id = node.args()[0];
         // self.egraph[child_id] 取子 e-class，再检查其中是否含 vec op
         if self.egraph[child_id].iter().any(|n| n.operation().is_vec()) {
@@ -1493,4 +1506,104 @@ where
     expr.add(root_mapped);
     Ok(expr)
   }
+}
+
+// 构建模板的递归辅助函数
+fn build_template<
+  Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable + Hash,
+>(
+  rec_expr: &RecExpr<AstNode<Op, Id>>,
+  root: Id,
+  cache: &mut HashMap<Id, PartialExpr<Op, Var>>,
+  var_index: &mut usize,
+  type_map: &mut HashMap<Var, Vec<String>>,
+) -> PartialExpr<Op, Var> {
+  if let Some(cached) = cache.get(&root) {
+    return cached.clone();
+  }
+
+  let node = &rec_expr[root];
+  let op = node.operation();
+
+  // 检查是否需要替换为Hole
+  if !op.is_vector_op() || op.is_vec() {
+    *var_index += 1;
+    let var_name = format!("?x{}", *var_index - 1);
+    let var: Var = var_name.parse().unwrap_or_else(|_| unreachable!());
+    type_map.insert(var.clone(), op.get_result_type());
+    let hole = PartialExpr::Hole(var);
+    cache.insert(root, hole.clone());
+    hole
+  } else {
+    // 处理子节点
+    let mut new_children = Vec::new();
+    for child_id in node.children() {
+      let child_expr =
+        build_template(rec_expr, *child_id, cache, var_index, type_map);
+      new_children.push(child_expr);
+    }
+
+    // 创建新节点
+    let new_node = PartialExpr::Node(AstNode::new(op.clone(), new_children));
+    cache.insert(root, new_node.clone());
+    new_node
+  }
+}
+
+// 主转换函数
+fn expr_vec2lib<
+  Op: OperationInfo + Ord + Debug + Clone + Arity + Teachable + Hash,
+>(
+  rec_expr: &RecExpr<AstNode<Op, Id>>,
+) -> Vec<(PartialExpr<Op, Var>, HashMap<Var, Vec<String>>)> {
+  if rec_expr.is_empty() {
+    return Vec::new();
+  }
+
+  let n = rec_expr.len();
+  // 存储每个节点的结果集
+  let mut node_results: Vec<
+    Vec<(PartialExpr<Op, Var>, HashMap<Var, Vec<String>>)>,
+  > = vec![Vec::new(); n];
+
+  // 按拓扑顺序处理节点（索引小->大，确保子节点先处理）
+  for i in 0..n {
+    let node = &rec_expr[Id::from(i)];
+    let op = node.operation();
+
+    if !op.is_vector_op() {
+      // 非向量操作：收集所有子节点的结果
+      let mut seen = HashSet::new();
+      let mut combined = Vec::new();
+
+      for child_id in node.children() {
+        for result in &node_results[usize::from(*child_id)] {
+          // 去重：基于PartialExpr内容
+          if seen.insert(&result.0) {
+            combined.push(result.clone());
+          }
+        }
+      }
+
+      node_results[i] = combined;
+    } else {
+      // 向量操作：生成模板
+      let mut local_cache = HashMap::new();
+      let mut var_index = 0;
+      let mut type_map = HashMap::new();
+
+      let body = build_template(
+        rec_expr,
+        Id::from(i),
+        &mut local_cache,
+        &mut var_index,
+        &mut type_map,
+      );
+
+      node_results[i] = vec![(body, type_map)];
+    }
+  }
+
+  // 返回根节点结果（最后一个节点）
+  node_results[n - 1].clone()
 }

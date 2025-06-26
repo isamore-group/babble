@@ -1264,6 +1264,9 @@ pub trait TypeInfo<T> {
   fn get_rtype(&self, child_types: &Vec<T>) -> T;
   fn merge_types(a: &T, b: &T) -> T;
   fn merge_types_neglecting_width(a: &T, b: &T) -> T;
+  /// 这个函数是为了判断两个类型是否可以合并（判断标准是，
+  /// 合并之后的硬件是不是可以作用在两个类型上）
+  fn can_merge_types(a: &T, b: &T) -> bool;
 }
 
 // 定义GetType trait
