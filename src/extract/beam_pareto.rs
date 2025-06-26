@@ -121,34 +121,41 @@ impl CostSet {
   /// Performs trivial partial order reduction: Only keeps the Pareto frontier
   pub fn unify(&mut self) {
     // println!("unify");
-    let mut new_set = Vec::new();
-    let mut i = 0;
-
-    while i < self.set.len() {
-      let mut j = 0;
-
-      while j < self.set.len() {
-        let ls1 = &self.set[i];
-        let ls2 = &self.set[j];
-
-        if (ls1.latency_gain < ls2.latency_gain
-          && ls1.area_cost >= ls2.area_cost)
-          || (ls1.latency_gain <= ls2.latency_gain
-            && ls1.area_cost > ls2.area_cost)
-        {
-          break;
-        } else {
-          j += 1;
-        }
-      }
-      if j == self.set.len() {
-        // If we didn't find any element that dominates this one, keep it.
-        new_set.push(self.set[i].clone());
-      }
-      i += 1;
+    fn dominates(a: &LibSel, b: &LibSel) -> bool {
+      (a.latency_gain >= b.latency_gain && a.area_cost <= b.area_cost)
+        && (a.latency_gain > b.latency_gain || a.area_cost < b.area_cost)
     }
 
-    new_set.sort_by(|a, b| b.latency_gain.cmp(&a.latency_gain));
+    let mut new_set = Vec::new();
+
+    for (i, cand) in self.set.iter().enumerate() {
+      let mut is_dominated = false;
+
+      for (j, other) in self.set.iter().enumerate() {
+        if i != j && dominates(other, cand) {
+          is_dominated = true;
+          break;
+        }
+      }
+
+      if !is_dominated {
+        new_set.push(cand.clone());
+      }
+    }
+
+    new_set.sort_by(|a, b| {
+      b.latency_gain.cmp(&a.latency_gain).then(
+        a.area_cost.cmp(&b.area_cost).then({
+          let a_libids = a.libs.keys().collect::<Vec<_>>();
+          let b_libids = b.libs.keys().collect::<Vec<_>>();
+          a_libids.cmp(&b_libids)
+        }),
+      )
+    });
+
+    let mut seen = HashSet::new();
+    new_set.retain(|item| seen.insert(item.clone()));
+
     self.set = new_set;
   }
 
@@ -186,7 +193,15 @@ impl CostSet {
     // println!("prune");
     if self.set.len() > beam_size {
       // Keeps the `beam_size` `LibSel` with the highest latency gain.
-      self.set.sort_by(|a, b| b.latency_gain.cmp(&a.latency_gain));
+      self.set.sort_by(|a, b| {
+        b.latency_gain.cmp(&a.latency_gain).then(
+          a.area_cost.cmp(&b.area_cost).then({
+            let a_libids = a.libs.keys().collect::<Vec<_>>();
+            let b_libids = b.libs.keys().collect::<Vec<_>>();
+            a_libids.cmp(&b_libids)
+          }),
+        )
+      });
       self.set.truncate(beam_size);
     }
   }
@@ -253,6 +268,20 @@ impl PartialEq for LibSel {
     self.latency_gain == other.latency_gain
       && self.area_cost == other.area_cost
       && self.libs == other.libs
+  }
+}
+
+impl Hash for LibSel {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    self.latency_gain.hash(state);
+    self.area_cost.hash(state);
+
+    // 只需要对libs的keys进行哈希
+    let mut keys: Vec<&LibId> = self.libs.keys().collect();
+    keys.sort(); // Sort to ensure consistent ordering
+    for key in keys {
+      key.hash(state);
+    }
   }
 }
 
@@ -695,7 +724,11 @@ where
     to.hash.merge(&from.hash);
     // 合并v
     // println!("{:?}", to);
-    // println!("{} {}", &a0 != to, to != &from);
+    println!("Dismerge: {} {}", &a0 != to, to != &from);
+    // if &a0 != to || to != &from {
+    //   println!("{:?}, {:?}", &a0.cs, to.cs);
+    //   println!("{:?}, {:?}", &from.cs, to.cs);
+    // }
     // TODO: be more efficient with how we do this
     // println!("merge done");
     DidMerge(&a0 != to, to != &from)

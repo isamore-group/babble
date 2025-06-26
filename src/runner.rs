@@ -650,7 +650,7 @@ where
       .with_iter_limit(4)
       .run(&self.dsrs);
 
-    let origin_aeg = runner.egraph;
+    let mut origin_aeg = runner.egraph;
 
     // 接下来使用lib_rewrites_with_condition在进行重写, Analysis不能是空
     let past_lib_rewrites = self
@@ -680,7 +680,7 @@ where
         self.config.clone(),
         self.bb_query.clone(),
       );
-      aeg = vectorized_egraph;
+      origin_aeg = vectorized_egraph;
       vectorized_liblearn_messages = lib_messages;
       root = roots[0];
       vectorized_expr = Some(expr);
@@ -881,6 +881,10 @@ where
       .collect::<Vec<_>>();
     // 将past_lib_rewrites加入，同台竞技，使用的是origin_aeg
     new_all_rewrites.extend(past_lib_rewrites);
+    println!(
+      "after extend, there are {} rewrites",
+      new_all_rewrites.len()
+    );
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
