@@ -647,7 +647,7 @@ where
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
       .with_egraph(egraph)
       .with_time_limit(timeout)
-      .with_iter_limit(4)
+      .with_iter_limit(1)
       .run(&self.dsrs);
 
     let mut origin_aeg = runner.egraph;
@@ -881,6 +881,10 @@ where
       .collect::<Vec<_>>();
     // 将past_lib_rewrites加入，同台竞技，使用的是origin_aeg
     new_all_rewrites.extend(past_lib_rewrites);
+    // deduplicate the rewrites
+    new_all_rewrites.sort_by(|a, b| a.name.cmp(&b.name));
+    new_all_rewrites.dedup_by(|a, b| a.name == b.name);
+
     println!(
       "after extend, there are {} rewrites",
       new_all_rewrites.len()

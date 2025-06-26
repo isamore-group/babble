@@ -122,7 +122,8 @@ impl CostSet {
   pub fn unify(&mut self) {
     // println!("unify");
     fn dominates(a: &LibSel, b: &LibSel) -> bool {
-      (a.latency_gain >= b.latency_gain && a.area_cost <= b.area_cost)
+      a.latency_gain >= b.latency_gain
+        && a.area_cost <= b.area_cost
         && (a.latency_gain > b.latency_gain || a.area_cost < b.area_cost)
     }
 
@@ -218,12 +219,8 @@ impl CostSet {
           latency_gain += *count * *gain;
         }
       }
-      if latency_gain > ls.latency_gain {
-        ls.latency_gain = latency_gain;
-      }
-      if area_cost < ls.area_cost {
-        ls.area_cost = area_cost;
-      }
+      ls.latency_gain = latency_gain;
+      ls.area_cost = area_cost;
     }
   }
 
@@ -724,13 +721,41 @@ where
     to.hash.merge(&from.hash);
     // 合并v
     // println!("{:?}", to);
-    println!("Dismerge: {} {}", &a0 != to, to != &from);
+    // println!("Dismerge: {} {}", &a0 != to, to != &from);
     // if &a0 != to || to != &from {
-    //   println!("{:?}, {:?}", &a0.cs, to.cs);
-    //   println!("{:?}, {:?}", &from.cs, to.cs);
+    //   println!(
+    //     "to: {:#?}",
+    //     &a0
+    //       .cs
+    //       .set
+    //       .iter()
+    //       .map(|ls| (ls.latency_gain, ls.area_cost))
+    //       .collect::<Vec<_>>()
+    //   );
+    //   println!(
+    //     "from {:#?}",
+    //     &from
+    //       .cs
+    //       .set
+    //       .iter()
+    //       .map(|ls| (ls.latency_gain, ls.area_cost))
+    //       .collect::<Vec<_>>()
+    //   );
+    //   println!(
+    //     "merged: {:#?}",
+    //     &to
+    //       .cs
+    //       .set
+    //       .iter()
+    //       .map(|ls| (ls.latency_gain, ls.area_cost))
+    //       .collect::<Vec<_>>()
+    //   );
     // }
     // TODO: be more efficient with how we do this
     // println!("merge done");
+    // if to.cs.set.len() > 0 {
+    //   println!("{}", to.cs.set[0].latency_gain);
+    // }
     DidMerge(&a0 != to, to != &from)
     // DidMerge(false, false)
   }
@@ -799,7 +824,7 @@ where
           }
         }
         e.unify();
-        e.prune(self_ref.beam_size);
+        e.prune(self_ref.inter_beam);
         ISAXCost::new(e, ty, bbs, hash)
       }
       Some(_) | None => {
@@ -840,7 +865,7 @@ where
             e.unify();
           }
 
-          e.prune(self_ref.beam_size);
+          e.prune(self_ref.inter_beam);
           // println!("make done");
           ISAXCost::new(e, ty, bbs, hash)
         }
