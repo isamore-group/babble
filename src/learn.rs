@@ -1174,7 +1174,7 @@ where
     for eclass in egraph.classes() {
       for node in eclass.iter() {
         match node.as_binding_expr() {
-          Some(BindingExpr::Lib(id, _, b, _, _)) => {
+          Some(BindingExpr::Lib(id, _, b, _, _, _)) => {
             for app_node in egraph[*b].iter() {
               for var_cls in app_node.args() {
                 for var_node in egraph[*var_cls].iter() {
@@ -1231,16 +1231,16 @@ where
       self.delay_estimator.clone(),
       self.bb_query.clone(),
     );
-    let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+    let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
     let mut new_applier = applier.clone();
     for node in new_applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
-          if let Some(BindingExpr::Lib(id, _, _, _, _)) =
+          if let Some(BindingExpr::Lib(id, _, _, _, _, _)) =
             ast_node.as_binding_expr()
           {
             let op = ast_node.operation_mut();
-            *op = Op::make_lib(id.into(), latency_gain, area);
+            *op = Op::make_lib(id.into(), lat_cpu, lat_acc, area);
           }
         }
         egg::ENodeOrVar::Var(_) => {}
@@ -2356,7 +2356,8 @@ where
               self.delay_estimator.clone(),
               self.bb_query.clone(),
             );
-            let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+            let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
+            let latency_gain = lat_cpu - lat_acc;
             return Some(AUWithType {
               au: AU::new(
                 au.clone(),
@@ -2807,5 +2808,5 @@ where
     body = Op::apply(body, Op::var(index).into()).into();
   }
 
-  PartialExpr::Node(BindingExpr::Lib(ix, fun, body, 0, 0).into())
+  PartialExpr::Node(BindingExpr::Lib(ix, fun, body, 0, 0, 0).into())
 }

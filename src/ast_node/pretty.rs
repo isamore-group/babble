@@ -262,7 +262,7 @@ impl<W: Write + Clone + Default + ToString + Clone + Default + ToString>
               .expect("unbound variable");
             self.writer.write_str(name)
           }
-          BindingExpr::Lib(ix, def, body, _, _) => {
+          BindingExpr::Lib(ix, def, body, _, _, _) => {
             self.with_binding("f", |p| {
               write!(p.writer, "lib {ix} =")?; // print binding
               p.indentation += 1;

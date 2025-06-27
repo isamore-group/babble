@@ -71,9 +71,9 @@ pub struct Scheduler<LA, LD> {
   // Maybe more parameters in the future.
 }
 
-/// The result type of scheduling operations, containing (gain, cost), where
-/// gain = latency_cpu - latency_accelerator, cost = area.
-pub type ScheduleResult = (usize, usize);
+/// The result type of scheduling operations, containing (latency_cpu,
+/// latency_acc, area)
+pub type ScheduleResult = (usize, usize, usize);
 
 impl<LA, LD> Scheduler<LA, LD> {
   pub fn new(
@@ -194,7 +194,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     //   min_exe_count, max_exe_count
     // );
     if min_exe_count == usize::MAX {
-      return (0, 0);
+      return (0, 0, 0);
     }
     let loop_length = max_exe_count / min_exe_count;
 
@@ -205,6 +205,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     for i in 0..expr.len() {
       let node = &expr[i.into()];
       let delay = node.op_delay(&self.delay_estimator, node.get_op_args(expr));
+      println!("Node {:?} delay: {}", node, delay);
       let mut latency = node.op_latency();
       latency += delay / self.clock_period;
       let is_sequential = latency > 0;
@@ -249,15 +250,15 @@ impl<LA, LD> Scheduler<LA, LD> {
     // println!("Number of nodes: {}", expr.len());
 
     if latency_accelerator > latency_cpu {
-      (0, 0) // If the accelerator is slower, return a large cost
+      (0, 0, 0) // If the accelerator is slower, return a large cost
     } else if area == 0 {
-      (0, 0)
+      (0, 0, 0)
     } else {
       // println!(
       //   "Latency accelerator: {}, Latency CPU: {}, Area: {}",
       //   latency_accelerator, latency_cpu, area
       // );
-      (latency_cpu - latency_accelerator, area)
+      (latency_cpu, latency_accelerator, area)
     }
   }
 }
@@ -271,7 +272,7 @@ pub fn rec_cost<Op: Teachable + OperationInfo>(
   let mut latency_gain: usize = 0;
   let mut area: usize = 0;
   for node in expr.iter() {
-    if let Some(BindingExpr::Lib(lid, _, _, gain, cost)) =
+    if let Some(BindingExpr::Lib(lid, _, _, lat_cpu, lat_acc, cost)) =
       node.as_binding_expr()
     {
       let exe_count = match node.operation().get_bbs_info().len() {
@@ -281,7 +282,7 @@ pub fn rec_cost<Op: Teachable + OperationInfo>(
           None => 1,
         },
       };
-      latency_gain += gain * exe_count;
+      latency_gain += (lat_cpu - lat_acc) * exe_count;
       if used_lib.insert(lid) {
         area += cost;
       }
@@ -311,7 +312,7 @@ where
     let node_latency = node.op_latency_cpu(bb_query);
     let exe_count = node.op_execution_count(bb_query);
     let perf_gain = match node.as_binding_expr() {
-      Some(BindingExpr::Lib(_, _, _, gain, _)) => gain,
+      Some(BindingExpr::Lib(_, _, _, lat_cpu, lat_acc, _)) => lat_cpu - lat_acc,
       _ => 0,
     };
     let cost = args_cost + node_latency.round() as usize * exe_count

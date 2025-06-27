@@ -1015,17 +1015,17 @@ where
       config.delay_estimator.clone(),
       bb_query.clone(),
     );
-    let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+    let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
     // println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
     // println!("lib: {}", searcher);
     for node in applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
-          if let Some(BindingExpr::Lib(id, _, _, _, _)) =
+          if let Some(BindingExpr::Lib(id, _, _, _, _, _)) =
             ast_node.as_binding_expr()
           {
             let op = ast_node.operation_mut();
-            *op = Op::make_lib(id.into(), latency_gain, area);
+            *op = Op::make_lib(id.into(), lat_cpu, lat_acc, area);
           }
         }
         egg::ENodeOrVar::Var(_) => {}

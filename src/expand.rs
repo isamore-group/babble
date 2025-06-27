@@ -604,7 +604,7 @@ where
       bb_query.clone(),
     );
     expr_perf_infer(&mut rec_expr);
-    let (latency_gain, area) = scheduler.asap_schedule(&rec_expr);
+    let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
     // 如果latency_gain为0，直接跳过
     // if latency_gain == 0 {
     //   // println!("Latency gain is zero for lib_id: {}, skipping",
@@ -613,11 +613,11 @@ where
     for node in new_applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
-          if let Some(BindingExpr::Lib(id, _, _, _, _)) =
+          if let Some(BindingExpr::Lib(id, _, _, _, _, _)) =
             ast_node.as_binding_expr()
           {
             let op = ast_node.operation_mut();
-            *op = Op::make_lib(id.into(), latency_gain, area);
+            *op = Op::make_lib(id.into(), lat_cpu, lat_acc, area);
           }
         }
         egg::ENodeOrVar::Var(_) => {}

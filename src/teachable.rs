@@ -58,10 +58,18 @@ where
     name: LibId,
     value: T,
     body: T,
-    latency: usize,
+    latency_cpu: usize,
+    latency_acc: usize,
     area: usize,
   ) -> AstNode<Self, T> {
-    Self::from_binding_expr(BindingExpr::Lib(name, value, body, latency, area))
+    Self::from_binding_expr(BindingExpr::Lib(
+      name,
+      value,
+      body,
+      latency_cpu,
+      latency_acc,
+      area,
+    ))
   }
 
   /// Creates a named variable referencing a library function.
@@ -92,7 +100,7 @@ pub enum BindingExpr<T> {
   /// An application of a function to an argument
   Apply(T, T),
   /// An expression defining a named library function within a certain scope
-  Lib(LibId, T, T, usize, usize),
+  Lib(LibId, T, T, usize, usize, usize),
 }
 
 impl<Op, T> From<BindingExpr<T>> for AstNode<Op, T>

@@ -42,7 +42,7 @@ pub trait OperationInfo {
   /// Get the library ID of the operation
   fn get_libid(&self) -> usize;
   /// Make a lib node
-  fn make_lib(id: LibId, gain: usize, cost: usize) -> Self;
+  fn make_lib(id: LibId, lat_cpu: usize, lat_acc: usize, cost: usize) -> Self;
   /// make a list op
   fn make_vec(result_tys: Vec<String>, bbs: Vec<String>) -> Self;
   /// make a get_from_vec op

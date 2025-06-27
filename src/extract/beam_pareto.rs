@@ -811,11 +811,12 @@ where
     // println!("begin cal cost");
 
     match Teachable::as_binding_expr(enode) {
-      Some(BindingExpr::Lib(id, f, b, gain, cost)) => {
+      Some(BindingExpr::Lib(id, f, b, lat_cpu, lat_acc, cost)) => {
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
-        let mut e = x(b).add_lib(id, gain, cost, *b, x(f), self_ref.lps);
+        let mut e =
+          x(b).add_lib(id, lat_cpu - lat_acc, cost, *b, x(f), self_ref.lps);
         // println!("new cost set: {:#?}", e);
         let bbs = enode.operation().get_bbs_info();
         if bbs.len() > 0 {
@@ -1194,7 +1195,7 @@ where
   /// Extract the smallest expression from `node`.
   fn extract_node(&mut self, node: &AstNode<Op>) -> MaybeExpr<Op> {
     self.debug_indented(&format!("extracting node {node:?}"));
-    if let Some(BindingExpr::Lib(lid, _, _, _, _)) = node.as_binding_expr() {
+    if let Some(BindingExpr::Lib(lid, _, _, _, _, _)) = node.as_binding_expr() {
       // println!("checking lib {lid}");
       if self.lib_context.contains(lid) {
         // This node is a definition of one of the libs, whose definition we are
@@ -1239,7 +1240,8 @@ where
       // If this is the first child of a lib node (i.e. lib definition) add this
       // lib to the context:
       let old_lib_context = self.lib_context.clone();
-      if let Some(BindingExpr::Lib(lid, _, _, _, _)) = node.as_binding_expr() {
+      if let Some(BindingExpr::Lib(lid, _, _, _, _, _)) = node.as_binding_expr()
+      {
         if current == 0 {
           self.debug_indented(&format!(
             "processing first child of {node:?}, adding {lid} to context"
