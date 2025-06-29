@@ -6,14 +6,13 @@ use crate::{
   bb_query::BBQuery,
   learn::LibId,
   runner::OperationInfo,
-  schedule::rec_cost,
+  schedule::{Schedulable, rec_cost},
   teachable::{BindingExpr, Teachable},
 };
-use bitvec::{prelude::*, vec};
+use bitvec::prelude::*;
 use egg::{
   Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
 };
-use lexpr::print;
 use log::debug;
 use rustc_hash::FxHashMap;
 use seahash::SeaHasher;
@@ -26,16 +25,13 @@ use std::{
 
 #[derive(Debug, Clone, Copy)]
 pub struct ParetoCost {
-  pub latency_gain: usize,
-  pub area_cost: usize,
+  pub cycles: usize,
+  pub area: usize,
 }
 
 impl Default for ParetoCost {
   fn default() -> Self {
-    ParetoCost {
-      latency_gain: 0,
-      area_cost: 0,
-    }
+    ParetoCost { cycles: 0, area: 0 }
   }
 }
 
@@ -955,8 +951,10 @@ pub struct LibExtractor<
     + OperationInfo,
   N: Analysis<AstNode<Op>>,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  LA,
+  LD,
 > where
-  AstNode<Op>: TypeInfo<T>,
+  AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
   /// Remembers the best expression so far for each pair of class id and lib
   /// context; if an entry is absent, we haven't visited this class in this
@@ -977,10 +975,10 @@ pub struct LibExtractor<
   /// The relative weight of area cost and delay cost, from 0.0 (all areaa) to
   /// 1.0 (all delay)
   bb_query: BBQuery,
-  _phantom: PhantomData<T>,
+  _phantom: PhantomData<(T, LA, LD)>,
 }
 
-impl<'a, Op, N, T> LibExtractor<'a, Op, N, T>
+impl<'a, Op, N, T, LA, LD> LibExtractor<'a, Op, N, T, LA, LD>
 where
   Op: Clone
     + std::fmt::Debug
@@ -992,7 +990,7 @@ where
     + OperationInfo,
   N: Analysis<AstNode<Op>> + Clone,
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
-  AstNode<Op>: TypeInfo<T>,
+  AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
   /// Create a lib extractor for the given egraph
   pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, bb_query: BBQuery) -> Self {
@@ -1084,10 +1082,10 @@ where
 
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> ParetoCost {
-    let (latency_gain, area) = rec_cost(expr, &self.bb_query);
+    let (cycles, area) = rec_cost(expr, &self.bb_query);
     ParetoCost {
-      latency_gain,
-      area_cost: area,
+      cycles: cycles as usize,
+      area,
     }
   }
 
@@ -1128,14 +1126,14 @@ where
                 let prev_cost = if let Some(cost) = self.all_costs[*index] {
                   cost
                 } else {
-                  let cost = Self::cost(&self, &prev).latency_gain;
+                  let cost = Self::cost(&self, &prev).cycles;
                   prev_msg = (index.clone(), Some(cost));
                   renew_flag = true;
                   cost
                 };
                 // 接下来计算cand的cost，并赋给cand_cost
-                let c_cost = Self::cost(&self, &cand).latency_gain;
-                if prev_cost > c_cost {
+                let c_cost = Self::cost(&self, &cand).cycles;
+                if prev_cost < c_cost {
                   flag = false;
                 } else {
                   cand_cost = Some(c_cost);

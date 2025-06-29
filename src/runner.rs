@@ -11,15 +11,13 @@ use std::{
   time::{Duration, Instant},
 };
 
-use bitvec::vec;
-use lexpr::print;
 use serde::Deserialize;
 
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, LibId,
   PartialExpr, Pretty, Printable, Teachable,
   au_filter::{CiEncodingConfig, TypeAnalysis},
-  bb_query::{BBInfo, BBQuery},
+  bb_query::{self, BBInfo, BBQuery},
   expand::{ExpandMessage, MetaAUConfig, expand},
   extract::beam_pareto::{
     ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet,
@@ -109,6 +107,7 @@ pub trait OperationInfo {
   /// 设置bbs信息
   fn set_bbs_info(&mut self, bbs: Vec<String>);
   fn is_arithmetic(&self) -> bool;
+  fn is_op(&self) -> bool;
   /// 是不是tuple节点
   fn is_tuple(&self) -> bool {
     false
@@ -133,6 +132,8 @@ pub trait OperationInfo {
     // 默认返回true
     true
   }
+  fn is_mem(&self) -> bool;
+  fn op_execution_count(&self, bb_query: &BBQuery) -> usize;
 }
 
 /// A trait for running library learning experiments with Pareto optimization

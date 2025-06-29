@@ -1,18 +1,13 @@
 //! A simple HLS scheduler used for estimating the area and latency of the
 //! learned libraries.
 
-use std::{
-  cmp,
-  collections::{HashMap, HashSet},
-  fmt::Debug,
-  hash::Hash,
-};
+use std::{cmp, collections::HashSet, fmt::Debug, hash::Hash};
 
 use crate::{
   BindingExpr, LibId, Teachable, ast_node::AstNode, bb_query::BBQuery,
   runner::OperationInfo,
 };
-use egg::{Id, Language, RecExpr};
+use egg::{Language, RecExpr};
 
 /// A trait for languages that support HLS scheduling.
 pub trait Schedulable<LA, LD>
@@ -34,10 +29,6 @@ where
   /// Returns the latency of the operation in the case of running on cpu
   #[must_use]
   fn op_latency_cpu(&self, bb_query: &BBQuery) -> f64;
-
-  /// Returns the execution count of the operation.
-  #[must_use]
-  fn op_execution_count(&self, bb_query: &BBQuery) -> usize;
 }
 
 impl<Op> AstNode<Op>
@@ -123,6 +114,9 @@ impl<LA, LD> Scheduler<LA, LD> {
               let mut delay =
                 dep.op_delay(&self.delay_estimator, dep.get_op_args(expr));
               let mut latency = dep.op_latency();
+              if dep.operation().is_mem() {
+                latency = dep.op_latency_cpu(&self.bb_query).ceil() as usize;
+              }
               latency += delay / self.clock_period;
               delay %= self.clock_period;
               let is_sequential = latency > 0;
@@ -145,6 +139,9 @@ impl<LA, LD> Scheduler<LA, LD> {
             let mut delay =
               node.op_delay(&self.delay_estimator, node.get_op_args(expr));
             let mut latency = node.op_latency();
+            if node.operation().is_mem() {
+              latency = node.op_latency_cpu(&self.bb_query).ceil() as usize;
+            }
             latency += delay / self.clock_period;
             delay %= self.clock_period;
             let is_sequential = latency > 0;
@@ -174,7 +171,8 @@ impl<LA, LD> Scheduler<LA, LD> {
     let root: usize = expr.root().into();
     let nodes = expr.as_ref();
     // println!("Root node: {:?}", nodes[root].operation().get_bbs_info());
-    let min_exe_count = nodes[root].op_execution_count(&self.bb_query);
+    let min_exe_count =
+      nodes[root].operation().op_execution_count(&self.bb_query);
     let mut max_exe_count = 0;
     let mut have_loop = false;
     for node in expr.iter() {
@@ -206,6 +204,9 @@ impl<LA, LD> Scheduler<LA, LD> {
       let node = &expr[i.into()];
       let delay = node.op_delay(&self.delay_estimator, node.get_op_args(expr));
       let mut latency = node.op_latency();
+      if node.operation().is_mem() {
+        latency = node.op_latency_cpu(&self.bb_query).ceil() as usize;
+      }
       latency += delay / self.clock_period;
       let is_sequential = latency > 0;
       if is_sequential {
@@ -220,12 +221,12 @@ impl<LA, LD> Scheduler<LA, LD> {
 
     let mut latency_cpu_f64 = 0.0;
     for node in expr {
-      if node.operation().is_arithmetic() {
+      if node.operation().is_op() {
         let node_latency = node.op_latency_cpu(&self.bb_query);
         // println!("Node {:?} latency: {}", node, node_latency);
         if have_loop {
           latency_cpu_f64 += node_latency
-            * node.op_execution_count(&self.bb_query) as f64
+            * node.operation().op_execution_count(&self.bb_query) as f64
             / min_exe_count as f64;
         } else {
           latency_cpu_f64 += node_latency;
@@ -263,60 +264,47 @@ impl<LA, LD> Scheduler<LA, LD> {
 }
 
 /// Calculate the cost of an expression.
-pub fn rec_cost<Op: Teachable + OperationInfo>(
+pub fn rec_cost<Op, LA, LD>(
   expr: &RecExpr<AstNode<Op>>,
   bb_query: &BBQuery,
-) -> (usize, usize) {
-  let mut used_lib: HashSet<LibId> = HashSet::new();
-  let mut latency_gain: usize = 0;
-  let mut area: usize = 0;
-  for node in expr.iter() {
-    if let Some(BindingExpr::Lib(lid, _, _, lat_cpu, lat_acc, cost)) =
-      node.as_binding_expr()
-    {
-      let exe_count = match node.operation().get_bbs_info().len() {
-        0 => 1,
-        _ => match bb_query.get(&node.operation().get_bbs_info()[0]) {
-          Some(bb_entry) => bb_entry.execution_count,
-          None => 1,
-        },
-      };
-      latency_gain += (lat_cpu - lat_acc) * exe_count;
-      if used_lib.insert(lid) {
-        area += cost;
+) -> (f64, usize)
+where
+  AstNode<Op>: Schedulable<LA, LD>,
+  Op: Teachable + OperationInfo + Clone,
+{
+  let mut expr_mut = expr.clone();
+  // Identify the lambda nodes and their children in the expression
+  for (i, node) in expr.iter().enumerate() {
+    if let Some(BindingExpr::Lambda(_)) = node.as_binding_expr() {
+      // Recursively remove the lambda node and its children
+      let mut stack = vec![i];
+      // Remove the lambda node and its children
+      while let Some(idx) = stack.pop() {
+        let cur_node = expr_mut.get_mut(idx).unwrap();
+        *cur_node.operation_mut() = Op::make_rule_var("Lambda".into());
+        for child in cur_node.args() {
+          let child_idx = usize::from(*child);
+          stack.push(child_idx);
+        }
       }
     }
   }
-  (latency_gain, area)
-}
 
-pub fn rec_perf<Op, LA, LD>(
-  expr: &RecExpr<AstNode<Op>>,
-  bb_query: &BBQuery,
-) -> usize
-where
-  Op: Teachable + OperationInfo + Clone + Debug + Ord + Hash,
-  AstNode<Op>: Language + Schedulable<LA, LD>,
-{
-  let mut costs: HashMap<Id, usize> = HashMap::new();
-  for (i, node) in expr.iter().enumerate() {
-    let args_cost: usize = node
-      .args()
-      .iter()
-      .map(|&id| {
-        let idx: usize = id.into();
-        costs.get(&Id::from(idx)).cloned().unwrap_or(0)
-      })
-      .sum();
-    let node_latency = node.op_latency_cpu(bb_query);
-    let exe_count = node.op_execution_count(bb_query);
-    let perf_gain = match node.as_binding_expr() {
-      Some(BindingExpr::Lib(_, _, _, lat_cpu, lat_acc, _)) => lat_cpu - lat_acc,
-      _ => 0,
-    };
-    let cost = args_cost + node_latency.round() as usize * exe_count
-      - perf_gain * exe_count; // Subtract the gain from the cost
-    costs.insert(Id::from(i), cost);
+  let mut used_lib: HashSet<LibId> = HashSet::new();
+  let mut cycles = 0.0;
+  let mut area: usize = 0;
+  for node in expr_mut.iter() {
+    let exe_count = node.operation().op_execution_count(bb_query);
+    if let Some(BindingExpr::Lib(lid, _, _, _, lat_acc, cost)) =
+      node.as_binding_expr()
+    {
+      cycles += (lat_acc * exe_count) as f64;
+      if used_lib.insert(lid) {
+        area += cost;
+      }
+    } else if node.operation().is_op() {
+      cycles += node.op_latency_cpu(bb_query) * exe_count as f64;
+    }
   }
-  costs.get(&expr.root()).cloned().unwrap_or(0)
+  (cycles, area)
 }
