@@ -665,6 +665,8 @@ where
       .run(&past_lib_rewrites);
 
     let mut aeg = runner.egraph;
+    // 进行BB信息的推断
+    perf_infer::perf_infer(&mut aeg, &[root]);
 
     let mut vectorized_liblearn_messages = vec![];
     let mut vectorized_expr = None;
@@ -683,6 +685,7 @@ where
       origin_aeg = vectorized_egraph;
       vectorized_liblearn_messages = lib_messages;
       root = roots[0];
+      perf_infer::perf_infer(&mut origin_aeg, &vec![root]);
       vectorized_expr = Some(expr);
       println!(
         "Vectorized egraph in {}ms",
@@ -716,8 +719,6 @@ where
       aeg.total_size()
     );
 
-    perf_infer::perf_infer(&mut aeg, &vec![root]);
-
     // println!("Running co-occurrence analysis... ");
     // let co_time = Instant::now();
     // let co_ext = COBuilder::new(&aeg, roots);
@@ -741,7 +742,7 @@ where
     max_lib_id = if libs_cnt == 0 { 0 } else { max_lib_id + 1 };
     // 如果启用了expand选项，那么就不走这一条路，
     // 直接使用expand的操作获取到所以用到的rewrites
-    let expand_message = if self.config.op_pack_config.pack_expand {
+    let expand_message = if self.config.op_pack_config.enable_meta_au {
       expand(
         aeg.clone(),
         self.config.clone(),

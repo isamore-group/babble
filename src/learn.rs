@@ -864,7 +864,7 @@ where
           .cartesian_product(classes.iter())
           .map(|(ecls1, ecls2)| (egraph.find(*ecls1), egraph.find(*ecls2)))
           .collect::<Vec<_>>();
-        if meta_au_config.pack_expand {
+        if meta_au_config.enable_meta_au {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -979,7 +979,7 @@ where
           .collect();
         let eclass_pairs = all_pairs.clone();
         let start = Instant::now();
-        if meta_au_config.pack_expand {
+        if meta_au_config.enable_meta_au {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -1067,7 +1067,7 @@ where
         }
         let enum_start = Instant::now();
 
-        if meta_au_config.pack_expand {
+        if meta_au_config.enable_meta_au {
           for pair in eclass_pairs.clone() {
             learned_lib.enumerate_over_egraph_meta_au(egraph, pair);
           }
@@ -1094,7 +1094,7 @@ where
     // for (state, aus) in &learned_lib.aus_by_state {
     //   println!("state{:?}: {:?}", state, aus);
     // }
-    if meta_au_config.pack_expand {
+    if meta_au_config.enable_meta_au {
       // 如果是meta_au_search，首先将aus分成两部分，一部分Opmask为1，
       // 另外一部分为0
       let mut has_mask_aus = BTreeSet::new();
@@ -1289,7 +1289,7 @@ where
         condition: TypeMatch::new(au.ty_map.clone()),
         applier: applier.clone(),
       };
-      let name = if self.meta_au_config.pack_expand {
+      let name = if self.meta_au_config.enable_meta_au {
         format!("meta_anti-unify {new_i}")
       } else {
         format!("anti-unify {new_i}")
@@ -1334,7 +1334,7 @@ where
           condition: msg.condition.clone(),
           applier: applier.clone(),
         };
-        let name = if self.meta_au_config.pack_expand {
+        let name = if self.meta_au_config.enable_meta_au {
           format!("meta_anti-unify {new_i}")
         } else {
           format!("anti-unify {new_i}")
@@ -2252,7 +2252,7 @@ where
           // corresponds to an anti-unification containing at least n
           // + 1 nodes.
           // if learn_trivial
-          //   || (self.meta_au_config.pack_expand
+          //   || (self.meta_au_config.enable_meta_au
           //     && self.meta_au_config.learn_trivial)
           //   || num_vars < au.num_holes()
           //   || au.num_nodes() > 1 + num_vars
@@ -2261,7 +2261,7 @@ where
           let mut ty_vec = vec![];
 
           if learn_trivial
-            || (self.meta_au_config.pack_expand
+            || (self.meta_au_config.enable_meta_au
               && self.meta_au_config.learn_trivial)
             || (self.find_packs && self.find_pack_config.learn_trivial)
             || self.find_packs
@@ -2422,7 +2422,7 @@ where
           op.is_useful_expr(children_ops.as_slice())
         })
         .filter(|au| {
-          if !self.meta_au_config.pack_expand {
+          if !self.meta_au_config.enable_meta_au {
             true
           } else {
             // 计算每一个au中含有的opmask的数目，如果超过1个，就不加入
@@ -2454,7 +2454,7 @@ where
       //   "length of nontrivial_aus is {}",
       //   nontrivial_aus.clone().count()
       // );
-      let nontrivial_aus = if self.meta_au_config.pack_expand {
+      let nontrivial_aus = if self.meta_au_config.enable_meta_au {
         // 不需要完善类型
         nontrivial_aus.into_iter().collect::<Vec<_>>()
       } else {

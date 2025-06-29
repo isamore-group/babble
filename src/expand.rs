@@ -34,8 +34,9 @@ use nom::lib;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct MetaAUConfig {
-  /// 是否进行expand
-  pub pack_expand: bool,
+  /// 是否使用Meta_AU, 不进行序列化，由PhaseConfig控制
+  #[serde(skip)]
+  pub enable_meta_au: bool,
   /// 是否进行eclass pair剪枝
   pub prune_eclass_pair: bool,
   /// 是否学习所有可能的AU(要不要过滤掉一些trivial的AU)
@@ -49,7 +50,7 @@ pub struct MetaAUConfig {
 impl Default for MetaAUConfig {
   fn default() -> Self {
     MetaAUConfig {
-      pack_expand: false,
+      enable_meta_au: false,
       prune_eclass_pair: true,
       learn_trivial: true,
       num_meta_au_mask: 100,

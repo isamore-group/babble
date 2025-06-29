@@ -205,7 +205,6 @@ impl<LA, LD> Scheduler<LA, LD> {
     for i in 0..expr.len() {
       let node = &expr[i.into()];
       let delay = node.op_delay(&self.delay_estimator, node.get_op_args(expr));
-      println!("Node {:?} delay: {}", node, delay);
       let mut latency = node.op_latency();
       latency += delay / self.clock_period;
       let is_sequential = latency > 0;

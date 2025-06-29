@@ -239,6 +239,7 @@ pub enum ShieldingConst {
   Int(Option<u32>),
   Float(Option<u32>), //后面的参数都是用来表示位宽
   VecInt(u32, u32),   // 前者表示长度，后者表示位宽
+  VecFloat(u32, u32), // 前者表示长度，后者表示位宽
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]

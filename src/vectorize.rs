@@ -43,7 +43,8 @@ use std::{
 /// 用于进行向量化的config
 #[derive(Debug, Clone, Deserialize)]
 pub struct VectorConfig {
-  /// 是否进行向量化
+  /// 是否进行向量化, 不进行序列化，这个参数是由PhaseConfig控制的
+  #[serde(skip)]
   pub vectorize: bool,
   /// 是否启用gather节点(gather节点搜索数目较少， 对整体速度的影响不是很大，
   /// 默认为true)
