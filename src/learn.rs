@@ -1079,7 +1079,7 @@ where
       }
     };
     println!(
-      "we all need to calculate {} pairs of eclasses",
+      "         we all need to calculate {} pairs of eclasses",
       learned_lib.aus_by_state.len()
     );
 

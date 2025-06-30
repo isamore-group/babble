@@ -419,7 +419,7 @@ where
   AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
   println!(
-    "before expand, eclass size: {}, egraph size: {}",
+    "       • before expand, eclass size: {}, egraph size: {}",
     egraph.classes().len(),
     egraph.total_size()
   );
@@ -449,7 +449,7 @@ where
     .with_clock_period(config.clock_period)
     .with_bb_query(bb_query.clone())
     .build(&egraph);
-  println!("expand::learned {} libs", learned_lib.size());
+  println!("        • expand::learned {} libs", learned_lib.size());
 
   // for lib in learned_lib.libs() {
   //   println!("lib: {}", lib);
@@ -495,7 +495,7 @@ where
 
   // meta_egraph.dot().to_png("target/expand.png").unwrap();
   println!(
-    "For meta_egraph, eclass size: {}, egraph size: {}",
+    "       • For meta_egraph, eclass size: {}, egraph size: {}",
     meta_egraph.classes().len(),
     meta_egraph.total_size()
   );
@@ -534,7 +534,10 @@ where
   // 进行去重
   // learn_meta_lib.deduplicate(&meta_egraph);
 
-  println!("expand::learned {} meta libs", learn_meta_lib.size());
+  println!(
+    "        • expand::learned {} meta libs",
+    learn_meta_lib.size()
+  );
   // for lib in learn_meta_lib.libs() {
   //   println!("meta lib: {}", lib);
   // }

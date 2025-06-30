@@ -635,7 +635,7 @@ where
     // let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
 
     println!(
-      "Initial egraph size: {}, eclasses: {}",
+      "     • Initial egraph size: {}, eclasses: {}",
       egraph.total_size(),
       egraph.classes().len()
     );
@@ -643,7 +643,7 @@ where
       "initial_eclass_size".to_string(),
       format!("{}", egraph.classes().len()).to_string(),
     );
-    println!("Running {} DSRs... ", self.dsrs.len());
+    println!("     • After applying {} DSRs... ", self.dsrs.len());
     let start_time = Instant::now();
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
       .with_egraph(egraph)
@@ -689,7 +689,7 @@ where
       perf_infer::perf_infer(&mut origin_aeg, &vec![root]);
       vectorized_expr = Some(expr);
       println!(
-        "Vectorized egraph in {}ms",
+        "     • Vectorized egraph in {}ms",
         vectorize_time.elapsed().as_millis()
       );
       message.insert(
@@ -699,7 +699,7 @@ where
     }
 
     println!(
-      "Final egraph size: {}, eclasses: {}",
+      "       - Final egraph size: {}, eclasses: {}",
       aeg.total_size(),
       aeg.classes().len()
     );
@@ -726,7 +726,7 @@ where
     // let co_occurs = co_ext.run();
     // println!("Finished in {}ms", co_time.elapsed().as_millis());
 
-    println!("Running anti-unification... ");
+    println!("      🧠 Anti-Unification Phase...");
     let au_time = Instant::now();
     // 在进行learn之前，先提取出LibId最大的Lib
     let mut max_lib_id = 0;
@@ -768,7 +768,7 @@ where
           .build(&aeg);
 
         println!(
-          "Found {} patterns in {}ms",
+          "       - Found {} patterns in {}ms",
           learned_lib.size(),
           au_time.elapsed().as_millis()
         );
@@ -778,12 +778,12 @@ where
           format!("{}ms", au_time.elapsed().as_millis()).to_string(),
         );
 
-        info!("Deduplicating patterns... ");
+        println!("        • Deduplicating patterns... ");
         let dedup_time = Instant::now();
         learned_lib.deduplicate(&aeg);
 
         println!(
-          "Deduplicated to {} patterns in {}ms",
+          "         • Deduplicated to {} patterns in {}ms",
           learned_lib.size(),
           dedup_time.elapsed().as_millis()
         );
@@ -797,7 +797,7 @@ where
           "dedup_time".to_string(),
           format!("{}ms", dedup_time.elapsed().as_millis()).to_string(),
         );
-        println!("learned {} libs", learned_lib.size());
+        println!("        • learned {} libs", learned_lib.size());
 
         message.insert(
           "learned_libs".to_string(),
@@ -840,10 +840,10 @@ where
       }
     };
 
-    println!("Adding libs and running beam search... ");
+    println!("      🔁 Adding Libs + Beam Search...");
 
     println!(
-      "There are {} rewrites and {} libs",
+      "       • There are {} rewrites and {} libs",
       expand_message.all_au_rewrites.len(),
       expand_message.libs.len()
     );
@@ -888,7 +888,7 @@ where
     new_all_rewrites.dedup_by(|a, b| a.name == b.name);
 
     println!(
-      "after extend, there are {} rewrites",
+      "       • after extend, there are {} rewrites",
       new_all_rewrites.len()
     );
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
@@ -917,7 +917,7 @@ where
     let egraph = runner.egraph;
 
     println!(
-      "Final egraph size: {}, eclasses: {}",
+      "         • Final egraph size: {}, eclasses: {}",
       egraph.total_size(),
       egraph.classes().len()
     );
@@ -936,7 +936,7 @@ where
 
     // println!("egraph: {:#?}", egraph);
 
-    println!("learned libs");
+    // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut annotated_egraphs = Vec::new();
     let mut chosen_rewrites = Vec::new();
@@ -1003,7 +1003,7 @@ where
             );
           } else {
             // 说明是一个meta lib
-            println!("We have leaned a meta lib !");
+            println!("        • We have leaned a meta lib !");
             chosen_rewrites_per_libsel
               .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
             learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
@@ -1034,14 +1034,14 @@ where
     chosen_rewrites.sort_unstable_by_key(|r| r.name.clone());
     chosen_rewrites.dedup_by_key(|r| r.name.clone());
 
-    println!("chosen_rewrites: {}", chosen_rewrites.len());
+    println!("         • chosen_rewrites: {}", chosen_rewrites.len());
 
     debug!(
       "upper bound ('full') cost: {}",
       isax_cost.cs.set[0].latency_gain
     );
 
-    println!("annotated_egraphs: {}", annotated_egraphs.len());
+    // println!("annotated_egraphs: {}", annotated_egraphs.len());
     // message.insert(
     //   "extract_time".to_string(),
     //   format!("{}ms", ex_time.elapsed().as_millis()).to_string(),

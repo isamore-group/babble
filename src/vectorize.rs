@@ -619,12 +619,15 @@ where
   LD: Debug + Clone + Default,
   AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
-  println!("there are {} lift dsrs", lift_dsrs.len());
-  println!("there are {} transfrom dsrs", transfrom_dsrs.len());
+  println!("        • there are {} lift dsrs", lift_dsrs.len());
+  println!(
+    "        • there are {} transfrom dsrs",
+    transfrom_dsrs.len()
+  );
   let timeout = Duration::from_secs(60 * 100_000);
   let mut egraph = egraph.clone();
   println!(
-    "before vectorize, eclass size: {}, egraph size: {}",
+    "       • before vectorize, eclass size: {}, egraph size: {}",
     egraph.classes().len(),
     egraph.total_size()
   );
@@ -705,7 +708,10 @@ where
     .iter()
     .map(|m| (m.rewrite.clone(), m.searcher_pe.clone().into()))
     .collect::<Vec<_>>();
-  println!("learned {} libs", lib_rewrites.len());
+  println!(
+    "        • Vectorization::learned {} libs",
+    lib_rewrites.len()
+  );
   // for lib in learned_lib.libs() {
   //   println!("lib: {}", lib);
   // }
@@ -792,10 +798,10 @@ where
       }
     }
   }
-  println!("found {} packs", pack_cnt);
+  println!("        • Vectorization::found {} packs", pack_cnt);
   // egraph.dot().to_png("target/foo1.png").unwrap();
   println!(
-    "after add list, egraph size: {}, class size: {}",
+    "       • after add list, egraph size: {}, class size: {}",
     egraph.total_size(),
     egraph.classes().len()
   );
@@ -814,7 +820,10 @@ where
   if config.vectorize_config.enable_gather {
     let (vec_containments, vec_gathers) =
       find_vec_containments_and_gathers(&egraph);
-    println!("size of vec_containments: {}", vec_containments.len());
+    println!(
+      "        • size of vec_containments: {}",
+      vec_containments.len()
+    );
     // 根据包含关系加入gather节点
     for (i, (id, fathers)) in vec_containments.into_iter().enumerate() {
       // println!("i:{}, id: {}, fathers: {}", i, id, fathers.len());
@@ -838,7 +847,7 @@ where
   if config.vectorize_config.enable_shuffle {
     // 除此之外，还需要加入shuffle节点
     let (shuffle_pairs, shuffle_map) = find_vec_shuffles_and_indices(&egraph);
-    println!("size of shuffle_pairs: {}", shuffle_pairs.len());
+    println!("        • size of shuffle_pairs: {}", shuffle_pairs.len());
     // egraph.dot().to_png("target/foo1.png").unwrap();
     // 根据 shuffle 关系加入 shuffle 节点
     for (c_id, pairs) in shuffle_pairs.into_iter() {
@@ -882,7 +891,7 @@ where
 
   // egraph.dot().to_png("target/foo.png").unwrap();
   println!(
-    "after add vectors, egraph size: {}, class size: {}",
+    "       • after add vectors, egraph size: {}, class size: {}",
     egraph.total_size(),
     egraph.classes().len()
   );
@@ -905,7 +914,7 @@ where
   }
 
   println!(
-    "after transform, egraph size: {}, class size: {}",
+    "       • after transform, egraph size: {}, class size: {}",
     egraph.total_size(),
     egraph.classes().len()
   );
@@ -922,7 +931,7 @@ where
   // 推导bbs信息
   perf_infer::perf_infer(&mut egraph, roots);
 
-  println!("begin vectorize root expression");
+  println!("        • begin vectorize root expression");
 
   // egraph.dot().to_png("target/foo3.png").unwrap();
 
@@ -941,12 +950,12 @@ where
     }
   }
 
-  println!("Vectorized Nodes in root_expr: {}", vecop_cnt);
+  println!("        • Vectorized Nodes in root_expr: {}", vecop_cnt);
 
   for node in expr.clone() {
     if node.operation().get_bbs_info().len() == 0 {
       println!(
-        "Warning: node {:?} has no bbs info, this may cause issues",
+        "       [❌]Warning: node {:?} has no bbs info, this may cause issues",
         node
       );
     }
@@ -961,12 +970,15 @@ where
         aus.push((pe, type_map));
       }
     };
-  println!("Vectorizing root expression...");
+  println!("        • Vectorizing root expression...");
   // for (i, node) in expr.iter().enumerate() {
   //   println!("{}: {:?}", i, node);
   // }
   let root_aus = expr_vec2lib(&expr);
-  println!("vectorize root expression done, size: {}", root_aus.len());
+  println!(
+    "        • vectorize root expression done, size: {}",
+    root_aus.len()
+  );
   for (pe, type_map) in root_aus {
     // println!("pe: {:?}", pe);
     // 将根表达式的au添加到aus中
@@ -1058,7 +1070,10 @@ where
       condition: condition,
     });
   }
-  println!("Vectorize:: There are {} vec_libs", lib_messages.len());
+  println!(
+    "        • Vectorize:: There are {} vec_libs",
+    lib_messages.len()
+  );
 
   // 新建一个EGraph，将expr加入
   let mut new_egraph = EGraph::new(ISAXAnalysis::new(
@@ -1070,7 +1085,7 @@ where
   let root_vec = vec![new_egraph.add_expr(&(expr.clone().into()))];
 
   println!(
-    "Vectorized egraph size: {}, eclasses: {}",
+    "       • Vectorized egraph size: {}, eclasses: {}",
     new_egraph.total_size(),
     new_egraph.classes().len()
   );
