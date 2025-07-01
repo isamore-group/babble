@@ -1,6 +1,5 @@
 use egg::{EGraph, Id, RecExpr};
 use std::{
-  borrow::BorrowMut,
   collections::{HashMap, HashSet},
   fmt::Debug,
   hash::Hash,

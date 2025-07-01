@@ -189,7 +189,7 @@ where
   pub rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   pub libs: HashMap<usize, Pattern<AstNode<Op>>>,
   pub root: Id,
-  pub latency_gain: usize,
+  pub cycles: usize,
   pub area: usize,
 }
 
@@ -216,7 +216,7 @@ where
       other.rewrites.iter().map(|r| r.name.clone()).collect();
     self_rewrites_name_set == other_rewrites_name_set
       && self.root == other.root
-      && self.latency_gain == other.latency_gain
+      && self.cycles == other.cycles
       && self.area == other.area
       && self.egraph.classes().len() == other.egraph.classes().len()
   }
@@ -243,7 +243,7 @@ where
     rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
     libs: HashMap<usize, Pattern<AstNode<Op>>>,
     root: Id,
-    latency_gain: usize,
+    cycles: usize,
     area: usize,
   ) -> Self {
     Self {
@@ -251,7 +251,7 @@ where
       rewrites,
       libs,
       root,
-      latency_gain,
+      cycles,
       area,
     }
   }
@@ -891,6 +891,7 @@ where
       "       • after extend, there are {} rewrites",
       new_all_rewrites.len()
     );
+    // println!("rewrites: {:#?}", new_all_rewrites);
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
@@ -927,7 +928,7 @@ where
     let isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root_vec: {:?}", root_vec);
     // println!("cs: {:#?}", cs);
-    // println!("cs: {:#?}", isax_cost.cs.set);
+    // println!("cs[0]: {:#?}", isax_cost.cs.set[0]);
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
     info!("Number of nodes: {}", egraph.total_size());
@@ -1025,8 +1026,8 @@ where
         chosen_rewrites_per_libsel,
         chosen_libs_per_libsel,
         root,
-        isax_cost.cs.set[i].latency_gain,
-        isax_cost.cs.set[i].area_cost,
+        isax_cost.cs.set[i].cycles,
+        isax_cost.cs.set[i].area,
       ));
     }
 
@@ -1036,10 +1037,7 @@ where
 
     println!("         • chosen_rewrites: {}", chosen_rewrites.len());
 
-    debug!(
-      "upper bound ('full') cost: {}",
-      isax_cost.cs.set[0].latency_gain
-    );
+    debug!("upper bound ('full') cost: {}", isax_cost.cs.set[0].cycles);
 
     // println!("annotated_egraphs: {}", annotated_egraphs.len());
     // message.insert(
