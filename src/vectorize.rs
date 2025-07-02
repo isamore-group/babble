@@ -1033,10 +1033,11 @@ where
       bb_query.clone(),
     );
     let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
-    println!(
-      "lib {}:lat_cpu: {}, lat_acc: {}, area: {}",
-      i, lat_cpu, lat_acc, area
-    );
+    // println!("vec_lib: {:?}", &rec_expr);
+    // println!(
+    //   "lib {}:lat_cpu: {}, lat_acc: {}, area: {}",
+    //   i, lat_cpu, lat_acc, area
+    // );
     // println!("lib: {}", searcher);
     for node in applier.ast.iter_mut() {
       match node {

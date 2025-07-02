@@ -270,7 +270,7 @@ pub fn rec_cost<Op, LA, LD>(
 ) -> (f64, usize)
 where
   AstNode<Op>: Schedulable<LA, LD>,
-  Op: Teachable + OperationInfo + Clone,
+  Op: Teachable + OperationInfo + Clone + Debug,
 {
   let mut expr_mut = expr.clone();
   // Identify the lambda nodes and their children in the expression

@@ -84,6 +84,12 @@ impl CostSet {
     }
   }
 
+  pub fn split_cycles(&mut self, vec_len: usize) {
+    for ls in &mut self.set {
+      ls.split_cycles(vec_len);
+    }
+  }
+
   /// Crosses over two `CostSet`s.
   /// This is essentially a Cartesian product between two `CostSet`s (e.g. if
   /// each `CostSet` corresponds to an argument of a node) such that paired
@@ -329,6 +335,10 @@ impl LibSel {
     self.cycles += amount;
   }
 
+  pub fn split_cycles(&mut self, vec_len: usize) {
+    self.cycles /= vec_len;
+  }
+
   /// Combines two `LibSel`s. Unions the lib sets, adds
   /// the expr
   #[must_use]
@@ -342,6 +352,9 @@ impl LibSel {
           for (id, count) in lib_info.2.iter() {
             if let None = set.get_mut(id) {
               set.insert(*id, *count);
+            } else {
+              // use the same lib
+              res.cycles -= lib_info.0 * *count;
             }
           }
         }
@@ -386,7 +399,7 @@ impl LibSel {
     latency: usize,
     area: usize,
     id: Id,
-    nested_libs: &LibSel,
+    _nested_libs: &LibSel,
     lps: usize,
   ) -> Option<LibSel> {
     let mut res = self.clone();
@@ -805,6 +818,8 @@ where
 
     let mut exe_count = 1;
     let mut op_latency = 1;
+    let vec_len = enode.operation().get_vec_len();
+    let is_vector_op = enode.operation().is_vector_op();
     let bbs = enode.operation().get_bbs_info();
     if bbs.len() > 0 {
       if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
@@ -812,6 +827,7 @@ where
         op_latency = bb_entry.cpi.ceil() as usize;
       }
     }
+    op_latency *= vec_len;
     if !enode.operation().is_op() {
       op_latency = 0;
     }
@@ -841,6 +857,9 @@ where
           // 0 args. Return new.
           let mut cs = CostSet::new();
           cs.inc_cycles(op_latency * exe_count);
+          if is_vector_op {
+            cs.split_cycles(vec_len);
+          }
           ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), hash)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
@@ -850,24 +869,33 @@ where
           }
           e.inc_cycles(op_latency * exe_count);
           // println!("make done");
+          if is_vector_op {
+            e.split_cycles(vec_len);
+          }
           ISAXCost::new(e, ty, bbs, hash)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
           // println!("begin cross,args.len: {}", enode.args().len());
+          // println!("{:#?}", e);
           for cs in &enode.args()[1..] {
+            // println!("crossing with: {:#?}", x(cs));
             e = e.cross(x(cs), self_ref.lps);
+            // println!("crossed: {:#?}", e);
           }
-          println!("enode: {:?}, e.len: {}", enode, e.set.len());
+          // println!("enode: {:?}, e.len: {}", enode, e.set.len());
           if exe_count > 0 {
             e.update_cost(exe_count);
           }
 
           e.unify();
           e.prune(self_ref.inter_beam);
-          println!("e.len after update: {}", e.set.len());
+          // println!("e.len after update: {}", e.set.len());
           e.inc_cycles(op_latency * exe_count);
           // println!("make done");
+          if is_vector_op {
+            e.split_cycles(vec_len);
+          }
           ISAXCost::new(e, ty, bbs, hash)
         }
       }
