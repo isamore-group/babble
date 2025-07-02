@@ -108,6 +108,17 @@ impl CostSet {
       }
     }
 
+    // // if the set is empty, we return one of the lib selections
+    // if set.is_empty() {
+    //   set = if self.set.len() > 0 {
+    //     self.set.clone()
+    //   } else if other.set.len() > 0 {
+    //     other.set.clone()
+    //   } else {
+    //     vec![LibSel::new()]
+    //   };
+    // }
+    // println!("set: {:?}", set);
     CostSet { set }
   }
 
@@ -365,7 +376,6 @@ impl LibSel {
     }
 
     res.cycles += other.cycles;
-
     Some(res)
   }
 
@@ -694,8 +704,6 @@ where
     to.cs.update_cost(exe_count);
     to.cs.unify();
     to.cs.prune(self.beam_size);
-    // println!("to: {:#?}", to.cs);
-
     // we also need to merge the type information
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
     // 合并哈希
@@ -740,6 +748,7 @@ where
     // if to.cs.set.len() > 0 {
     //   println!("{}", to.cs.set[0].latency_gain);
     // }
+
     DidMerge(&a0 != to, to != &from)
     // DidMerge(false, false)
   }
@@ -849,11 +858,14 @@ where
           for cs in &enode.args()[1..] {
             e = e.cross(x(cs), self_ref.lps);
           }
+          println!("enode: {:?}, e.len: {}", enode, e.set.len());
           if exe_count > 0 {
             e.update_cost(exe_count);
           }
+
           e.unify();
           e.prune(self_ref.inter_beam);
+          println!("e.len after update: {}", e.set.len());
           e.inc_cycles(op_latency * exe_count);
           // println!("make done");
           ISAXCost::new(e, ty, bbs, hash)

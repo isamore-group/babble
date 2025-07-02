@@ -283,7 +283,8 @@ where
   /// The final result of pareto: a series of AnnotatedEGraph
   pub annotated_egraphs: Vec<AnnotatedEGraph<Op, T>>,
   /// when vectorizing, vectorized_expr is needed
-  pub vectorized_expr: Option<RecExpr<AstNode<Op>>>,
+  pub vectorized_egraph_with_root:
+    Option<(EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id)>,
   /// The time taken to run the experiment
   pub run_time: Duration,
   /// the learned lib
@@ -529,11 +530,15 @@ where
   /// lib rewrites
   lib_rewrites_with_condition:
     HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
+  /// lib exprs
+  past_exprs: HashMap<usize, RecExpr<AstNode<Op>>>,
   past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
   /// Configuration for the beam search
   config: ParetoConfig<LA, LD>,
   /// lift_dsrs
   lift_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  /// lower dsrs
+  lower_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   /// transform_dsrs
   transform_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
 }
@@ -581,6 +586,7 @@ where
       usize,
       (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>),
     >,
+    past_exprs: HashMap<usize, RecExpr<AstNode<Op>>>,
     past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
     config: ParetoConfig<LA, LD>,
   ) -> Self
@@ -593,9 +599,11 @@ where
       dsrs,
       bb_query,
       lib_rewrites_with_condition,
+      past_exprs,
       past_libs,
       config,
       lift_dsrs: vec![],
+      lower_dsrs: vec![],
       transform_dsrs: vec![],
     }
   }
@@ -603,14 +611,16 @@ where
   pub fn with_vectorize_dsrs(
     &mut self,
     lift_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+    lower_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
     transform_dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   ) {
     self.lift_dsrs = lift_dsrs;
+    self.lower_dsrs = lower_dsrs;
     self.transform_dsrs = transform_dsrs;
   }
 
   /// Run the e-graph and library learning process
-  fn run_egraph(
+  pub fn run_egraph(
     &self,
     roots: &[Id],
     egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
@@ -629,6 +639,8 @@ where
       list_op.operation_mut().set_bbs_info(bbs);
       egraph.add(list_op)
     };
+    // 保存这个egraph，在向量化的时候需要
+    let egraph_without_dsrs = egraph.clone();
     let mut message = HashMap::new();
     let timeout = Duration::from_secs(60 * 100_000);
     // let mut egraph = egraph.clone();
@@ -653,41 +665,63 @@ where
 
     let mut origin_aeg = runner.egraph;
 
+    println!(
+      "       - Egraph size: {}, eclasses: {}",
+      origin_aeg.total_size(),
+      origin_aeg.classes().len()
+    );
+
     // 接下来使用lib_rewrites_with_condition在进行重写, Analysis不能是空
     let past_lib_rewrites = self
       .lib_rewrites_with_condition
       .iter()
       .map(|(_, (rewrite, _))| rewrite.clone())
       .collect::<Vec<_>>();
-    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
-      .with_egraph(origin_aeg.clone())
-      .with_time_limit(timeout)
-      .with_iter_limit(1)
-      .run(&past_lib_rewrites);
 
-    let mut aeg = runner.egraph;
+    // let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
+    //   .with_egraph(origin_aeg.clone())
+    //   .with_time_limit(timeout)
+    //   .with_iter_limit(1)
+    //   .run(&past_lib_rewrites);
+
+    // 目前不会使用重写应用原来的lib，而是选择将past_exprs加入到原来的EGraph中，
+    // 这样可以忽略掉不必要的lambda和apply节点
+
+    let mut aeg = origin_aeg.clone();
+
+    for expr in self.past_exprs.values() {
+      // println!("Adding past expr: {}", expr);
+      aeg.add_expr(expr);
+    }
+
     // 进行BB信息的推断
     perf_infer::perf_infer(&mut aeg, &[root]);
 
     let mut vectorized_liblearn_messages = vec![];
-    let mut vectorized_expr = None;
+    let mut vectorized_egraph_with_root = None;
 
     // aeg.dot().to_png("target/initial_egraph.png").unwrap();
     if self.config.vectorize_config.vectorize {
       let vectorize_time = Instant::now();
-      let (expr, roots, vectorized_egraph, lib_messages) = vectorize(
+      let (
+        vecegraph_without_dsrs_with_root,
+        vecegraph_running_dsrs_with_root,
+        lib_messages,
+      ) = vectorize(
+        egraph_without_dsrs,
         aeg.clone(),
-        &[root],
+        root,
         &self.lift_dsrs,
+        &self.lower_dsrs,
         &self.transform_dsrs,
         self.config.clone(),
         self.bb_query.clone(),
       );
-      origin_aeg = vectorized_egraph;
+      origin_aeg = vecegraph_running_dsrs_with_root.0;
       vectorized_liblearn_messages = lib_messages;
-      root = roots[0];
+      root = vecegraph_running_dsrs_with_root.1;
+      vectorized_egraph_with_root = Some(vecegraph_without_dsrs_with_root);
       perf_infer::perf_infer(&mut origin_aeg, &vec![root]);
-      vectorized_expr = Some(expr);
       println!(
         "     • Vectorized egraph in {}ms",
         vectorize_time.elapsed().as_millis()
@@ -728,19 +762,8 @@ where
 
     println!("      🧠 Anti-Unification Phase...");
     let au_time = Instant::now();
-    // 在进行learn之前，先提取出LibId最大的Lib
-    let mut max_lib_id = 0;
-    let mut libs_cnt = 0;
-    for eclass in aeg.classes() {
-      for node in eclass.iter() {
-        let op = node.operation();
-        if op.is_lib() {
-          max_lib_id = std::cmp::max(max_lib_id, op.get_libid());
-          libs_cnt += 1;
-        }
-      }
-    }
-    max_lib_id = if libs_cnt == 0 { 0 } else { max_lib_id + 1 };
+    // 在进行learn之前，先提取出之前库学习最大的lib，直接利用past_libs的keys就行
+    let max_lib_id = self.past_libs.keys().max().map_or(0, |&id| id + 1); // past_libs的keys是从0开始的，所以+1
     // 如果启用了expand选项，那么就不走这一条路，
     // 直接使用expand的操作获取到所以用到的rewrites
     let expand_message = if self.config.op_pack_config.enable_meta_au {
@@ -904,17 +927,6 @@ where
     .with_node_limit(1_000_000)
     .run(&new_all_rewrites);
 
-    // for ecls in runner.egraph.classes() {
-    //   let mut cs = ecls.data.cs.clone();
-    //   cs.set.sort_unstable_by_key(|elem| elem.full_cost as usize);
-    //   if !cs.set.is_empty() {
-    //     if cs.set[0].full_cost < -100_000.0 {
-    //       println!("eclass {}: cost: {}", ecls.id, cs.set[0].full_cost,);
-    //       println!("{:?}", ecls.nodes);
-    //     }
-    //   }
-    // }
-
     let egraph = runner.egraph;
 
     println!(
@@ -927,8 +939,18 @@ where
 
     let isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root_vec: {:?}", root_vec);
-    // println!("cs: {:#?}", cs);
+    println!("root: {:#?}", egraph[egraph.find(root)]);
+    let args1 = egraph[egraph.find(root)].nodes[0].args();
+    let args2 = egraph[egraph.find(root)].nodes[1].args();
+    for arg in args1 {
+      println!("arg1: {:#?}", egraph[*arg]);
+    }
+    println!("the second");
+    for arg in args2 {
+      println!("arg2: {:#?}", egraph[*arg]);
+    }
     // println!("cs[0]: {:#?}", isax_cost.cs.set[0]);
+
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
     info!("Number of nodes: {}", egraph.total_size());
@@ -936,7 +958,6 @@ where
     // egraph.dot().to_png("target/foo.png").unwrap();
 
     // println!("egraph: {:#?}", egraph);
-
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut annotated_egraphs = Vec::new();
@@ -1048,7 +1069,7 @@ where
       num_libs: chosen_rewrites.len(),
       rewrites_with_conditon: rewrites_map,
       annotated_egraphs: annotated_egraphs,
-      vectorized_expr: vectorized_expr,
+      vectorized_egraph_with_root: vectorized_egraph_with_root,
       run_time: start_time.elapsed(),
       learned_lib: learned_libs,
       message,

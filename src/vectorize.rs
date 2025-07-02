@@ -10,7 +10,7 @@ use crate::{
   perf_infer,
   rewrites::TypeMatch,
   runner::{
-    AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
+    self, AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
     ParetoConfig, ParetoResult,
   },
   schedule::{Schedulable, Scheduler},
@@ -59,6 +59,8 @@ pub struct VectorConfig {
   pub max_vec_len: usize,
   /// lift-rules的文件名
   pub lift_rules: Option<String>,
+  /// lower-rules的文件名
+  pub lower_rules: Option<String>,
   /// transfrom-rules的文件名
   pub transform_rules: Option<String>,
 }
@@ -72,6 +74,7 @@ impl Default for VectorConfig {
       enable_post_check: false,
       max_vec_len: 8,
       lift_rules: None,
+      lower_rules: None,
       transform_rules: None,
     }
   }
@@ -86,6 +89,7 @@ impl VectorConfig {
     enable_post_check: bool,
     max_vec_len: usize,
     lift_rules: Option<String>,
+    lower_rules: Option<String>,
     transform_rules: Option<String>,
   ) -> Self {
     Self {
@@ -95,6 +99,7 @@ impl VectorConfig {
       enable_post_check,
       max_vec_len,
       lift_rules,
+      lower_rules,
       transform_rules,
     }
   }
@@ -575,16 +580,17 @@ where
 
 /// 目前向量化直接使用liblearn中的au-search进行向量化
 pub fn vectorize<Op, T, LA, LD>(
-  egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
-  roots: &[Id],
+  egraph_without_dsrs: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  egraph_running_scalar_dsrs: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  root: Id,
   lift_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  lower_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   transfrom_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   config: ParetoConfig<LA, LD>,
   bb_query: BBQuery,
 ) -> (
-  RecExpr<AstNode<Op>>,
-  Vec<Id>,
-  EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  (EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id),
+  (EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id),
   Vec<LiblearnMessage<Op, T, ISAXAnalysis<Op, T>>>,
 )
 where
@@ -620,12 +626,19 @@ where
   AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
 {
   println!("        • there are {} lift dsrs", lift_dsrs.len());
+  println!("        • there are {} lower dsrs", lower_dsrs.len());
   println!(
     "        • there are {} transfrom dsrs",
     transfrom_dsrs.len()
   );
+  // 打印没有跑dsrs的egraph的大小
+  println!(
+    "      • without running dsrs, eclass size: {}, egraph size: {}",
+    egraph_without_dsrs.classes().len(),
+    egraph_without_dsrs.total_size(),
+  );
   let timeout = Duration::from_secs(60 * 100_000);
-  let mut egraph = egraph.clone();
+  let mut egraph = egraph_running_scalar_dsrs.clone();
   println!(
     "       • before vectorize, eclass size: {}, egraph size: {}",
     egraph.classes().len(),
@@ -682,7 +695,7 @@ where
   // }
 
   // 推导bbs信息
-  perf_infer::perf_infer(&mut egraph, roots);
+  perf_infer::perf_infer(&mut egraph, &vec![root]);
 
   // // 进行向量化组发现
   // egraph.dot().to_png("target/foo1.png").unwrap();
@@ -697,7 +710,7 @@ where
     .with_area_estimator(config.area_estimator.clone())
     .with_delay_estimator(config.delay_estimator.clone())
     // .find_packs()
-    // .with_find_pack_config(config.find_pack_config.clone())
+    .with_find_pack_config(config.find_pack_config.clone())
     .with_bb_query(bb_query.clone())
     .build(&egraph);
   let lib_rewrites: Vec<(
@@ -919,23 +932,14 @@ where
     egraph.classes().len()
   );
 
-  // 进行extract
-  let new_root = if roots.len() == 1 {
-    roots[0]
-  } else {
-    let bbs = egraph[roots[0]].data.bb.clone();
-    let mut list_op = AstNode::new(Op::list(), roots.iter().copied());
-    list_op.operation_mut().set_bbs_info(bbs);
-    egraph.add(list_op)
-  };
   // 推导bbs信息
-  perf_infer::perf_infer(&mut egraph, roots);
+  perf_infer::perf_infer(&mut egraph, &vec![root]);
 
   println!("        • begin vectorize root expression");
 
   // egraph.dot().to_png("target/foo3.png").unwrap();
 
-  let (cost, expr) = VecExtractor::new(&egraph, VectorCF).find_best(new_root);
+  let (cost, expr) = VecExtractor::new(&egraph, VectorCF).find_best(root);
   // for (i, node) in expr.iter().enumerate() {
   //   println!("{}: {:?}", i, node);
   // }
@@ -1029,7 +1033,10 @@ where
       bb_query.clone(),
     );
     let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
-    // println!("lib {}: latency_gain: {}, area: {}", i, latency_gain, area);
+    println!(
+      "lib {}:lat_cpu: {}, lat_acc: {}, area: {}",
+      i, lat_cpu, lat_acc, area
+    );
     // println!("lib: {}", searcher);
     for node in applier.ast.iter_mut() {
       match node {
@@ -1075,24 +1082,54 @@ where
     lib_messages.len()
   );
 
-  // 新建一个EGraph，将expr加入
-  let mut new_egraph = EGraph::new(ISAXAnalysis::new(
-    config.final_beams,
-    config.inter_beams,
-    usize::MAX,
-    bb_query.clone(),
-  ));
-  let root_vec = vec![new_egraph.add_expr(&(expr.clone().into()))];
+  // 建立fused EGraph,在egraph_without_dsrs的基础上，添加向量化的expr,
+  // 之后将两个id union起来
+  let add_vec_expr2_egraph = |egraph: &EGraph<
+    AstNode<Op>,
+    ISAXAnalysis<Op, T>,
+  >|
+   -> (
+    EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+    Id,
+  ) {
+    let mut new_egraph = egraph.clone();
+    // 将expr添加到new_egraph中
+    let new_id = new_egraph.add_expr(&expr);
+    new_egraph.union(new_id, root);
+    new_egraph.rebuild();
+    // 之后使用lower_rules进行重写
+    let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
+      .with_egraph(new_egraph)
+      .with_time_limit(timeout)
+      .with_iter_limit(4)
+      .run(lower_dsrs);
+    let egraph = runner.egraph;
 
+    (egraph.clone(), egraph.find(new_id))
+  };
+
+  //向两个egraph中添加向量化的表达式，并使用lower_dsrs进行重写
+  let new_egraph_without_dsrs = add_vec_expr2_egraph(&egraph_without_dsrs);
+
+  let new_egraph_running_scalar_dsrs =
+    add_vec_expr2_egraph(&egraph_running_scalar_dsrs);
+  // 打印必要信息
   println!(
-    "       • Vectorized egraph size: {}, eclasses: {}",
-    new_egraph.total_size(),
-    new_egraph.classes().len()
+    "       • after vectorization, egraph(without running scalar dsrs) size: {}, class size: {}",
+    new_egraph_without_dsrs.0.total_size(),
+    new_egraph_without_dsrs.0.classes().len()
+  );
+  println!(
+    "       • after vectorization, egraph(running scalar dsrs) size: {}, class size: {}",
+    new_egraph_running_scalar_dsrs.0.total_size(),
+    new_egraph_running_scalar_dsrs.0.classes().len()
   );
 
-  // 挑选出根节点
-
-  (expr.into(), root_vec, new_egraph, lib_messages)
+  (
+    new_egraph_without_dsrs,
+    new_egraph_running_scalar_dsrs,
+    lib_messages,
+  )
 }
 
 // // 本函数输入一个Expr，返回一个Expr(为转换后的Expr)，
@@ -1587,7 +1624,7 @@ fn expr_vec2lib<
     let node = &rec_expr[Id::from(i)];
     let op = node.operation();
 
-    if !op.is_vector_op() {
+    if !op.is_vector_op() || op.is_vec() {
       // 非向量操作：收集所有子节点的结果
       let mut seen = HashSet::new();
       let mut combined = Vec::new();
