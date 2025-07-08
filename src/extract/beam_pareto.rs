@@ -727,35 +727,7 @@ where
     // 合并v
     // println!("{:?}", to);
     // println!("Dismerge: {} {}", &a0 != to, to != &from);
-    // if &a0 != to || to != &from {
-    //   println!(
-    //     "to: {:#?}",
-    //     &a0
-    //       .cs
-    //       .set
-    //       .iter()
-    //       .map(|ls| (ls.latency_gain, ls.area_cost))
-    //       .collect::<Vec<_>>()
-    //   );
-    //   println!(
-    //     "from {:#?}",
-    //     &from
-    //       .cs
-    //       .set
-    //       .iter()
-    //       .map(|ls| (ls.latency_gain, ls.area_cost))
-    //       .collect::<Vec<_>>()
-    //   );
-    //   println!(
-    //     "merged: {:#?}",
-    //     &to
-    //       .cs
-    //       .set
-    //       .iter()
-    //       .map(|ls| (ls.latency_gain, ls.area_cost))
-    //       .collect::<Vec<_>>()
-    //   );
-    // }
+
     // TODO: be more efficient with how we do this
     // println!("merge done");
     // if to.cs.set.len() > 0 {

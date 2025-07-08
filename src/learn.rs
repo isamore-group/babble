@@ -1617,7 +1617,10 @@ where
       // 克隆 pattern 和 egraph，move 到新线程
       let pattern_clone = pattern.clone();
       let egraph_clone = self.egraph.clone();
-
+      // println!(
+      //   "Processing anti-unification: {}",
+      //   Pattern::from(au.au.expr.clone())
+      // );
       std::thread::spawn(move || {
         // 执行搜索
         // 这里假设 search 返回 Vec<SearchMatches<'_, _>>，并且可以变成 'static
@@ -1642,7 +1645,7 @@ where
       });
 
       // 等待结果或超时
-      let results = match rx.recv_timeout(Duration::from_secs(5)) {
+      let results = match rx.recv_timeout(Duration::from_secs(500)) {
         Ok(results) => {
           // 主线程在超时前收到了搜索结果
           // 注意：这里的 results 类型要与发送时匹配
@@ -2078,7 +2081,7 @@ where
               self.liblearn_config.cost.clone(),
             ));
           } else {
-            info!("Processing op1 {:?} and op2 {:?}", op1, op2);
+            // println!("Processing op1 {:?} and op2 {:?}", op1, op2);
             // recursively enumerate the inputs to this rule.
             let inputs: Vec<_> =
               args1.iter().copied().zip(args2.iter().copied()).collect();

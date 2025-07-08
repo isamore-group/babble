@@ -914,6 +914,11 @@ where
       "       • after extend, there are {} rewrites",
       new_all_rewrites.len()
     );
+    println!(
+      "         • before running lib rewrites, egraph size: {}, eclasses: {}",
+      origin_aeg.total_size(),
+      origin_aeg.classes().len()
+    );
     // println!("rewrites: {:#?}", new_all_rewrites);
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
@@ -934,22 +939,12 @@ where
       egraph.total_size(),
       egraph.classes().len()
     );
+
     // egraph.dot().to_png("target/final_egraph.png").unwrap();
     // println!("roots: {:?}", roots);
 
     let isax_cost = egraph[egraph.find(root)].data.clone();
     // println!("root_vec: {:?}", root_vec);
-    // println!("root: {:#?}", egraph[egraph.find(root)].data.cs);
-    // let args1 = egraph[egraph.find(root)].nodes[0].args();
-    // let args2 = egraph[egraph.find(root)].nodes[1].args();
-    // for arg in args1 {
-    //   println!("arg1: {:#?}", egraph[*arg].data.cs);
-    // }
-    // println!("the second");
-    // for arg in args2 {
-    //   println!("arg2: {:#?}", egraph[*arg].data.cs);
-    // }
-    // println!("cs[0]: {:#?}", isax_cost.cs.set[0]);
 
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
     info!("Stop reason: {:?}", runner.stop_reason.unwrap());
@@ -957,16 +952,11 @@ where
 
     // egraph.dot().to_png("target/foo.png").unwrap();
 
-    // for ecls in egraph.classes() {
-    //   if ecls.nodes.iter().any(|n| n.operation().is_vector_op()) {
-    //     if ecls.data.cs.set[0].area > 0 && ecls.data.cs.set[0].cycles >
-    // 100000 {       for node in &ecls.nodes {
-    //         println!("  node: {:?}", node.operation());
-    //         println!("  cs: {:#?}", ecls.data.cs);
-    //       }
-    //     }
-    //   }
-    // }
+    for ecls in egraph.classes() {
+      println!("eclass id: {}", ecls.id);
+      println!("nodes: {:?}", ecls.nodes);
+      println!("cs: {:?}", ecls.data.cs);
+    }
     // panic!("Debugging egraph");
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
