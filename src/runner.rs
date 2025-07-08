@@ -20,7 +20,7 @@ use crate::{
   bb_query::{self, BBInfo, BBQuery},
   expand::{ExpandMessage, MetaAUConfig, expand},
   extract::beam_pareto::{
-    ClassMatch, ISAXAnalysis, LibExtractor, TypeInfo, TypeSet,
+    ClassMatch, ISAXAnalysis, ISAXCost, LibExtractor, TypeInfo, TypeSet,
   },
   perf_infer,
   rewrites::{self, TypeMatch},
@@ -28,7 +28,8 @@ use crate::{
   vectorize::{VectorCF, VectorConfig, vectorize},
 };
 use egg::{
-  EGraph, Extractor, Id, Pattern, RecExpr, Rewrite, Runner as EggRunner, Var,
+  Analysis, EGraph, Extractor, Id, Pattern, RecExpr, Rewrite,
+  Runner as EggRunner, Var,
 };
 use log::{debug, info};
 
@@ -639,6 +640,7 @@ where
       list_op.operation_mut().set_bbs_info(bbs);
       egraph.add(list_op)
     };
+    perf_infer::perf_infer(&mut egraph, &[root]);
     // 保存这个egraph，在向量化的时候需要
     let egraph_without_dsrs = egraph.clone();
     let mut message = HashMap::new();
@@ -657,11 +659,16 @@ where
     );
     println!("     • After applying {} DSRs... ", self.dsrs.len());
     let start_time = Instant::now();
-    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
-      .with_egraph(egraph)
-      .with_time_limit(timeout)
-      .with_iter_limit(1)
-      .run(&self.dsrs);
+    let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
+      0,
+      0,
+      0,
+      self.bb_query.clone(),
+    ))
+    .with_egraph(egraph)
+    .with_time_limit(timeout)
+    .with_iter_limit(1)
+    .run(&self.dsrs);
 
     let mut origin_aeg = runner.egraph;
 
@@ -932,7 +939,11 @@ where
     .with_node_limit(1_000_000)
     .run(&new_all_rewrites);
 
-    let egraph = runner.egraph;
+    let mut egraph = runner.egraph;
+    perf_infer::perf_infer(&mut egraph, &[root]);
+    println!("         • Rebuilding egraph after lib rewrites...");
+    Self::recalculate_all_data(&mut egraph, root);
+    egraph.rebuild();
 
     println!(
       "         • Final egraph size: {}, eclasses: {}",
@@ -944,6 +955,16 @@ where
     // println!("roots: {:?}", roots);
 
     let isax_cost = egraph[egraph.find(root)].data.clone();
+    // let args1 = egraph[egraph.find(root)].nodes[0].args();
+    // let args2 = egraph[egraph.find(root)].nodes[1].args();
+    // for arg in args1 {
+    //   println!("arg1: {:#?}", egraph[*arg].data.cs);
+    // }
+    // println!("the second");
+    // for arg in args2 {
+    //   println!("arg2: {:#?}", egraph[*arg].data.cs);
+    // }
+    // println!("cs: {:?}", isax_cost.cs);
     // println!("root_vec: {:?}", root_vec);
 
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
@@ -952,11 +973,12 @@ where
 
     // egraph.dot().to_png("target/foo.png").unwrap();
 
-    for ecls in egraph.classes() {
-      println!("eclass id: {}", ecls.id);
-      println!("nodes: {:?}", ecls.nodes);
-      println!("cs: {:?}", ecls.data.cs);
-    }
+    // for ecls in egraph.classes() {
+    //   if ecls.nodes.iter().any(|n| n.operation().is_lib()) {
+    //     println!("nodes: {:#?}", ecls.nodes);
+    //     println!("cs: {:?}", ecls.data.cs);
+    //   }
+    // }
     // panic!("Debugging egraph");
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
@@ -1047,7 +1069,7 @@ where
         chosen_rewrites_per_libsel,
         chosen_libs_per_libsel,
         root,
-        isax_cost.cs.set[i].cycles,
+        isax_cost.cs.set[i].cycles.into_inner() as usize,
         isax_cost.cs.set[i].area,
       ));
     }
@@ -1074,6 +1096,33 @@ where
       learned_lib: learned_libs,
       message,
     }
+  }
+
+  fn recalculate_all_data(
+    egraph: &mut EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+    id: Id,
+  ) {
+    let eclass = &egraph[id];
+    let nodes = eclass.nodes.clone();
+    // Recalculate the data for this eclass
+    let mut new_data = ISAXCost::empty();
+    for (i, node) in nodes.iter().enumerate() {
+      for arg in node.args() {
+        Self::recalculate_all_data(egraph, *arg);
+      }
+      let data = ISAXAnalysis::make(egraph, node);
+      if i == 0 {
+        // The first node is the root node, we use its data as the base
+        new_data = data;
+      } else {
+        // Merge the data of the other nodes into the first one
+        // This is necessary to ensure that all nodes contribute to the eclass
+        // data and that we can use it for further analysis
+        egraph.analysis.merge(&mut new_data, data);
+      }
+    }
+    let eclass = &mut egraph[id];
+    eclass.data = new_data;
   }
 }
 

@@ -9,11 +9,12 @@ use crate::{
   schedule::{Schedulable, rec_cost},
   teachable::{BindingExpr, Teachable},
 };
-use bitvec::prelude::*;
+use bitvec::{prelude::*, vec};
 use egg::{
   Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
 };
 use log::debug;
+use ordered_float::OrderedFloat;
 use rustc_hash::FxHashMap;
 use seahash::SeaHasher;
 use std::{
@@ -78,7 +79,7 @@ impl CostSet {
     CostSet { set }
   }
 
-  pub fn inc_cycles(&mut self, amount: usize) {
+  pub fn inc_cycles(&mut self, amount: f64) {
     for ls in &mut self.set {
       ls.inc_cycles(amount);
     }
@@ -159,6 +160,7 @@ impl CostSet {
 
       for (j, other) in self.set.iter().enumerate() {
         if i != j && dominates(other, cand) {
+          // println!("{:?} dominates {:?}", other, cand);
           is_dominated = true;
           break;
         }
@@ -187,7 +189,7 @@ impl CostSet {
   pub fn add_lib(
     &self,
     lib: LibId,
-    latency: usize,
+    latency: f64,
     area: usize,
     id: Id,
     nested_libs: &CostSet,
@@ -233,7 +235,8 @@ impl CostSet {
       for (_, (latency, _, set)) in &mut ls.libs {
         for (_id, count) in set.iter_mut() {
           if exe_count > *count {
-            ls.cycles += *latency * (exe_count - *count);
+            ls.cycles +=
+              *latency * OrderedFloat::from((exe_count - *count) as f64);
             *count = exe_count;
           }
         }
@@ -268,11 +271,11 @@ impl CostSet {
 /// functions, and the cost of the library functions themselves
 #[derive(Debug, Clone)]
 pub struct LibSel {
-  pub cycles: usize,
+  pub cycles: OrderedFloat<f64>,
   pub area: usize,
   /// The libraries used in this expression. Each library is binded with its
   /// latency, area and the instances.
-  pub libs: HashMap<LibId, (usize, usize, HashMap<Id, usize>)>,
+  pub libs: HashMap<LibId, (OrderedFloat<f64>, usize, HashMap<Id, usize>)>,
 }
 
 impl Eq for LibSel {}
@@ -325,18 +328,18 @@ impl LibSel {
   #[must_use]
   pub fn new() -> LibSel {
     LibSel {
-      cycles: 0,
+      cycles: 0.0.into(),
       area: 0,
       libs: HashMap::new(),
     }
   }
 
-  pub fn inc_cycles(&mut self, amount: usize) {
-    self.cycles += amount;
+  pub fn inc_cycles(&mut self, amount: f64) {
+    self.cycles += OrderedFloat::from(amount);
   }
 
   pub fn split_cycles(&mut self, vec_len: usize) {
-    self.cycles /= vec_len;
+    self.cycles /= OrderedFloat::from(vec_len as f64);
   }
 
   /// Combines two `LibSel`s. Unions the lib sets, adds
@@ -354,7 +357,7 @@ impl LibSel {
               set.insert(*id, *count);
             } else {
               // use the same lib
-              res.cycles -= lib_info.0 * *count;
+              res.cycles -= lib_info.0 * OrderedFloat::from(*count as f64);
             }
           }
         }
@@ -396,7 +399,7 @@ impl LibSel {
   pub fn add_lib(
     &self,
     lib: LibId,
-    latency: usize,
+    latency: f64,
     area: usize,
     id: Id,
     _nested_libs: &LibSel,
@@ -433,7 +436,7 @@ impl LibSel {
       Entry::Vacant(entry) => {
         let mut set = HashMap::new();
         set.insert(id, 1);
-        entry.insert((latency, area, set));
+        entry.insert((latency.into(), area, set));
         res.area += area;
         if res.libs.len() > lps {
           return None;
@@ -441,7 +444,7 @@ impl LibSel {
       }
     }
 
-    res.cycles += latency;
+    res.cycles += OrderedFloat::from(latency as f64);
 
     Some(res)
   }
@@ -611,6 +614,7 @@ where
   pub ty: T,
   pub bb: Vec<String>,
   pub hash: StructuralHash,
+  pub vec_len: usize,
 }
 
 impl<T> PartialEq for ISAXCost<T>
@@ -618,7 +622,10 @@ where
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   fn eq(&self, other: &Self) -> bool {
-    self.cs == other.cs && self.ty == other.ty && self.bb == other.bb
+    self.cs == other.cs
+      && self.ty == other.ty
+      && self.bb == other.bb
+      && self.vec_len == other.vec_len
   }
 }
 
@@ -638,8 +645,26 @@ impl<T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
     ty: T,
     bb: Vec<String>,
     hash: StructuralHash,
+    vec_len: usize,
   ) -> Self {
-    ISAXCost { cs, ty, bb, hash }
+    ISAXCost {
+      cs,
+      ty,
+      bb,
+      hash,
+      vec_len,
+    }
+  }
+
+  #[must_use]
+  pub fn empty() -> Self {
+    ISAXCost {
+      cs: CostSet::new(),
+      ty: T::default(),
+      bb: Vec::new(),
+      hash: StructuralHash::default(),
+      vec_len: 0,
+    }
   }
 }
 
@@ -703,6 +728,7 @@ where
     // Merging consists of combination, followed by unification and beam
     // pruning.
     to.cs.combine(from.cs.clone());
+    // println!("combined cost set: {:?}", to.cs);
 
     let exe_count = match to.bb.len() {
       0 => 1,
@@ -716,6 +742,7 @@ where
     };
     to.cs.update_cost(exe_count);
     to.cs.unify();
+    // println!("unified cost set: {:?}", to.cs);
     to.cs.prune(self.beam_size);
     // we also need to merge the type information
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
@@ -733,6 +760,7 @@ where
     // if to.cs.set.len() > 0 {
     //   println!("{}", to.cs.set[0].latency_gain);
     // }
+    to.vec_len = from.vec_len.max(to.vec_len);
 
     DidMerge(&a0 != to, to != &from)
     // DidMerge(false, false)
@@ -783,25 +811,37 @@ where
       subtree_levels,
       level_conflict: LevelConflictState::new(),
     };
+    // Calculate `vec_len`
+    let children_vec_len = enode
+      .children()
+      .iter()
+      .map(|&child| egraph[child].data.vec_len)
+      .max()
+      .unwrap_or(1);
+    let mut vec_len = enode.operation().get_vec_len();
+    if let Some(_) = enode.as_binding_expr() {
+      vec_len = vec_len.max(children_vec_len);
+    }
+
     let x = |i: &Id| &egraph[*i].data.cs;
 
     let self_ref = &egraph.analysis;
     // println!("begin cal cost");
 
     let mut exe_count = 1;
-    let mut op_latency = 1;
-    let vec_len = enode.operation().get_vec_len();
-    let is_vector_op = enode.operation().is_vector_op();
+    let mut op_latency = 1.0;
+
+    // let is_vector_op = enode.operation().is_vector_op();
     let bbs = enode.operation().get_bbs_info();
     if bbs.len() > 0 {
       if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
         exe_count = bb_entry.execution_count;
-        op_latency = bb_entry.cpi.ceil() as usize;
+        op_latency = bb_entry.cpi;
       }
     }
-    op_latency *= vec_len;
+    op_latency *= vec_len as f64;
     if !enode.operation().is_op() {
-      op_latency = 0;
+      op_latency = 0.0;
     }
 
     match Teachable::as_binding_expr(enode) {
@@ -810,7 +850,15 @@ where
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
         // println!("nested libs: {:#?}", x(f));
-        let mut e = x(b).add_lib(id, lat_acc, area, *b, x(f), self_ref.lps);
+        // e.split_cycles(vec_len);
+        let mut e = x(b).add_lib(
+          id,
+          lat_acc as f64 / vec_len as f64,
+          area,
+          *b,
+          x(f),
+          self_ref.lps,
+        );
         // println!("new cost set: {:#?}", e);
         if exe_count > 0 {
           e.update_cost(exe_count);
@@ -818,7 +866,7 @@ where
         e.unify();
         e.prune(self_ref.inter_beam);
         // println!("cs after adding lib: {:#?}", e);
-        ISAXCost::new(e, ty, bbs, hash)
+        ISAXCost::new(e, ty, bbs, hash, vec_len)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
@@ -828,23 +876,19 @@ where
           // println!("make done");
           // 0 args. Return new.
           let mut cs = CostSet::new();
-          cs.inc_cycles(op_latency * exe_count);
-          if is_vector_op {
-            cs.split_cycles(vec_len);
-          }
-          ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), hash)
+          cs.inc_cycles(op_latency * exe_count as f64);
+          cs.split_cycles(vec_len);
+          ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), hash, vec_len)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
           let mut e = x(&enode.args()[0]).clone();
           if exe_count > 0 {
             e.update_cost(exe_count);
           }
-          e.inc_cycles(op_latency * exe_count);
+          e.inc_cycles(op_latency * exe_count as f64);
           // println!("make done");
-          if is_vector_op {
-            e.split_cycles(vec_len);
-          }
-          ISAXCost::new(e, ty, bbs, hash)
+          e.split_cycles(vec_len);
+          ISAXCost::new(e, ty, bbs, hash, vec_len)
         } else {
           // 2+ args. Cross/unify time!
           let mut e = x(&enode.args()[0]).clone();
@@ -863,12 +907,10 @@ where
           e.unify();
           e.prune(self_ref.inter_beam);
           // println!("e.len after update: {}", e.set.len());
-          e.inc_cycles(op_latency * exe_count);
+          e.inc_cycles(op_latency * exe_count as f64);
           // println!("make done");
-          if is_vector_op {
-            e.split_cycles(vec_len);
-          }
-          ISAXCost::new(e, ty, bbs, hash)
+          e.split_cycles(vec_len);
+          ISAXCost::new(e, ty, bbs, hash, vec_len)
         }
       }
     }
