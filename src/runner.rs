@@ -1102,13 +1102,27 @@ where
     egraph: &mut EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
     id: Id,
   ) {
+    let mut visited = HashSet::new();
+    Self::recalculate_all_data_with_visited(egraph, id, &mut visited);
+  }
+
+  fn recalculate_all_data_with_visited(
+    egraph: &mut EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+    id: Id,
+    visited: &mut HashSet<Id>,
+  ) {
+    if visited.contains(&id) {
+      return;
+    }
+    visited.insert(id);
+
     let eclass = &egraph[id];
     let nodes = eclass.nodes.clone();
     // Recalculate the data for this eclass
     let mut new_data = ISAXCost::empty();
     for (i, node) in nodes.iter().enumerate() {
       for arg in node.args() {
-        Self::recalculate_all_data(egraph, *arg);
+        Self::recalculate_all_data_with_visited(egraph, *arg, visited);
       }
       let data = ISAXAnalysis::make(egraph, node);
       if i == 0 {
