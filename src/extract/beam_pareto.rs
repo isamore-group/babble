@@ -13,6 +13,7 @@ use bitvec::{prelude::*, vec};
 use egg::{
   Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
 };
+use lexpr::print;
 use log::debug;
 use ordered_float::OrderedFloat;
 use rustc_hash::FxHashMap;
@@ -98,7 +99,6 @@ impl CostSet {
   #[must_use]
   pub fn cross(&self, other: &CostSet, lps: usize) -> CostSet {
     let mut set = Vec::new();
-
     for ls1 in &self.set {
       for ls2 in &other.set {
         match ls1.combine(ls2, lps) {
@@ -189,7 +189,8 @@ impl CostSet {
   pub fn add_lib(
     &self,
     lib: LibId,
-    latency: f64,
+    latency_acc: f64,
+    latency_cpu: f64,
     area: usize,
     id: Id,
     nested_libs: &CostSet,
@@ -200,7 +201,7 @@ impl CostSet {
 
     for ls1 in &nested_libs.set {
       for ls2 in &self.set {
-        match ls2.add_lib(lib, latency, area, id, ls1, lps) {
+        match ls2.add_lib(lib, latency_acc, latency_cpu, area, id, ls1, lps) {
           None => continue,
           Some(ls) => {
             if let Err(pos) = set.binary_search(&ls) {
@@ -232,11 +233,13 @@ impl CostSet {
 
   pub fn update_cost(&mut self, exe_count: usize) {
     for ls in &mut self.set {
-      for (_, (latency, _, set)) in &mut ls.libs {
+      for (_, info) in &mut ls.libs {
+        let latency_acc = info.latency_acc;
+        let set = &mut info.instances;
         for (_id, count) in set.iter_mut() {
           if exe_count > *count {
             ls.cycles +=
-              *latency * OrderedFloat::from((exe_count - *count) as f64);
+              latency_acc * OrderedFloat::from((exe_count - *count) as f64);
             *count = exe_count;
           }
         }
@@ -266,6 +269,18 @@ impl CostSet {
   }
 }
 
+/// A'LibInfo' is a tuple containing the latency, area, and a set of instances
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibInfo {
+  pub latency_acc: OrderedFloat<f64>,
+  pub latency_cpu: OrderedFloat<f64>,
+  pub area: usize,
+  /// The instances of this library function in the expression.
+  /// The key is the Id of the instance, and the value is the number of times
+  /// it appears.
+  pub instances: HashMap<Id, usize>,
+}
+
 /// A `LibSel` is a selection of library functions, paired with two
 /// corresponding cost values: the cost of the expression without the library
 /// functions, and the cost of the library functions themselves
@@ -275,7 +290,7 @@ pub struct LibSel {
   pub area: usize,
   /// The libraries used in this expression. Each library is binded with its
   /// latency, area and the instances.
-  pub libs: HashMap<LibId, (OrderedFloat<f64>, usize, HashMap<Id, usize>)>,
+  pub libs: HashMap<LibId, LibInfo>,
 }
 
 impl Eq for LibSel {}
@@ -351,46 +366,53 @@ impl LibSel {
     for (lib_id, lib_info) in &other.libs {
       match res.libs.entry(*lib_id) {
         Entry::Occupied(mut entry) => {
-          let (_, _, set) = entry.get_mut();
-          for (id, count) in lib_info.2.iter() {
+          let set = &mut entry.get_mut().instances;
+          for (id, count) in lib_info.instances.iter() {
             if let None = set.get_mut(id) {
               set.insert(*id, *count);
             } else {
               // use the same lib
-              res.cycles -= lib_info.0 * OrderedFloat::from(*count as f64);
+              res.cycles -=
+                lib_info.latency_acc * OrderedFloat::from(*count as f64);
             }
           }
         }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
-          res.area += lib_info.1;
+          res.area += lib_info.area;
           // 修复，不能超过lps就返回None，这样如果原来就有lps个，
           // 那么就会直接返回空 这会导致无法添加新的lib
           // 我们需要更改策略，如果超过lps个(此时必然是lps+1个)，
           // 那么就需要替换掉原来中的一个
           if res.libs.len() > lps {
-            // 寻找latency_gain最小的扔掉，注意同时要把area信息记录下来
-            // let mut min_gain = usize::MAX;
-            // let mut min_lib_id = None;
-            // for (lib, (gain, _, _set)) in &res.libs {
-            //   if *gain < min_gain {
-            //     min_gain = *gain;
-            //     min_lib_id = Some(*lib);
-            //   }
-            // }
-            // if let Some(lib_id) = min_lib_id {
-            //   res.area_cost -= res.libs[&lib_id].1;
-            //   res.latency_gain -= res.libs[&lib_id].0;
-            //   res.libs.remove(&lib_id);
-            // } else {
-            //   return None; // This should not happen, but just in case
-            // }
-            return None;
+            let mut gain_map = Vec::new();
+            // 计算每个lib的gain
+            for (lib_id, lib_info) in &res.libs {
+              let gain = (lib_info.latency_cpu - lib_info.latency_acc)
+                * OrderedFloat::from(lib_info.instances.len() as f64);
+              gain_map.push((*lib_id, gain, lib_info.area));
+            }
+            // 按照gain排序
+            gain_map.sort_by(|a, b| {
+              a.1
+                .partial_cmp(&b.1)
+                .unwrap_or(Ordering::Equal)
+                .then(a.2.cmp(&b.2))
+            });
+            // 取出最小的gain的lib
+            if let Some((min_lib_id, _, _)) = gain_map.first() {
+              // 删除这个lib
+              res.libs.remove(min_lib_id);
+              res.area -= gain_map[0].2;
+              // 加上对应的gain
+              res.cycles += gain_map[0].1;
+            } else {
+              return None; // 如果没有找到最小的gain，返回None
+            }
           }
         }
       }
     }
-
     res.cycles += other.cycles;
     Some(res)
   }
@@ -399,7 +421,8 @@ impl LibSel {
   pub fn add_lib(
     &self,
     lib: LibId,
-    latency: f64,
+    latency_acc: f64,
+    latency_cpu: f64,
     area: usize,
     id: Id,
     _nested_libs: &LibSel,
@@ -430,13 +453,19 @@ impl LibSel {
 
     match res.libs.entry(lib) {
       Entry::Occupied(mut entry) => {
-        let (_, _, set) = entry.get_mut();
+        let set = &mut entry.get_mut().instances;
         set.insert(id, 1);
       }
       Entry::Vacant(entry) => {
         let mut set = HashMap::new();
         set.insert(id, 1);
-        entry.insert((latency.into(), area, set));
+        let info = LibInfo {
+          latency_acc: OrderedFloat::from(latency_acc),
+          latency_cpu: OrderedFloat::from(latency_cpu),
+          area,
+          instances: set,
+        };
+        entry.insert(info);
         res.area += area;
         if res.libs.len() > lps {
           return None;
@@ -444,7 +473,7 @@ impl LibSel {
       }
     }
 
-    res.cycles += OrderedFloat::from(latency as f64);
+    res.cycles += OrderedFloat::from(latency_acc as f64);
 
     Some(res)
   }
@@ -844,8 +873,13 @@ where
       op_latency = 0.0;
     }
 
+    // 获取enode的哈希
+    let mut hasher = SeaHasher::default();
+    enode.hash(&mut hasher);
+    let node_hash = hasher.finish();
+
     match Teachable::as_binding_expr(enode) {
-      Some(BindingExpr::Lib(id, f, b, _, lat_acc, area)) => {
+      Some(BindingExpr::Lib(id, f, b, lat_cpu, lat_acc, area)) => {
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
@@ -853,7 +887,10 @@ where
         // e.split_cycles(vec_len);
         let mut e = x(b).add_lib(
           id,
-          lat_acc as f64 / vec_len as f64,
+          lat_acc as f64,
+          // vec_len as f64,
+          lat_cpu as f64,
+          // vec_len as f64,
           area,
           *b,
           x(f),
@@ -865,6 +902,7 @@ where
         }
         e.unify();
         e.prune(self_ref.inter_beam);
+        // println!("make done");
         // println!("cs after adding lib: {:#?}", e);
         ISAXCost::new(e, ty, bbs, hash, vec_len)
       }
@@ -877,7 +915,7 @@ where
           // 0 args. Return new.
           let mut cs = CostSet::new();
           cs.inc_cycles(op_latency * exe_count as f64);
-          cs.split_cycles(vec_len);
+          // cs.split_cycles(vec_len);
           ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), hash, vec_len)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
@@ -887,7 +925,8 @@ where
           }
           e.inc_cycles(op_latency * exe_count as f64);
           // println!("make done");
-          e.split_cycles(vec_len);
+          // e.split_cycles(vec_len);
+
           ISAXCost::new(e, ty, bbs, hash, vec_len)
         } else {
           // 2+ args. Cross/unify time!
@@ -897,19 +936,21 @@ where
           for cs in &enode.args()[1..] {
             // println!("crossing with: {:#?}", x(cs));
             e = e.cross(x(cs), self_ref.lps);
+            if exe_count > 0 {
+              e.update_cost(exe_count);
+            }
+
+            e.unify();
             // println!("crossed: {:#?}", e);
           }
           // println!("enode: {:?}, e.len: {}", enode, e.set.len());
-          if exe_count > 0 {
-            e.update_cost(exe_count);
-          }
 
-          e.unify();
           e.prune(self_ref.inter_beam);
           // println!("e.len after update: {}", e.set.len());
           e.inc_cycles(op_latency * exe_count as f64);
           // println!("make done");
-          e.split_cycles(vec_len);
+          // e.split_cycles(vec_len);
+          // println!("make done");
           ISAXCost::new(e, ty, bbs, hash, vec_len)
         }
       }

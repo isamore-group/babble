@@ -12,8 +12,6 @@ pub struct PackedAccessConfig {
   pub max_packed_width: u32,
   /// List of allowed sub-field widths
   pub pack_sizes: Vec<u32>,
-  /// Reserved header bits
-  pub header_bits: u8,
 }
 
 impl Default for PackedAccessConfig {
@@ -22,7 +20,6 @@ impl Default for PackedAccessConfig {
       enabled: true,
       max_packed_width: 32,
       pack_sizes: vec![8, 16],
-      header_bits: 2,
     }
   }
 }
