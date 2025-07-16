@@ -628,6 +628,7 @@ where
   ) -> ParetoResult<Op, T> {
     // 首先将roots变成root，想EGraph中加入list节点实现
     let mut egraph = egraph;
+
     assert!(!roots.is_empty(), "Roots cannot be empty");
     let mut root = if roots.len() == 1 {
       roots[0]

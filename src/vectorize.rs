@@ -916,13 +916,17 @@ where
     .with_iter_limit(4)
     .run(transfrom_dsrs);
   egraph = runner.egraph.clone();
+
   // 恢复类型信息，将每个eclass的类型信息传给里面的enode
 
   let cloned_egraph = egraph.clone();
   for class in egraph.classes_mut() {
     for node in class.nodes.iter_mut() {
-      let tys = cloned_egraph[class.id].data.get_type();
-      node.operation_mut().set_result_type(tys.clone());
+      // 如果node的ty是空的，就将eclass的类型信息传给它
+      if node.operation().get_result_type().is_empty() {
+        let tys = cloned_egraph[class.id].data.get_type();
+        node.operation_mut().set_result_type(tys.clone());
+      }
     }
   }
 

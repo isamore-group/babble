@@ -887,10 +887,8 @@ where
         // e.split_cycles(vec_len);
         let mut e = x(b).add_lib(
           id,
-          lat_acc as f64,
-          // vec_len as f64,
-          lat_cpu as f64,
-          // vec_len as f64,
+          lat_acc as f64 / vec_len as f64,
+          lat_cpu as f64 / vec_len as f64,
           area,
           *b,
           x(f),
@@ -915,7 +913,7 @@ where
           // 0 args. Return new.
           let mut cs = CostSet::new();
           cs.inc_cycles(op_latency * exe_count as f64);
-          // cs.split_cycles(vec_len);
+          cs.split_cycles(vec_len);
           ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), hash, vec_len)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
@@ -925,7 +923,7 @@ where
           }
           e.inc_cycles(op_latency * exe_count as f64);
           // println!("make done");
-          // e.split_cycles(vec_len);
+          e.split_cycles(vec_len);
 
           ISAXCost::new(e, ty, bbs, hash, vec_len)
         } else {
@@ -949,7 +947,7 @@ where
           // println!("e.len after update: {}", e.set.len());
           e.inc_cycles(op_latency * exe_count as f64);
           // println!("make done");
-          // e.split_cycles(vec_len);
+          e.split_cycles(vec_len);
           // println!("make done");
           ISAXCost::new(e, ty, bbs, hash, vec_len)
         }
