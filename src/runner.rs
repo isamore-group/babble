@@ -672,6 +672,7 @@ where
     .run(&self.dsrs);
 
     let mut origin_aeg = runner.egraph;
+    perf_infer::perf_infer(&mut origin_aeg, &[root]);
 
     println!(
       "       - Egraph size: {}, eclasses: {}",
@@ -729,7 +730,6 @@ where
       vectorized_liblearn_messages = lib_messages;
       root = vecegraph_running_dsrs_with_root.1;
       vectorized_egraph_with_root = Some(vecegraph_without_dsrs_with_root);
-      perf_infer::perf_infer(&mut origin_aeg, &vec![root]);
       println!(
         "     • Vectorized egraph in {}ms",
         vectorize_time.elapsed().as_millis()

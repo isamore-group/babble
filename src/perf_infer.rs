@@ -86,7 +86,7 @@ pub fn perf_infer<Op, T>(
     // If that BB info vector has more than one entry, truncate to just the
     // first.
     if final_bb.len() > 1 {
-      final_bb = vec![final_bb[0].clone()];
+      final_bb.truncate(1);
     }
 
     // Record that this eclass (current_id) should end up with final_bb

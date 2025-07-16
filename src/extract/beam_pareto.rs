@@ -11,7 +11,8 @@ use crate::{
 };
 use bitvec::{prelude::*, vec};
 use egg::{
-  Analysis, AstSize, DidMerge, EGraph, Extractor, Id, Language, RecExpr, Runner,
+  Analysis, AstSize, CostFunction, DidMerge, EGraph, Extractor, Id, Language,
+  RecExpr, Runner,
 };
 use lexpr::print;
 use log::debug;
@@ -27,13 +28,16 @@ use std::{
 
 #[derive(Debug, Clone, Copy)]
 pub struct ParetoCost {
-  pub cycles: usize,
+  pub cycles: OrderedFloat<f64>,
   pub area: usize,
 }
 
 impl Default for ParetoCost {
   fn default() -> Self {
-    ParetoCost { cycles: 0, area: 0 }
+    ParetoCost {
+      cycles: OrderedFloat::from(0.0),
+      area: 0,
+    }
   }
 }
 
@@ -1048,7 +1052,7 @@ pub struct LibExtractor<
   /// found an expression for it (but it might still be improved).
   memo: FxHashMap<CacheKey, usize>,
   all_exprs: Vec<MaybeExpr<Op>>,
-  all_costs: Vec<Option<usize>>,
+  all_costs: Vec<Option<OrderedFloat<f64>>>,
   /// Current lib context:
   /// contains all lib ids inside whose definitions we are currently
   /// extracting.
@@ -1107,11 +1111,12 @@ where
     &mut self,
     id: Id,
     val: MaybeExpr<Op>,
-    cost: Option<usize>,
+    cost: Option<OrderedFloat<f64>>,
   ) {
     // let start = Instant::now();
     // 使用prune进行修剪
     let new_val = self.prune(val.clone());
+    println!("id: {}, cost: {:?}", id, cost);
     self.all_exprs.push(new_val);
     self.all_costs.push(cost);
     self.memo.insert(
@@ -1168,8 +1173,9 @@ where
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> ParetoCost {
     let (cycles, area) = rec_cost(expr, &self.bb_query);
+    // println!("cycles: {}", cycles);
     ParetoCost {
-      cycles: cycles as usize,
+      cycles: OrderedFloat::from(cycles),
       area,
     }
   }
@@ -1179,6 +1185,14 @@ where
   fn extract(&mut self, id: Id) {
     // let extract_start = Instant::now();
     // println!("---------------memo.size(): {}", self.memo.len());
+    // if self.egraph[id].nodes.iter().any(|n| n.operation().is_lib()) {
+    //   println!("eclass with lib, id: {id}");
+    //   println!(
+    //     "before eclass with lib extracted, best cost: {:?}",
+    //     self.get_from_memo(id)
+    //   );
+    //   // println!("eclass: {:#?}", self.egraph[id].nodes);
+    // }
     self.debug_indented(&format!("extracting eclass {id}"));
     if self.get_from_memo(id) == None {
       // Initialize memo with None to prevent infinite recursion in case of
@@ -1199,7 +1213,7 @@ where
             // print!("cand: {}, ", cand.pretty(100));
             // println!("cand gain: {}", Self::gain(&self, &cand));
             let mut flag = true;
-            let mut cand_cost = None;
+            let mut cand_cost = Some(self.cost(&cand).cycles);
             let mut prev_msg = (0, None);
             let mut renew_flag = false;
             // 首先，如果self.get_from_memo(id) 有值，并且all_exprs中有值
@@ -1211,13 +1225,17 @@ where
                 let prev_cost = if let Some(cost) = self.all_costs[*index] {
                   cost
                 } else {
-                  let cost = Self::cost(&self, &prev).cycles;
+                  let cost = self.cost(&prev).cycles;
                   prev_msg = (index.clone(), Some(cost));
                   renew_flag = true;
                   cost
                 };
                 // 接下来计算cand的cost，并赋给cand_cost
-                let c_cost = Self::cost(&self, &cand).cycles;
+                let c_cost = self.cost(&cand).cycles;
+                // println!("id: {}", id);
+                // println!("cand node: {:?}", node.operation());
+                // println!("prev cost: {}, cand cost: {}", prev_cost, c_cost);
+                // println!("");
                 if prev_cost < c_cost {
                   flag = false;
                 } else {
@@ -1268,10 +1286,18 @@ where
           }
         }
       }
+      // if self.egraph[id].nodes.iter().any(|n| n.operation().is_lib()) {
+      //   println!(
+      //     "eclass with lib extracted, best cost: {:?}",
+      //     self.get_from_memo(id)
+      //   );
+      //   // println!("eclass: {:#?}", self.egraph[id].nodes);
+      // }
       // println!(
       //   "using {}ms to extract eclass {id}",
       //   extract_start.elapsed().as_millis()
       // );
+      // println!("eclass id: {}, cost: {:?}", id, self.get_from_memo(id));
     }
   }
 
@@ -1455,5 +1481,46 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash + ToString> ClassMatch
   }
   fn get_pattern(&self, other: &Self) -> BitVec<u64, LocalBits> {
     self.hash.subtree_levels.clone() & other.hash.subtree_levels.clone()
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct ISAXCF<LA, LD> {
+  bb_query: BBQuery,
+  _phantom: PhantomData<(LA, LD)>,
+}
+
+impl<LA, LD> ISAXCF<LA, LD> {
+  pub fn new(bb_query: BBQuery) -> Self {
+    ISAXCF {
+      bb_query,
+      _phantom: PhantomData,
+    }
+  }
+}
+
+impl<Op, LA, LD> CostFunction<AstNode<Op>> for ISAXCF<LA, LD>
+where
+  Op: Clone
+    + std::fmt::Debug
+    + std::hash::Hash
+    + Ord
+    + Teachable
+    + std::fmt::Display
+    + OperationInfo,
+  AstNode<Op>: Schedulable<LA, LD>,
+{
+  type Cost = OrderedFloat<f64>;
+
+  fn cost<C>(&mut self, enode: &AstNode<Op>, costs: C) -> Self::Cost
+  where
+    C: FnMut(Id) -> Self::Cost,
+  {
+    OrderedFloat::from(0.0)
+  }
+
+  fn cost_rec(&mut self, expr: &RecExpr<AstNode<Op>>) -> Self::Cost {
+    let (cycles, _) = rec_cost(expr, &self.bb_query);
+    OrderedFloat::from(cycles)
   }
 }
