@@ -41,7 +41,7 @@ use std::{
 };
 
 /// 用于进行向量化的config
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct VectorConfig {
   /// 是否进行向量化, 不进行序列化，这个参数是由PhaseConfig控制的
   #[serde(skip)]

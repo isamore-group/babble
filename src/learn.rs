@@ -2099,7 +2099,9 @@ where
               let past_len = aus.len();
               let mut filtered_aus = vec![];
               for au in aus {
-                if !filter_get_arg_aus(au.expr.clone()) {
+                if !filter_get_arg_aus(&au.expr)
+                  || !filter_fused_vec_aus(op1.is_vector_op(), &au.expr)
+                {
                   if past_len == 1 {
                     // 加入Hole
                     let new_expr = PartialExpr::Hole(state);
@@ -2110,6 +2112,7 @@ where
                   }
                   continue;
                 }
+
                 filtered_aus.push(au);
               }
               // if aus.len() < past_len {
@@ -2538,7 +2541,7 @@ where
 }
 
 /// 本函数是为了将子节点是get_arg，并且arg是external的au过滤掉
-pub fn filter_get_arg_aus<Op, Type>(pe: PartialExpr<Op, Type>) -> bool
+pub fn filter_get_arg_aus<Op, Type>(pe: &PartialExpr<Op, Type>) -> bool
 where
   Op: OperationInfo + Clone + Ord,
   Type: Clone + Ord,
@@ -2557,6 +2560,25 @@ where
         }
       }
       true
+    }
+    _ => true,
+  }
+}
+
+pub fn filter_fused_vec_aus<Op, Type>(
+  is_vec_op: bool,
+  pe: &PartialExpr<Op, Type>,
+) -> bool
+where
+  Op: OperationInfo + Clone + Ord,
+  Type: Clone + Ord,
+{
+  // is_vec_op是上层操作符的类型，PartialExpr的类型需要和is_vec_op对齐，
+  // 因为这是一个recursive的过程，所以只需要看PE的第一个节点就行
+  match pe {
+    PartialExpr::Node(node) => {
+      let pe_is_vec = node.operation().is_vector_op();
+      pe_is_vec == is_vec_op
     }
     _ => true,
   }

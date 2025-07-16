@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for Packed Access strategy
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct PackedAccessConfig {
   /// Whether this strategy is enabled
   pub enabled: bool,
@@ -25,7 +25,7 @@ impl Default for PackedAccessConfig {
 }
 
 /// Configuration for Register Grouping strategy
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub struct RegisterGroupingConfig {
   pub enabled: bool,
   /// Number of bits for group selector (hand)
@@ -54,7 +54,7 @@ impl Default for RegisterGroupingConfig {
 }
 
 /// Configuration for Register Neighboring strategy
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub struct RegisterNeighboringConfig {
   pub enabled: bool,
   /// Extra bits consumed when neighbor-enabled
@@ -101,7 +101,7 @@ impl Default for EncodingCostModelConfig {
 }
 
 /// Top-level config holding all strategies
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct CiEncodingConfig {
   pub max_total_bits: u32,
   pub default_bits_per_register: u32,

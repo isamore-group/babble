@@ -400,7 +400,7 @@ impl Default for LiblearnCost {
     Self::Delay
   }
 }
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AUMergeMod {
   /// type of AU merge : "random", "kd", "boundary", "cartesian"
@@ -410,7 +410,7 @@ pub enum AUMergeMod {
   #[serde(rename = "cartesian")]
   Cartesian,
 }
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EnumMode {
   /// enumerate mode: "all", "pruning vanilla", "pruning gold", "cluster test"
@@ -420,7 +420,7 @@ pub enum EnumMode {
   ClusterTest,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 pub struct LiblearnConfig {
   /// type of cost : "delay", "Match", "size"
   pub cost: LiblearnCost,
@@ -488,7 +488,7 @@ impl LiblearnConfig {
 
 /// FindPackConfig用于在向量化和MetaAU的过程中使用，会对lib-learn做出一些放宽，
 /// 这些放宽会增加学到的库的数量，但是会对性能造成影响
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 pub struct FindPackConfig {
   // 是否要根据相似度剪枝
   pub prune_similar: bool,

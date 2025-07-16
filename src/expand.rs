@@ -32,7 +32,7 @@ use lexpr::print;
 use log::debug;
 use nom::lib;
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 pub struct MetaAUConfig {
   /// 是否使用Meta_AU, 不进行序列化，由PhaseConfig控制
   #[serde(skip)]
