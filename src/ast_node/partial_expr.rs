@@ -346,6 +346,28 @@ impl<Op: Clone + OperationInfo + Clone + Ord> From<Pattern<AstNode<Op>>>
   }
 }
 
+impl<Op: Clone + OperationInfo + Clone + Ord>
+  From<RecExpr<ENodeOrVar<AstNode<Op>>>> for PartialExpr<Op, Var>
+{
+  fn from(expr: RecExpr<ENodeOrVar<AstNode<Op>>>) -> Self {
+    fn build<Op: Clone + OperationInfo + Ord>(
+      pattern: &[ENodeOrVar<AstNode<Op>>],
+    ) -> PartialExpr<Op, Var> {
+      match &pattern[pattern.len() - 1] {
+        &ENodeOrVar::Var(var) => PartialExpr::Hole(var),
+        ENodeOrVar::ENode(node) => {
+          let node = node.clone().map(|id| {
+            let child_index = usize::from(id);
+            build(&pattern[..=child_index])
+          });
+          PartialExpr::Node(node)
+        }
+      }
+    }
+    build(expr.as_ref())
+  }
+}
+
 /// An error which can be returned when attempting to convert a [`PartialExpr`]
 /// to an [`Expr`], indicating that the partial expression is incomplete.
 #[derive(Debug, Clone)]

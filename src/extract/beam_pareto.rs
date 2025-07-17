@@ -174,18 +174,6 @@ impl CostSet {
         new_set.push(cand.clone());
       }
     }
-
-    new_set.sort_by(|a, b| {
-      a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area).then({
-        let a_libids = a.libs.keys().collect::<Vec<_>>();
-        let b_libids = b.libs.keys().collect::<Vec<_>>();
-        a_libids.cmp(&b_libids)
-      }))
-    });
-
-    let mut seen = HashSet::new();
-    new_set.retain(|item| seen.insert(item.clone()));
-
     self.set = new_set;
   }
 
@@ -197,20 +185,19 @@ impl CostSet {
     latency_cpu: f64,
     area: usize,
     id: Id,
-    nested_libs: &CostSet,
+    // 没有嵌套lib，不再使用
+    // nested_libs: &CostSet,
     lps: usize,
   ) -> CostSet {
     // To add a lib, we do a modified cross.
     let mut set = Vec::new();
 
-    for ls1 in &nested_libs.set {
-      for ls2 in &self.set {
-        match ls2.add_lib(lib, latency_acc, latency_cpu, area, id, ls1, lps) {
-          None => continue,
-          Some(ls) => {
-            if let Err(pos) = set.binary_search(&ls) {
-              set.insert(pos, ls);
-            }
+    for ls2 in &self.set {
+      match ls2.add_lib(lib, latency_acc, latency_cpu, area, id, lps) {
+        None => continue,
+        Some(ls) => {
+          if let Err(pos) = set.binary_search(&ls) {
+            set.insert(pos, ls);
           }
         }
       }
@@ -429,7 +416,8 @@ impl LibSel {
     latency_cpu: f64,
     area: usize,
     id: Id,
-    _nested_libs: &LibSel,
+    // // 没有嵌套lib，不再使用
+    // _nested_libs: &LibSel,
     lps: usize,
   ) -> Option<LibSel> {
     let mut res = self.clone();
@@ -472,7 +460,31 @@ impl LibSel {
         entry.insert(info);
         res.area += area;
         if res.libs.len() > lps {
-          return None;
+          // 同理，不能直接返回None，替换掉原来的gain最小的是最明智的选择
+          let mut gain_map = Vec::new();
+          // 计算每个lib的gain
+          for (lib_id, lib_info) in &res.libs {
+            let gain = (lib_info.latency_cpu - lib_info.latency_acc)
+              * OrderedFloat::from(lib_info.instances.len() as f64);
+            gain_map.push((*lib_id, gain, lib_info.area));
+          }
+          // 按照gain排序
+          gain_map.sort_by(|a, b| {
+            a.1
+              .partial_cmp(&b.1)
+              .unwrap_or(Ordering::Equal)
+              .then(a.2.cmp(&b.2))
+          });
+          // 取出最小的gain的lib
+          if let Some((min_lib_id, _, _)) = gain_map.first() {
+            // 删除这个lib
+            res.libs.remove(min_lib_id);
+            res.area -= gain_map[0].2;
+            // 加上对应的gain
+            res.cycles += gain_map[0].1;
+          } else {
+            return None; // 如果没有找到最小的gain，返回None
+          }
         }
       }
     }
@@ -777,6 +789,7 @@ where
     to.cs.unify();
     // println!("unified cost set: {:?}", to.cs);
     to.cs.prune(self.beam_size);
+    // println!("pruned cost set: {:?}", to.cs);
     // we also need to merge the type information
     (*to).ty = AstNode::merge_types(&to.ty, &from.ty);
     // 合并哈希
@@ -794,7 +807,6 @@ where
     //   println!("{}", to.cs.set[0].latency_gain);
     // }
     to.vec_len = from.vec_len.max(to.vec_len);
-
     DidMerge(&a0 != to, to != &from)
     // DidMerge(false, false)
   }
@@ -877,13 +889,8 @@ where
       op_latency = 0.0;
     }
 
-    // 获取enode的哈希
-    let mut hasher = SeaHasher::default();
-    enode.hash(&mut hasher);
-    let node_hash = hasher.finish();
-
     match Teachable::as_binding_expr(enode) {
-      Some(BindingExpr::Lib(id, f, b, lat_cpu, lat_acc, area)) => {
+      Some(BindingExpr::Lib(id, _, b, lat_cpu, lat_acc, area)) => {
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
@@ -895,7 +902,7 @@ where
           lat_cpu as f64 / vec_len as f64,
           area,
           *b,
-          x(f),
+          // x(f),
           self_ref.lps,
         );
         // println!("new cost set: {:#?}", e);
@@ -904,8 +911,8 @@ where
         }
         e.unify();
         e.prune(self_ref.inter_beam);
+
         // println!("make done");
-        // println!("cs after adding lib: {:#?}", e);
         ISAXCost::new(e, ty, bbs, hash, vec_len)
       }
       Some(_) | None => {
@@ -925,7 +932,9 @@ where
           if exe_count > 0 {
             e.update_cost(exe_count);
           }
+
           e.inc_cycles(op_latency * exe_count as f64);
+
           // println!("make done");
           e.split_cycles(vec_len);
 
@@ -1116,7 +1125,7 @@ where
     // let start = Instant::now();
     // 使用prune进行修剪
     let new_val = self.prune(val.clone());
-    println!("id: {}, cost: {:?}", id, cost);
+    // println!("id: {}, cost: {:?}", id, cost);
     self.all_exprs.push(new_val);
     self.all_costs.push(cost);
     self.memo.insert(

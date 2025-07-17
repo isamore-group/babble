@@ -11,6 +11,7 @@ use std::{
   time::{Duration, Instant},
 };
 
+use lexpr::print;
 use serde::Deserialize;
 
 use crate::{
@@ -954,7 +955,25 @@ where
 
     // egraph.dot().to_png("target/final_egraph.png").unwrap();
     // println!("roots: {:?}", roots);
+    // for ecls in egraph.classes() {
+    //   println!(
+    //     "eclass id: {}, size: {}, nodes: {:?}",
+    //     ecls.id,
+    //     ecls.nodes.len(),
+    //     ecls.nodes
+    //   );
+    //   for node in ecls.nodes.clone() {
+    //     if node.operation().is_lib() {
+    //       println!("lib node: {:?}", node);
+    //     }
+    //   }
+    // }
 
+    // for ecls in egraph.classes() {
+    //   if ecls.nodes.iter().any(|n| n.operation().is_lib()) {
+    //     println!("eclass id: {}, nodes: {:?}", ecls.id, ecls.nodes);
+    //   }
+    // }
     let isax_cost = egraph[egraph.find(root)].data.clone();
     // let args1 = egraph[egraph.find(root)].nodes[0].args();
     // let args2 = egraph[egraph.find(root)].nodes[1].args();
@@ -988,6 +1007,15 @@ where
     let mut learned_libs = Vec::new();
     let mut rewrites_map = HashMap::new();
     for i in 0..isax_cost.cs.set.len() {
+      println!(
+        "
+        • Processing lib selection {} of {}, latency: {}, area: {}, libsel: {:?}",
+        i + 1,
+        isax_cost.cs.set.len(),
+        isax_cost.cs.set[i].cycles,
+        isax_cost.cs.set[i].area,
+        isax_cost.cs.set[i].libs.keys(),
+      );
       let mut chosen_rewrites_per_libsel = vec![];
       let mut chosen_libs_per_libsel: HashMap<usize, Pattern<AstNode<Op>>> =
         HashMap::new();

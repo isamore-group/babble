@@ -18,7 +18,7 @@
 pub mod analysis;
 pub mod ast_node;
 pub mod au_filter;
-pub mod au_search;
+pub mod au_merge;
 pub mod bb_query;
 // #[cfg(test)]
 // mod beam_pareto_test;

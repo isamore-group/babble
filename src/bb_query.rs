@@ -50,7 +50,7 @@ impl BBQuery {
       let average_ticks = record[3].parse::<f64>().unwrap();
       let instr_count = record[4].parse::<usize>().unwrap();
       let operation_count = record[5].parse::<usize>().unwrap();
-      let cpi = record[6].parse::<f64>().unwrap();
+      let cpi = record[6].parse::<f64>().unwrap() / 1000.0;
       map.insert(
         name.clone(),
         BBEntry::new(

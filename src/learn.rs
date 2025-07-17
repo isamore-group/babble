@@ -55,7 +55,7 @@ use std::{
 use std::{hash::Hash, time::Instant, vec};
 use thiserror::Error;
 
-use crate::au_search::{boundary_aus, get_random_aus, kd_random_aus};
+use crate::au_merge::AUMerger;
 
 use rayon::prelude::*;
 
@@ -1956,33 +1956,24 @@ where
                 self.aus_by_state[input].iter().cloned().collect::<Vec<_>>();
               aus
             });
-            info!("get_range_aus");
             let au_range = new_aus.collect::<Vec<_>>();
-            let new_aus = match self.liblearn_config.au_merge_mod {
-              AUMergeMod::Random => {
-                get_random_aus(au_range, self.liblearn_config.sample_num)
-              }
-              AUMergeMod::Kd => {
-                kd_random_aus(au_range, self.liblearn_config.sample_num)
-              }
-              AUMergeMod::Boundary => boundary_aus(au_range),
-              AUMergeMod::Cartesian => {
-                // 笛卡尔积
-                // 首先取出所有的expr
-                let new_exprs = au_range.into_iter().map(|inputs| {
-                  let inputs = inputs.into_iter().map(|au| au.expr.clone());
-                  inputs.collect::<Vec<_>>()
-                });
-                let new_expr = new_exprs.into_iter().multi_cartesian_product();
-                new_expr.collect::<Vec<_>>()
-              }
-            };
-            info!("filtering according to arity");
-            let new_aus = new_aus
-              .into_iter() //kd_random_aus(au_range, 1000).into_iter()
-              .map(|inputs| {
-                PartialExpr::from(AstNode::new(new_op.clone(), inputs))
-              })
+            let scheduler = Scheduler::new(
+              self.clock_period,
+              self.area_estimator.clone(),
+              self.delay_estimator.clone(),
+              self.bb_query.clone(),
+            );
+            let au_merger = AUMerger::new(
+              op1.clone(),
+              scheduler,
+              self.liblearn_config.au_merge_mod,
+              self.liblearn_config.cost,
+              self.liblearn_config.sample_num,
+              10,
+            );
+            let new_aus = au_merger
+              .merge(au_range)
+              .into_iter()
               .filter(|au| {
                 smax_arity.map_or(true, |max_arity| {
                   au.unique_holes().len() <= max_arity
@@ -2126,30 +2117,23 @@ where
             });
             info!("get_range_aus");
             let au_range = new_aus.collect::<Vec<_>>();
-            let new_aus = match self.liblearn_config.au_merge_mod {
-              AUMergeMod::Random => {
-                get_random_aus(au_range, self.liblearn_config.sample_num)
-              }
-              AUMergeMod::Kd => {
-                kd_random_aus(au_range, self.liblearn_config.sample_num)
-              }
-              AUMergeMod::Boundary => boundary_aus(au_range),
-              AUMergeMod::Cartesian => {
-                // 笛卡尔积
-                // 首先取出所有的expr
-                let new_exprs = au_range.into_iter().map(|inputs| {
-                  let inputs = inputs.into_iter().map(|au| au.expr.clone());
-                  inputs.collect::<Vec<_>>()
-                });
-                let new_expr = new_exprs.into_iter().multi_cartesian_product();
-                new_expr.collect::<Vec<_>>()
-              }
-            };
-            let new_aus = new_aus
-              .into_iter() //kd_random_aus(au_range, 1000).into_iter()
-              .map(|inputs| {
-                PartialExpr::from(AstNode::new(op1.clone(), inputs))
-              })
+            let scheduler = Scheduler::new(
+              self.clock_period,
+              self.area_estimator.clone(),
+              self.delay_estimator.clone(),
+              self.bb_query.clone(),
+            );
+            let au_merger = AUMerger::new(
+              op1.clone(),
+              scheduler,
+              self.liblearn_config.au_merge_mod,
+              self.liblearn_config.cost,
+              self.liblearn_config.sample_num,
+              10,
+            );
+            let new_aus = au_merger
+              .merge(au_range)
+              .into_iter()
               .filter(|au| {
                 smax_arity.map_or(true, |max_arity| {
                   au.unique_holes().len() <= max_arity
