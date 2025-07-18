@@ -335,6 +335,23 @@ where
     if self.merge_strategy == AUMergeMod::Boundary {
       return boundary;
     }
+    // 如果merge_strategy是Cartesian，直接计算笛卡尔积
+    if self.merge_strategy == AUMergeMod::Cartesian {
+      // 计算笛卡尔积
+      let cartesian_product: Vec<Vec<AU<Op, (Id, Id), Type>>> = aus
+        .iter()
+        .multi_cartesian_product()
+        .map(|x| x.into_iter().cloned().collect())
+        .collect();
+      // 将cartesian_product中的每个Vec转换为PartialExpr<Op, (Id, Id)>的Vec
+      return cartesian_product
+        .iter()
+        .map(|x| {
+          let inputs: Vec<_> = x.iter().map(|y| y.expr().clone()).collect();
+          PartialExpr::from(AstNode::new(self.op.clone(), inputs))
+        })
+        .collect();
+    }
 
     // 剩余两种策略均需要判断做不做笛卡尔积
     let cartesian_product_size: usize = aus
