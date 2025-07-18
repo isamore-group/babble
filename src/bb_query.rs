@@ -9,6 +9,7 @@ pub struct BBEntry {
   pub instr_count: usize,
   pub operation_count: usize,
   pub cpi: f64,
+  pub cpo: f64,
 }
 
 impl BBEntry {
@@ -20,6 +21,7 @@ impl BBEntry {
     instr_count: usize,
     operation_count: usize,
     cpi: f64,
+    cpo: f64,
   ) -> Self {
     Self {
       name,
@@ -29,6 +31,7 @@ impl BBEntry {
       instr_count,
       operation_count,
       cpi,
+      cpo,
     }
   }
 }
@@ -51,6 +54,10 @@ impl BBQuery {
       let instr_count = record[4].parse::<usize>().unwrap();
       let operation_count = record[5].parse::<usize>().unwrap();
       let cpi = record[6].parse::<f64>().unwrap() / 1000.0;
+      let cpo = total_ticks as f64
+        / execution_count as f64
+        / operation_count as f64
+        / 1000.0;
       map.insert(
         name.clone(),
         BBEntry::new(
@@ -61,6 +68,7 @@ impl BBQuery {
           instr_count,
           operation_count,
           cpi,
+          cpo,
         ),
       );
     }

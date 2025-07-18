@@ -12,7 +12,7 @@ use crate::{
 use bitvec::{prelude::*, vec};
 use egg::{
   Analysis, AstSize, CostFunction, DidMerge, EGraph, Extractor, Id, Language,
-  RecExpr, Runner,
+  LpCostFunction, RecExpr, Runner,
 };
 use lexpr::print;
 use log::debug;
@@ -881,7 +881,7 @@ where
     if bbs.len() > 0 {
       if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
         exe_count = bb_entry.execution_count;
-        op_latency = bb_entry.cpi;
+        op_latency = bb_entry.cpo;
       }
     }
     op_latency *= vec_len as f64;
@@ -1530,6 +1530,238 @@ where
 
   fn cost_rec(&mut self, expr: &RecExpr<AstNode<Op>>) -> Self::Cost {
     let (cycles, _) = rec_cost(expr, &self.bb_query);
+    println!("cycles: {:?}", cycles);
     OrderedFloat::from(cycles)
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct ISAXLpCF<LA, LD> {
+  bb_query: BBQuery,
+  _phantom: PhantomData<(LA, LD)>,
+}
+
+impl<LA, LD> ISAXLpCF<LA, LD> {
+  pub fn new(bb_query: BBQuery) -> Self {
+    ISAXLpCF {
+      bb_query,
+      _phantom: PhantomData,
+    }
+  }
+}
+
+pub fn eliminate_lambda<Op, N>(
+  egraph: &EGraph<AstNode<Op>, N>,
+) -> EGraph<AstNode<Op>, N>
+where
+  N: Analysis<AstNode<Op>> + Clone,
+  N::Data: Clone,
+  Op: OperationInfo + Ord + Debug + Clone + Hash + Teachable,
+{
+  let mut egraph_mut = egraph.clone();
+  let mut visited = HashSet::new();
+  for ecls in egraph.classes() {
+    if ecls
+      .nodes
+      .iter()
+      .any(|n| matches!(n.as_binding_expr(), Some(BindingExpr::Lambda(_))))
+    {
+      if visited.contains(&ecls.id) {
+        continue;
+      }
+      // Recursively remove the lambda node and its children
+      let mut stack = vec![ecls.id];
+      // Remove the lambda node and its children
+      while let Some(id) = stack.pop() {
+        if visited.contains(&id) {
+          continue;
+        }
+        visited.insert(id);
+        let cur_ecls = &mut egraph_mut[id];
+        for node in cur_ecls.nodes.iter_mut() {
+          *node.operation_mut() =
+            Op::make_rule_var(format!("Lambda{}", cur_ecls.id));
+          for child in node.children() {
+            stack.push(*child);
+          }
+        }
+      }
+    }
+  }
+  // egraph_mut.rebuild();
+  egraph_mut
+}
+
+impl<LA, LD, Op, N> LpCostFunction<AstNode<Op>, N> for ISAXLpCF<LA, LD>
+where
+  AstNode<Op>: Schedulable<LA, LD>,
+  N: Analysis<AstNode<Op>>,
+  Op: Clone
+    + std::fmt::Debug
+    + std::hash::Hash
+    + Ord
+    + Teachable
+    + std::fmt::Display
+    + OperationInfo,
+{
+  fn node_cost(
+    &mut self,
+    _egraph: &EGraph<AstNode<Op>, N>,
+    _eclass: Id,
+    enode: &AstNode<Op>,
+  ) -> f64 {
+    let exe_count = enode.operation().op_execution_count(&self.bb_query);
+    if let Some(BindingExpr::Lib(_, _, _, _, lat_acc, _)) =
+      enode.as_binding_expr()
+    {
+      (lat_acc * exe_count) as f64
+    } else if enode.operation().is_op() {
+      enode.op_latency_cpu(&self.bb_query) * exe_count as f64
+    } else {
+      0.0
+    }
+  }
+}
+
+#[derive(Debug)]
+pub struct ISAXExtractor<
+  'a,
+  Op: Clone
+    + std::fmt::Debug
+    + std::hash::Hash
+    + Ord
+    + Teachable
+    + std::fmt::Display
+    + OperationInfo,
+  N: Analysis<AstNode<Op>>,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  LA,
+  LD,
+> where
+  AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
+{
+  best_nodes: FxHashMap<Id, (usize, OrderedFloat<f64>)>,
+  /// The egraph to extract from.
+  egraph: &'a EGraph<AstNode<Op>, N>,
+  bb_query: BBQuery,
+  _phantom: PhantomData<(T, LA, LD)>,
+}
+
+impl<'a, Op, N, T, LA, LD> ISAXExtractor<'a, Op, N, T, LA, LD>
+where
+  Op: Clone
+    + std::fmt::Debug
+    + std::hash::Hash
+    + Ord
+    + Teachable
+    + std::fmt::Display
+    + OperationInfo,
+  N: Analysis<AstNode<Op>> + Clone,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T> + Schedulable<LA, LD>,
+{
+  pub fn new(egraph: &'a EGraph<AstNode<Op>, N>, bb_query: BBQuery) -> Self {
+    ISAXExtractor {
+      best_nodes: FxHashMap::default(),
+      egraph,
+      bb_query,
+      _phantom: PhantomData,
+    }
+  }
+
+  fn expr_from_id(&self, id: Id) -> RecExpr<AstNode<Op>> {
+    let mut expr: Vec<AstNode<Op>> = Vec::new();
+    let mut visited = HashMap::new();
+    self.best_expr(id, &mut expr, &mut visited);
+    expr.into()
+  }
+
+  fn best_expr(
+    &self,
+    id: Id,
+    expr: &mut Vec<AstNode<Op>>,
+    visited: &mut HashMap<Id, usize>,
+  ) {
+    if visited.contains_key(&id) {
+      return;
+    }
+
+    let (index, _) = self.best_nodes.get(&id).unwrap();
+    let mut node = self.egraph[id].nodes[*index].clone();
+    let mut args_idx = vec![];
+    for child in node.children() {
+      self.best_expr(*child, expr, visited);
+      args_idx.push(visited.get(&child).unwrap().clone());
+    }
+
+    let args_len = node.children().len();
+    let args_mut = node.args_mut();
+    for i in 0..args_len {
+      args_mut[i] = Id::from(args_idx[i]);
+    }
+
+    visited.insert(id, expr.len());
+    expr.push(node);
+  }
+
+  pub fn best(&mut self, id: Id) -> RecExpr<AstNode<Op>> {
+    // println!("extracting eclass {id}");
+    self.extract(id);
+    // println!("id: {:#?}", id);
+    // println!("{:#?}", self.egraph[id]);
+    // Get the best expression from the memo:
+    let expr = self.expr_from_id(id);
+    // println!("best expr: {expr:?}");
+    expr
+  }
+
+  fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> OrderedFloat<f64> {
+    let (cycles, _) = rec_cost(expr, &self.bb_query);
+    // println!("cycles: {}", cycles);
+    OrderedFloat::from(cycles)
+  }
+
+  pub fn extract(&mut self, id: Id) {
+    if let None = self.best_nodes.get(&id) {
+      // println!("extracting eclass {id}");
+      self
+        .best_nodes
+        .insert(id, (0, OrderedFloat::from(f64::MAX)));
+      let ecls = &self.egraph[id];
+      for (idx, node) in ecls.nodes.iter().enumerate() {
+        let best_node = self.best_nodes.get_mut(&id).unwrap();
+        let cur_best = *best_node;
+        *best_node = (idx, OrderedFloat::from(f64::MAX));
+
+        for child in node.children() {
+          // println!("extracting child {child:?}");
+          self.extract(*child);
+        }
+
+        if ecls.nodes.len() > 1 {
+          if idx == 0 {
+            let expr = self.expr_from_id(id);
+            let cost = self.cost(&expr);
+            // println!("extracting eclass {id}, cost: {cost}");
+            let best_node = self.best_nodes.get_mut(&id).unwrap();
+            *best_node = (idx, cost);
+          } else {
+            // Compare the current node with the previous best
+            let expr = self.expr_from_id(id);
+            let cost = self.cost(&expr);
+            // println!("extracting eclass {id}, cost: {cost}");
+            // println!("current best: {}", cur_best.1);
+            // println!("cost of node {idx}: {cost}");
+            let best_node = self.best_nodes.get_mut(&id).unwrap();
+            if cost < cur_best.1 {
+              *best_node = (idx, cost);
+            } else {
+              // println!("not better than previous best: {cur_best:?}");
+              *best_node = cur_best;
+            }
+          }
+        }
+      }
+    }
   }
 }
