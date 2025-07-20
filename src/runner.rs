@@ -6,35 +6,43 @@
 use std::{
   collections::{HashMap, HashSet},
   fmt::{Debug, Display},
-  hash::Hash,
+  hash::{DefaultHasher, Hash, Hasher},
   str::FromStr,
   time::{Duration, Instant},
 };
 
+use bitvec::{bitvec, order::Lsb0};
 use lexpr::print;
 use serde::Deserialize;
 
 use crate::{
   Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, LibId,
   PartialExpr, Pretty, Printable, Teachable,
+  analysis::SimpleAnalysis,
   au_filter::{CiEncodingConfig, TypeAnalysis},
   bb_query::{self, BBInfo, BBQuery},
   expand::{ExpandMessage, MetaAUConfig, expand},
   extract::beam_pareto::{
-    ClassMatch, ISAXAnalysis, ISAXCost, LibExtractor, TypeInfo, TypeSet,
+    ClassMatch, ISAXAnalysis, ISAXCost, ISAXLpCF, LevelConflictState,
+    LibExtractor, StructuralHash, TypeInfo, TypeSet, compute_full_hash,
+    compute_hash_level, eliminate_lambda,
   },
   perf_infer,
   rewrites::{self, TypeMatch},
-  schedule::Schedulable,
+  schedule::{Schedulable, rec_cost},
   vectorize::{VectorCF, VectorConfig, vectorize},
 };
 use egg::{
-  Analysis, EGraph, Extractor, Id, Pattern, RecExpr, Rewrite,
-  Runner as EggRunner, Var,
+  Analysis, EGraph, Extractor, Id, Language, LpExtractor, Pattern, RecExpr,
+  Rewrite, Runner as EggRunner, SimpleScheduler, Var,
 };
 use log::{debug, info};
 
 pub trait OperationInfo {
+  // 拿到全部信息
+  fn get_full_info(&self) -> String;
+  // 是否满足交换律
+  fn is_commutative(&self) -> bool;
   fn is_dowhile(&self) -> bool;
   fn is_liblearn_banned_op(&self) -> bool;
   fn is_lib(&self) -> bool;
@@ -171,7 +179,7 @@ where
 
 /// A Egraph with (root, latency, area) information
 #[derive(Clone, Debug)]
-pub struct AnnotatedEGraph<Op, T>
+pub struct ExtractResult<Op, T>
 where
   Op: Display
     + Hash
@@ -187,15 +195,14 @@ where
   T: Debug + Ord + Clone + Default + Hash + 'static + Send + Sync,
   AstNode<Op>: TypeInfo<T>,
 {
-  pub egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
-  pub rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  pub expr: RecExpr<AstNode<Op>>,
   pub libs: HashMap<usize, Pattern<AstNode<Op>>>,
-  pub root: Id,
-  pub cycles: usize,
+  pub cycles: f64,
   pub area: usize,
+  _phantom: std::marker::PhantomData<T>,
 }
 
-impl<Op, T> PartialEq for AnnotatedEGraph<Op, T>
+impl<Op, T> PartialEq for ExtractResult<Op, T>
 where
   Op: Display
     + Hash
@@ -212,19 +219,13 @@ where
   AstNode<Op>: TypeInfo<T>,
 {
   fn eq(&self, other: &Self) -> bool {
-    let self_rewrites_name_set: HashSet<_> =
-      self.rewrites.iter().map(|r| r.name.clone()).collect();
-    let other_rewrites_name_set: HashSet<_> =
-      other.rewrites.iter().map(|r| r.name.clone()).collect();
-    self_rewrites_name_set == other_rewrites_name_set
-      && self.root == other.root
+    self.expr == other.expr
       && self.cycles == other.cycles
       && self.area == other.area
-      && self.egraph.classes().len() == other.egraph.classes().len()
   }
 }
 
-impl<Op, T> AnnotatedEGraph<Op, T>
+impl<Op, T> ExtractResult<Op, T>
 where
   Op: Display
     + Hash
@@ -241,20 +242,17 @@ where
   AstNode<Op>: TypeInfo<T>,
 {
   pub fn new(
-    egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
-    rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+    expr: RecExpr<AstNode<Op>>,
     libs: HashMap<usize, Pattern<AstNode<Op>>>,
-    root: Id,
-    cycles: usize,
+    cycles: f64,
     area: usize,
   ) -> Self {
     Self {
-      egraph,
-      rewrites,
+      expr,
       libs,
-      root,
       cycles,
       area,
+      _phantom: std::marker::PhantomData,
     }
   }
 }
@@ -283,7 +281,7 @@ where
   pub rewrites_with_conditon:
     HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
   /// The final result of pareto: a series of AnnotatedEGraph
-  pub annotated_egraphs: Vec<AnnotatedEGraph<Op, T>>,
+  pub extract_results: Vec<ExtractResult<Op, T>>,
   /// when vectorizing, vectorized_expr is needed
   pub vectorized_egraph_with_root:
     Option<(EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id)>,
@@ -527,6 +525,8 @@ where
 {
   /// The domain-specific rewrites to apply
   dsrs: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  /// dsr_rewrite_iters
+  dsr_rewrite_iters: usize,
   /// BB query
   bb_query: BBQuery,
   /// lib rewrites
@@ -583,6 +583,7 @@ where
   /// configuration
   pub fn new<I>(
     dsrs: I,
+    dsr_rewrite_iters: usize,
     bb_query: BBQuery,
     lib_rewrites_with_condition: HashMap<
       usize,
@@ -599,6 +600,7 @@ where
     let dsrs = dsrs.into_iter().collect();
     Self {
       dsrs,
+      dsr_rewrite_iters,
       bb_query,
       lib_rewrites_with_condition,
       past_exprs,
@@ -629,15 +631,15 @@ where
   ) -> ParetoResult<Op, T> {
     // 首先将roots变成root，想EGraph中加入list节点实现
     let mut egraph = egraph;
-
     assert!(!roots.is_empty(), "Roots cannot be empty");
     let mut root = if roots.len() == 1 {
       roots[0]
     } else {
-      let bbs = roots
-        .iter()
-        .map(|id| egraph[*id].data.bb.join(","))
-        .collect::<Vec<_>>();
+      let mut bbs = HashSet::new();
+      for root in roots.iter() {
+        bbs.extend(egraph[*root].data.bb.clone());
+      }
+      let bbs = bbs.into_iter().collect::<Vec<_>>();
       let mut list_op = AstNode::new(Op::list(), roots.iter().copied());
       list_op.operation_mut().set_bbs_info(bbs);
       egraph.add(list_op)
@@ -669,10 +671,22 @@ where
     ))
     .with_egraph(egraph)
     .with_time_limit(timeout)
-    .with_iter_limit(1)
+    .with_iter_limit(self.dsr_rewrite_iters)
     .run(&self.dsrs);
 
     let mut origin_aeg = runner.egraph;
+
+    let cloned_egraph = origin_aeg.clone();
+    for class in origin_aeg.classes_mut() {
+      for node in class.nodes.iter_mut() {
+        // 如果node的ty是空的，就将eclass的类型信息传给它
+        if node.operation().get_result_type().is_empty() {
+          let tys = cloned_egraph[class.id].data.get_type();
+          node.operation_mut().set_result_type(tys.clone());
+        }
+      }
+    }
+
     perf_infer::perf_infer(&mut origin_aeg, &[root]);
 
     println!(
@@ -778,6 +792,7 @@ where
     let expand_message = if self.config.op_pack_config.enable_meta_au {
       expand(
         aeg.clone(),
+        root,
         self.config.clone(),
         self.bb_query.clone(),
         max_lib_id,
@@ -797,7 +812,7 @@ where
           .with_area_estimator(self.config.area_estimator.clone())
           .with_delay_estimator(self.config.delay_estimator.clone())
           .with_bb_query(self.bb_query.clone())
-          .build(&aeg);
+          .build(&aeg, &root);
 
         println!(
           "       - Found {} patterns in {}ms",
@@ -853,14 +868,9 @@ where
           ),
         );
       }
-      // for (i, lib) in libs.clone().iter().enumerate() {
-      //   // println!("lib: {}", Pattern::from(lib.1.0.clone()));
-      //   let rewrite = lib_rewrites[i].clone();
-      //   // println!("rewrite: {:?}", rewrite);
-      //   let resultes = rewrite.search(&aeg);
-      //   println!("there are {} matches", resultes.len());
-      //   // let pt = lib.1.1.clone();
-      //   // println!("pt: {:?}", pt.ast);
+
+      // for i in 0..lib_rewrites.len() {
+      //   println!("lib{}: {}", i, Pattern::from(libs[&i].1.clone()));
       // }
 
       ExpandMessage {
@@ -929,6 +939,9 @@ where
       origin_aeg.classes().len()
     );
     // println!("rewrites: {:#?}", new_all_rewrites);
+    // for eclass in origin_aeg.classes() {
+    //   println!("eclass: {:?}", eclass);
+    // }
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
@@ -936,12 +949,18 @@ where
       self.bb_query.clone(),
     ))
     .with_egraph(origin_aeg.clone())
-    .with_iter_limit(self.config.lib_iter_limit)
+    .with_iter_limit(1)
     .with_time_limit(timeout)
     .with_node_limit(1_000_000)
     .run(&new_all_rewrites);
 
     let mut egraph = runner.egraph;
+    // for rewrite in new_all_rewrites {
+    //   println!("Running rewrite: {}", rewrite.name);
+    //   let matches = rewrite.search(&origin_aeg);
+    //   println!("There are {} matches for {:?}", matches.len(), rewrite);
+    //   println!("matches: {:#?}", matches);
+    // }
     perf_infer::perf_infer(&mut egraph, &[root]);
     println!("         • Rebuilding egraph after lib rewrites...");
     Self::recalculate_all_data(&mut egraph, root);
@@ -969,11 +988,6 @@ where
     //   }
     // }
 
-    // for ecls in egraph.classes() {
-    //   if ecls.nodes.iter().any(|n| n.operation().is_lib()) {
-    //     println!("eclass id: {}, nodes: {:?}", ecls.id, ecls.nodes);
-    //   }
-    // }
     let isax_cost = egraph[egraph.find(root)].data.clone();
     // let args1 = egraph[egraph.find(root)].nodes[0].args();
     // let args2 = egraph[egraph.find(root)].nodes[1].args();
@@ -984,7 +998,9 @@ where
     // for arg in args2 {
     //   println!("arg2: {:#?}", egraph[*arg].data.cs);
     // }
-    // println!("cs: {:?}", isax_cost.cs);
+
+    // 打印root的id和cs
+
     // println!("root_vec: {:?}", root_vec);
 
     info!("Finished in {}ms", lib_rewrite_time.elapsed().as_millis());
@@ -1002,7 +1018,7 @@ where
     // panic!("Debugging egraph");
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
-    let mut annotated_egraphs = Vec::new();
+    let mut extract_results = Vec::new();
     let mut chosen_rewrites = Vec::new();
     let mut learned_libs = Vec::new();
     let mut rewrites_map = HashMap::new();
@@ -1093,14 +1109,39 @@ where
       }
       chosen_rewrites.extend(chosen_rewrites_per_libsel.clone());
       // 更新annotated_egraphs
-      annotated_egraphs.push(AnnotatedEGraph::new(
-        origin_aeg.clone(),
-        chosen_rewrites_per_libsel,
-        chosen_libs_per_libsel,
-        root,
-        isax_cost.cs.set[i].cycles.into_inner() as usize,
-        isax_cost.cs.set[i].area,
-      ));
+      // annotated_egraphs.push(AnnotatedEGraph::new(
+      //   origin_aeg.clone(),
+      //   chosen_rewrites_per_libsel,
+      //   chosen_libs_per_libsel,
+      //   root,
+      //   isax_cost.cs.set[i].cycles.into_inner() as usize,
+      //   isax_cost.cs.set[i].area,
+      // ));
+      let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
+        self.config.final_beams,
+        self.config.inter_beams,
+        self.config.lps,
+        self.bb_query.clone(),
+      ))
+      .with_egraph(origin_aeg.clone())
+      .with_iter_limit(1)
+      .with_time_limit(timeout)
+      .with_node_limit(1_000_000)
+      .run(&chosen_rewrites_per_libsel);
+      let mut aeg = runner.egraph;
+      perf_infer::perf_infer(&mut aeg, &vec![root]);
+
+      // let mut extractor = LibExtractor::new(&aeg, self.bb_query.clone());
+      // let best = extractor.best(annotated_egraph.root);
+
+      let lp_cf = ISAXLpCF::new(self.bb_query.clone());
+      aeg = eliminate_lambda(&aeg);
+      let mut lp_extractor = LpExtractor::new(&aeg, lp_cf);
+      let best = lp_extractor.solve(root);
+      let (cycles, area) = rec_cost(&best, &self.bb_query);
+      // 组装成一个ExtractResult
+      let es = ExtractResult::new(best, chosen_libs_per_libsel, cycles, area);
+      extract_results.push(es);
     }
 
     // deduplicate chosen_rewrites
@@ -1119,7 +1160,7 @@ where
     ParetoResult {
       num_libs: chosen_rewrites.len(),
       rewrites_with_conditon: rewrites_map,
-      annotated_egraphs: annotated_egraphs,
+      extract_results,
       vectorized_egraph_with_root: vectorized_egraph_with_root,
       run_time: start_time.elapsed(),
       learned_lib: learned_libs,

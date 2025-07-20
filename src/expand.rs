@@ -19,7 +19,7 @@ use crate::{
   bb_query::{self, BBInfo, BBQuery},
   extract::beam_pareto::{ISAXAnalysis, TypeInfo},
   learn::{self, AUWithType, LearnedLibraryBuilder},
-  perf_infer::expr_perf_infer,
+  perf_infer::{self, expr_perf_infer},
   rewrites::TypeMatch,
   runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo},
   schedule::{Schedulable, Scheduler},
@@ -382,6 +382,7 @@ where
 // 在EGraph中加入新的节点
 pub fn expand<Op, T, LA, LD>(
   egraph: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  root: Id,
   config: ParetoConfig<LA, LD>,
   bb_query: bb_query::BBQuery,
   max_lib_id: usize,
@@ -448,7 +449,7 @@ where
     .with_liblearn_config(expansion_lib_config)
     .with_clock_period(config.clock_period)
     .with_bb_query(bb_query.clone())
-    .build(&egraph);
+    .build(&egraph, &root);
   println!("        • expand::learned {} libs", learned_lib.size());
 
   // for lib in learned_lib.libs() {
@@ -474,6 +475,7 @@ where
 
   // // 将au生成的Recexpr加入到meta_egraph中
   let learned_messages: Vec<_> = learned_lib.messages();
+  let mut roots = Vec::new();
   for i in (0..learned_aus.len()).rev() {
     // 这里从大到小检查，能将一些meta_egraph中已经存在的AU去掉
     let msg = learned_messages[i].clone();
@@ -488,10 +490,26 @@ where
     // 目前只是转化成了一个RuleVar，   // 但是不同au中的RuleVar理应是不一样的
     let expr = au2expr(au, i);
     let recexpr = RecExpr::from(expr);
-    meta_egraph.add_expr(&recexpr);
-
+    let root = meta_egraph.add_expr(&recexpr);
+    roots.push(root);
     meta_egraph.rebuild();
   }
+
+  // 加入list节点作为根节点
+  let new_root = if roots.len() == 1 {
+    roots[0]
+  } else {
+    let mut bbs = HashSet::new();
+    for root in roots.iter() {
+      bbs.extend(egraph[*root].data.bb.clone());
+    }
+    let bbs = bbs.into_iter().collect::<Vec<_>>();
+    let mut list_op = AstNode::new(Op::list(), roots.iter().copied());
+    list_op.operation_mut().set_bbs_info(bbs);
+    meta_egraph.add(list_op)
+  };
+
+  perf_infer::perf_infer(&mut meta_egraph, &vec![new_root]);
 
   // meta_egraph.dot().to_png("target/expand.png").unwrap();
   println!(
@@ -527,7 +545,7 @@ where
     .with_area_estimator(config.area_estimator.clone())
     .with_delay_estimator(config.delay_estimator.clone())
     .with_bb_query(bb_query.clone())
-    .build(&meta_egraph);
+    .build(&meta_egraph, &new_root);
 
   let meta_messages: Vec<_> = learn_meta_lib.messages();
 

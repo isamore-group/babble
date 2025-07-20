@@ -107,6 +107,29 @@ where
     .map(|v| v.into_iter().flatten().collect())
 }
 
+/// Parse the lhs and rhs of a rewrite rule from a line in the rewrites file.
+pub fn parse_lhs_condition<L, T>(
+  line: &str,
+) -> anyhow::Result<(Pattern<L>, TypeMatch<T>)>
+where
+  L: Language + FromOp + Sync + Send + 'static + TypeInfo<T>,
+  L::Error: Send + Sync + Error,
+  T: FromStr + Send + Sync + 'static + Debug + Clone,
+  <T as FromStr>::Err: std::error::Error + Send + Sync + 'static,
+{
+  let (_, (lhs, _, _)) = parse_rewrite_line::<T>(line)?;
+  let lhs_pat = lhs
+    .parse::<Pattern<L>>()
+    .map_err(|e| anyhow!("Failed to parse LHS pattern: {}", e))?;
+  let condition =
+    if let Some(cond_str) = line.split_once("where").map(|(_, c)| c.trim()) {
+      parse_condition::<T>(cond_str, &lhs_pat)?
+    } else {
+      TypeMatch::default()
+    };
+  Ok((lhs_pat, condition))
+}
+
 // 辅助函数 1: 解析重写行
 fn parse_rewrite_line<T>(
   line: &str,

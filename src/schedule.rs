@@ -8,6 +8,7 @@ use crate::{
   runner::OperationInfo,
 };
 use egg::{Language, RecExpr};
+use lexpr::print;
 
 /// A trait for languages that support HLS scheduling.
 pub trait Schedulable<LA, LD>

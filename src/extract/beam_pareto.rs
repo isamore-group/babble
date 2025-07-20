@@ -10,6 +10,7 @@ use crate::{
   teachable::{BindingExpr, Teachable},
 };
 use bitvec::{prelude::*, vec};
+use core::panic;
 use egg::{
   Analysis, AstSize, CostFunction, DidMerge, EGraph, Extractor, Id, Language,
   LpCostFunction, RecExpr, Runner,
@@ -17,8 +18,8 @@ use egg::{
 use lexpr::print;
 use log::debug;
 use ordered_float::OrderedFloat;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use rustc_hash::FxHashMap;
-use seahash::SeaHasher;
 use std::{
   cmp::Ordering,
   collections::{HashMap, HashSet, hash_map::Entry},
@@ -75,6 +76,19 @@ pub struct CostSet {
   pub set: Vec<LibSel>,
 }
 
+impl PartialOrd for CostSet {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    // Compare based on the first element's cycles
+    self.set.partial_cmp(&other.set)
+  }
+}
+impl Ord for CostSet {
+  fn cmp(&self, other: &Self) -> Ordering {
+    // Compare based on the first element's cycles
+    self.set.cmp(&other.set)
+  }
+}
+
 impl CostSet {
   /// Creates a `CostSet` corresponding to introducing a nullary operation.
   #[must_use]
@@ -112,7 +126,7 @@ impl CostSet {
             // println!("ls2: {:?}", ls2);
             // println!("ls: {:?}", ls);
             if let Err(pos) = set.binary_search(&ls) {
-              set.insert(pos, ls);
+              set.insert(pos, ls.clone());
             }
           }
         }
@@ -222,21 +236,21 @@ impl CostSet {
     }
   }
 
-  pub fn update_cost(&mut self, exe_count: usize) {
-    for ls in &mut self.set {
-      for (_, info) in &mut ls.libs {
-        let latency_acc = info.latency_acc;
-        let set = &mut info.instances;
-        for (_id, count) in set.iter_mut() {
-          if exe_count > *count {
-            ls.cycles +=
-              latency_acc * OrderedFloat::from((exe_count - *count) as f64);
-            *count = exe_count;
-          }
-        }
-      }
-    }
-  }
+  // pub fn update_cost(&mut self, exe_count: usize) {
+  //   for ls in &mut self.set {
+  //     for (_, info) in &mut ls.libs {
+  //       let latency_acc = info.latency_acc;
+  //       let set = &mut info.instances;
+  //       for (_id, count) in set.iter_mut() {
+  //         if *count == 0 {
+  //           ls.cycles +=
+  //             latency_acc * OrderedFloat::from((exe_count - *count) as f64);
+  //           *count = exe_count;
+  //         }
+  //       }
+  //     }
+  //   }
+  // }
 
   pub fn unify2(&mut self) {
     // println!("unify");
@@ -597,7 +611,7 @@ impl StructuralHash {
   pub fn merge(&mut self, other: &Self) {
     // 首先合并cls_hash
     // 为了和enode进行区分，会使用加盐值和rotate的方法打散哈希
-    let mut state = seahash::SeaHasher::new();
+    let mut state = DefaultHasher::new();
     let cls_hashes = [self.cls_hash, other.cls_hash];
     for &h in &cls_hashes {
       // 加salt混合 or shift
@@ -615,7 +629,8 @@ impl StructuralHash {
       } else if self.subtree_levels[i] ^ other.subtree_levels[i] {
         self.level_conflict.update(i, false);
         let prob = self.level_conflict.get(i);
-        if rand::random::<f32>() > prob {
+        let mut rng = StdRng::seed_from_u64(1314114514);
+        if rng.r#gen::<f32>() > prob {
           merged_subtree_levels.set(i, true);
         }
       }
@@ -658,7 +673,6 @@ where
   pub cs: CostSet,
   pub ty: T,
   pub bb: Vec<String>,
-  pub hash: StructuralHash,
   pub vec_len: usize,
 }
 
@@ -685,18 +699,11 @@ where
 
 impl<T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
   #[must_use]
-  pub fn new(
-    cs: CostSet,
-    ty: T,
-    bb: Vec<String>,
-    hash: StructuralHash,
-    vec_len: usize,
-  ) -> Self {
+  pub fn new(cs: CostSet, ty: T, bb: Vec<String>, vec_len: usize) -> Self {
     ISAXCost {
       cs,
       ty,
       bb,
-      hash,
       vec_len,
     }
   }
@@ -707,21 +714,20 @@ impl<T: Debug + Default + Clone + PartialEq + Ord + Hash> ISAXCost<T> {
       cs: CostSet::new(),
       ty: T::default(),
       bb: Vec::new(),
-      hash: StructuralHash::default(),
       vec_len: 0,
     }
   }
 }
 
 // 计算层级哈希映射
-fn compute_hash_level<Op: Hash>(
+pub fn compute_hash_level<Op: Hash>(
   enode: &AstNode<Op>,
   child_hashes: &[u64],
 ) -> usize
 where
   Op: Teachable,
 {
-  let mut hasher = seahash::SeaHasher::new();
+  let mut hasher = DefaultHasher::new();
   let op = enode.operation().to_shielding_op();
   op.hash(&mut hasher);
   for &h in child_hashes {
@@ -730,11 +736,14 @@ where
   (hasher.finish() % 64) as usize // 取模映射到固定范围
 }
 /// 计算不考虑层级的精确哈希
-fn compute_full_hash<Op: Hash>(enode: &AstNode<Op>, child_hashes: &[u64]) -> u64
+pub fn compute_full_hash<Op: Hash>(
+  enode: &AstNode<Op>,
+  child_hashes: &[u64],
+) -> u64
 where
   Op: Teachable,
 {
-  let mut hasher = seahash::SeaHasher::new();
+  let mut hasher = DefaultHasher::new();
   let op = enode.operation().to_shielding_op();
   op.hash(&mut hasher);
   for &h in child_hashes {
@@ -775,17 +784,17 @@ where
     to.cs.combine(from.cs.clone());
     // println!("combined cost set: {:?}", to.cs);
 
-    let exe_count = match to.bb.len() {
-      0 => 1,
-      _ => match self.bb_query.get(&to.bb[0]) {
-        Some(bb) => {
-          // println!("bb: {:?}, exe count: {}", bb.name,bb.execution_count);
-          bb.execution_count
-        }
-        None => 1,
-      },
-    };
-    to.cs.update_cost(exe_count);
+    // let exe_count = match to.bb.len() {
+    //   0 => 1,
+    //   _ => match self.bb_query.get(&to.bb[0]) {
+    //     Some(bb) => {
+    //       // println!("bb: {:?}, exe count: {}", bb.name,bb.execution_count);
+    //       bb.execution_count
+    //     }
+    //     None => 1,
+    //   },
+    // };
+    // to.cs.update_cost(exe_count);
     to.cs.unify();
     // println!("unified cost set: {:?}", to.cs);
     to.cs.prune(self.beam_size);
@@ -796,7 +805,12 @@ where
     // 合并ecls哈希，目前取最大值
     // to.hash.cls_hash = max(to.hash.cls_hash, from.hash.cls_hash);
     // to.hash.subtree_levels |= from.clone().hash.subtree_levels;
-    to.hash.merge(&from.hash);
+    // if to.hash.cls_hash == 9008984487884026875 {
+    //   panic!(
+    //     "Found a hash collision , 19, a0.cls_hash: {}, from.cls_hash: {}",
+    //     a0.hash.cls_hash, from.hash.cls_hash,
+    //   );
+    // }
     // 合并v
     // println!("{:?}", to);
     // println!("Dismerge: {} {}", &a0 != to, to != &from);
@@ -816,49 +830,43 @@ where
     enode: &AstNode<Op>,
   ) -> Self::Data {
     // println!("make");
-    // 计算当前enode及其子节点含有vec操作的数量
-    // let mut vec_op_cnt = 0;
-    let mut hasher = SeaHasher::default();
-    if enode.operation().is_vector_op() {
-      // vec_op_cnt += 1;
-      enode.operation().hash(&mut hasher);
-    }
 
     // calculate the type
     // println!("enode: {:?}", enode);
-    let child_types: Vec<T> = enode
-      .children()
+    let mut children = enode.children().to_vec();
+    // 按照operation进行排序，如果operation可交换
+    // if enode.operation().is_commutative() {
+    //   children.sort_by_key(|&child| egraph[child].data.hash.cls_hash);
+    // }
+    let child_types: Vec<T> = children
       .iter()
       .map(|&child| egraph[child].data.ty.clone())
       .collect();
     let ty = enode.get_rtype(&child_types);
-    // 计算子节点哈希
-    let mut child_hashes = enode
-      .children()
-      .iter()
-      .map(|&child| egraph[child].data.hash.cls_hash.clone())
-      .collect::<Vec<_>>();
-    // 排序子节点哈希
-    child_hashes.sort();
-    // 计算当前节点哈希
-    let current_level = compute_hash_level(enode, &child_hashes);
-    // 合并子树层级
-    let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
-    subtree_levels.set(current_level, true);
-    for child in enode.children() {
-      let child_level = egraph[*child].data.hash.subtree_levels.clone();
-      subtree_levels |= child_level;
-    }
-    // 计算完整哈希
-    let extract_hash = compute_full_hash(enode, &child_hashes);
-    let hash = StructuralHash {
-      cls_hash: extract_hash,
-      subtree_levels,
-      level_conflict: LevelConflictState::new(),
-    };
+    // // 计算子节点哈希
+    // let child_hashes = children
+    //   .iter()
+    //   .map(|&child| egraph[child].data.hash.cls_hash.clone())
+    //   .collect::<Vec<_>>();
+    // // 计算当前节点哈希
+    // let current_level = compute_hash_level(enode, &child_hashes);
+    // // 合并子树层级
+    // let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
+    // subtree_levels.set(current_level, true);
+    // for child in children.iter() {
+    //   let child_level = egraph[*child].data.hash.subtree_levels.clone();
+    //   subtree_levels |= child_level;
+    // }
+    // // 计算完整哈希
+    // let extract_hash = compute_full_hash(enode, &child_hashes);
+
+    // let hash = StructuralHash {
+    //   cls_hash: extract_hash,
+    //   subtree_levels,
+    //   level_conflict: LevelConflictState::new(),
+    // };
     // Calculate `vec_len`
-    let children_vec_len = enode
-      .children()
+    let children_vec_len = children
       .iter()
       .map(|&child| egraph[child].data.vec_len)
       .max()
@@ -906,14 +914,14 @@ where
           self_ref.lps,
         );
         // println!("new cost set: {:#?}", e);
-        if exe_count > 0 {
-          e.update_cost(exe_count);
-        }
+        // if exe_count > 0 {
+        //   e.update_cost(exe_count);
+        // }
         e.unify();
         e.prune(self_ref.inter_beam);
 
         // println!("make done");
-        ISAXCost::new(e, ty, bbs, hash, vec_len)
+        ISAXCost::new(e, ty, bbs, vec_len)
       }
       Some(_) | None => {
         // This is some other operation of some kind.
@@ -925,31 +933,31 @@ where
           let mut cs = CostSet::new();
           cs.inc_cycles(op_latency * exe_count as f64);
           cs.split_cycles(vec_len);
-          ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), hash, vec_len)
+          ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), vec_len)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
           let mut e = x(&enode.args()[0]).clone();
-          if exe_count > 0 {
-            e.update_cost(exe_count);
-          }
+          // if exe_count > 0 {
+          //   e.update_cost(exe_count);
+          // }
 
           e.inc_cycles(op_latency * exe_count as f64);
 
           // println!("make done");
           e.split_cycles(vec_len);
 
-          ISAXCost::new(e, ty, bbs, hash, vec_len)
+          ISAXCost::new(e, ty, bbs, vec_len)
         } else {
           // 2+ args. Cross/unify time!
-          let mut e = x(&enode.args()[0]).clone();
+          // 先收集所有子节点的cost set，之后排序，防止不确定性
+          let mut args: Vec<_> = enode.args().iter().map(|i| x(i)).collect();
+          args.sort_by(|a, b| a.cmp(b));
+          let mut e = args[0].clone();
           // println!("begin cross,args.len: {}", enode.args().len());
           // println!("{:#?}", e);
-          for cs in &enode.args()[1..] {
+          for cs in &args[1..] {
             // println!("crossing with: {:#?}", x(cs));
-            e = e.cross(x(cs), self_ref.lps);
-            if exe_count > 0 {
-              e.update_cost(exe_count);
-            }
+            e = e.cross(cs, self_ref.lps);
 
             e.unify();
             // println!("crossed: {:#?}", e);
@@ -962,7 +970,7 @@ where
           // println!("make done");
           e.split_cycles(vec_len);
           // println!("make done");
-          ISAXCost::new(e, ty, bbs, hash, vec_len)
+          ISAXCost::new(e, ty, bbs, vec_len)
         }
       }
     }
@@ -1452,15 +1460,6 @@ pub trait ClassMatch {
   fn get_type(&self) -> Vec<String> {
     vec!["".to_string()]
   }
-  fn get_cls_hash(&self) -> u64 {
-    0
-  }
-  fn get_subtree_levels(&self) -> u64 {
-    0
-  }
-  fn get_pattern(&self, _other: &Self) -> BitVec<u64, Lsb0> {
-    bitvec!(u64, Lsb0; 0; 64)
-  }
 }
 
 // 为ISAXCost实现ClassMatch trait
@@ -1481,15 +1480,6 @@ impl<T: PartialEq + Debug + Default + Clone + Ord + Hash + ToString> ClassMatch
   // }
   fn get_type(&self) -> Vec<String> {
     vec![self.ty.to_string()]
-  }
-  fn get_cls_hash(&self) -> u64 {
-    self.hash.cls_hash
-  }
-  fn get_subtree_levels(&self) -> u64 {
-    self.hash.subtree_levels.load()
-  }
-  fn get_pattern(&self, other: &Self) -> BitVec<u64, LocalBits> {
-    self.hash.subtree_levels.clone() & other.hash.subtree_levels.clone()
   }
 }
 

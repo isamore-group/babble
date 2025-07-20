@@ -16,7 +16,10 @@
 use crate::au_filter::{CiEncodingConfig, TypeAnalysis, io_filter, max_inputs};
 use crate::bb_query::{self, BBQuery};
 use crate::expand::MetaAUConfig;
-use crate::extract::beam_pareto::{ISAXAnalysis, TypeInfo, TypeSet};
+use crate::extract::beam_pareto::{
+  ISAXAnalysis, LevelConflictState, StructuralHash, TypeInfo, TypeSet,
+  compute_full_hash, compute_hash_level,
+};
 use crate::rewrites::TypeMatch;
 // 使用随机数
 use crate::runner::{
@@ -44,6 +47,7 @@ use lexpr::print;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::ops;
 use std::sync::mpsc;
 use std::time::Duration;
 use std::{
@@ -541,6 +545,7 @@ where
   pub fn build(
     self,
     egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
+    root: &Id,
   ) -> LearnedLibrary<Op, (Id, Id), Type, LA, LD>
   where
     AstNode<Op>: Language,
@@ -557,6 +562,7 @@ where
     debug!("Constructing learned libraries");
     LearnedLibrary::new(
       egraph,
+      root,
       self.learn_trivial,
       self.learn_constants,
       self.max_arity,
@@ -762,10 +768,96 @@ where
   TypeSet<Type>: ClassMatch,
   AstNode<Op>: TypeInfo<Type>,
 {
+  fn calculate_all_hash(
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
+    id: Id,
+  ) -> HashMap<Id, StructuralHash> {
+    let mut visited = HashSet::new();
+    let mut ecls_hash = HashMap::new();
+    Self::calculate_all_hash_with_visited(
+      egraph,
+      &mut ecls_hash,
+      id,
+      &mut visited,
+    );
+    ecls_hash
+  }
+
+  fn calculate_all_hash_with_visited(
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
+    ecls_hash: &mut HashMap<Id, StructuralHash>,
+    id: Id,
+    visited: &mut HashSet<Id>,
+  ) {
+    if visited.contains(&id) {
+      return;
+    }
+    visited.insert(id);
+
+    let eclass = &egraph[id];
+    let nodes = eclass.nodes.clone();
+
+    // Recalculate the data for this eclass
+    let make_new_structural_hash =
+      |node: &AstNode<Op>,
+       ecls_hash: &mut HashMap<Id, StructuralHash>|
+       -> StructuralHash {
+        let mut children = node.children().to_vec();
+        // 如果有子节点和当前节点相同，则不需要计算哈希
+        children.retain(|&child| child != id);
+        // 按照operation进行排序，如果operation可交换
+        if node.operation().is_commutative() {
+          children.sort_by_key(|&child| ecls_hash[&child].cls_hash.clone());
+        }
+        // 计算子节点哈希
+        let child_hashes = children
+          .iter()
+          .map(|&child| ecls_hash[&child].cls_hash.clone())
+          .collect::<Vec<_>>();
+        // 计算当前节点哈希
+        let current_level = compute_hash_level(node, &child_hashes);
+        // 合并子树层级
+        let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
+        subtree_levels.set(current_level, true);
+        for child in children.iter() {
+          let child_level = ecls_hash[child].subtree_levels.clone();
+          subtree_levels |= child_level;
+        }
+        // 计算完整哈希
+        let extract_hash = compute_full_hash(node, &child_hashes);
+
+        let hash = StructuralHash {
+          cls_hash: extract_hash,
+          subtree_levels,
+          level_conflict: LevelConflictState::new(),
+        };
+        hash
+      };
+    let mut struc_hashes = Vec::new();
+    for (_i, node) in nodes.iter().enumerate() {
+      for arg in node.args() {
+        if arg == &id {
+          // Avoid infinite recursion
+          continue;
+        }
+        Self::calculate_all_hash_with_visited(egraph, ecls_hash, *arg, visited);
+      }
+      struc_hashes.push(make_new_structural_hash(node, ecls_hash));
+    }
+    // 排序
+    struc_hashes.sort_by_key(|hash| hash.cls_hash.clone());
+    // 合并所有的哈希
+    let mut new_data = StructuralHash::default();
+    for hash in struc_hashes {
+      StructuralHash::merge(&mut new_data, &hash);
+    }
+    ecls_hash.insert(id, new_data);
+  }
   /// Constructs a [`LearnedLibrary`] from an [`EGraph`] by antiunifying pairs
   /// of enodes to find their common structure.
   fn new(
     egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
+    root: &Id,
     learn_trivial: bool,
     learn_constants: bool,
     max_arity: Option<usize>,
@@ -785,6 +877,8 @@ where
     Op: crate::ast_node::Printable,
     <AstNode<Op> as Language>::Discriminant: Sync + Send,
   {
+    // 计算所有eclass的哈希
+    let ecls_hash = Self::calculate_all_hash(egraph, *root);
     let mut learned_lib = Self {
       egraph: egraph.clone(),
       aus_by_state: BTreeMap::new(),
@@ -881,8 +975,11 @@ where
           .iter()
           .map(|cls| {
             let ty = egraph[*cls].data.get_type()[0].clone();
-            let cls_hash = egraph[*cls].data.get_cls_hash();
-            let subtree_levels = egraph[*cls].data.get_subtree_levels();
+            let structural_hash = ecls_hash
+              .get(cls)
+              .expect("ecls_hash should contain all classes");
+            let cls_hash = structural_hash.cls_hash;
+            let subtree_levels = structural_hash.subtree_levels.load();
             (cls, ty, cls_hash, subtree_levels)
           })
           .collect();
@@ -915,8 +1012,10 @@ where
           .iter()
           .map(|cls| {
             let ty = egraph[*cls].data.get_type()[0].clone();
-            let cls_hash = egraph[*cls].data.get_cls_hash();
-            let subtree_levels = egraph[*cls].data.get_subtree_levels();
+            let structural_hash =
+              ecls_hash.get(cls).cloned().unwrap_or_default();
+            let cls_hash = structural_hash.cls_hash;
+            let subtree_levels = structural_hash.subtree_levels.load();
             (cls, ty, cls_hash, subtree_levels)
           })
           .collect();
@@ -929,6 +1028,29 @@ where
         let ranges = group_by_type_ranges(&class_data);
         // 用一个二维数组来存储pairs的配对情况
         let enum_start = Instant::now();
+        let mut op_hash = Vec::new();
+        for ecls in egraph.classes() {
+          let mut enodes =
+            ecls.nodes.iter().map(|x| x.clone()).collect::<Vec<_>>();
+          enodes.sort_unstable_by_key(|x| x.operation().clone());
+          let ops = enodes
+            .iter()
+            .map(|x| x.operation().clone())
+            .collect::<Vec<_>>();
+          op_hash.push((
+            enodes,
+            ops,
+            ecls_hash.get(&ecls.id).cloned().unwrap_or_default(),
+            ecls.id,
+          ));
+        }
+        op_hash.sort_unstable_by_key(|(_, ops, _, _)| ops.clone());
+        // for (enodes, _, structural_hash, id) in op_hash {
+        //   println!(
+        //     "{}: enodes: {:?}, StructuralHash: {}",
+        //     id, enodes, structural_hash.cls_hash
+        //   );
+        // }
         let all_pairs: Vec<(Id, Id)> = ranges
           .into_par_iter()
           .flat_map(|(start, end)| {
@@ -978,6 +1100,14 @@ where
           })
           .collect();
         let eclass_pairs = all_pairs.clone();
+        // for pair in eclass_pairs.clone() {
+        //   println!(
+        //     "eclass_pair: {:?}, enode_op_pair: {:?}, {:?}",
+        //     pair,
+        //     egraph[pair.0].nodes.iter().map(|x| x.operation()).join(","),
+        //     egraph[pair.1].nodes.iter().map(|x| x.operation()).join(","),
+        //   );
+        // }
         let start = Instant::now();
         if meta_au_config.enable_meta_au {
           for pair in eclass_pairs.clone() {
@@ -997,8 +1127,10 @@ where
           .iter()
           .map(|cls| {
             let ty = egraph[*cls].data.get_type()[0].clone();
-            let cls_hash = egraph[*cls].data.get_cls_hash();
-            let subtree_levels = egraph[*cls].data.get_subtree_levels();
+            let structural_hash =
+              ecls_hash.get(cls).cloned().unwrap_or_default();
+            let cls_hash = structural_hash.cls_hash;
+            let subtree_levels = structural_hash.subtree_levels.load();
             (cls, ty, cls_hash, subtree_levels)
           })
           .collect();
@@ -1023,7 +1155,8 @@ where
             ) {
               continue;
             }
-            let pattern = egraph[*ecls1].data.get_pattern(&egraph[*ecls2].data);
+            let pattern = ecls_hash.get(ecls1).unwrap().subtree_levels.clone()
+              & ecls_hash.get(ecls2).unwrap().subtree_levels.clone();
             if pattern.count_ones() == 0 {
               continue;
             }
@@ -1513,9 +1646,23 @@ where
           // 注意：这里的 results 类型要与发送时匹配
           // 可能需要做生命周期转换，或提前转换成独立数据
           // 例如若发送的是 Vec<Id>，这里就返回 Vec<Id> 等
+          // println!(
+          //   "Search for pattern {} completed with {} matches, size: {},
+          // nodes: {}",   Pattern::from(au.au.expr.clone()),
+          //   results.len(),
+          //   au.au.expr.size(),
+          //   au.au.expr.num_nodes(),
+          // );
           Ok(results)
         }
         Err(err) => {
+          // println!(
+          //   "Search for pattern {} timed out or failed: {:?}, size: {},
+          // nodes: {}",   Pattern::from(au.au.expr.clone()),
+          //   au.au.expr.size(),
+          //   au.au.expr.num_nodes(),
+          //   err
+          // );
           // 超时或通道关闭等
           // 超时: Err(RecvTimeoutError::Timeout)
           // 通道关闭: Err(RecvTimeoutError::Disconnected)
@@ -2147,7 +2294,7 @@ where
                   && vars <= max_inputs(&self.ci_encoding_config) as usize
               });
 
-            debug!("aus_state.len() is {}", self.aus_by_state.len());
+            // println!("aus_state.len() is {}", self.aus_by_state.len());
             // info!("deduplicating new_aus last: {} ",
             // new_aus.clone().count());
 
@@ -2181,7 +2328,6 @@ where
       ));
     }
 
-    debug!("aus size: {}", aus.len());
     self.filter_aus(aus, state, egraph);
   }
 
@@ -2432,13 +2578,21 @@ where
             }
           }
         });
+      // FIXME: 先把每次的去重ban掉吧，就把max_lib的限制拿出来用用
+      let nontrivial_aus = nontrivial_aus.filter(|au| {
+        // 我希望限制的是RecExpr中的节点数目，而不是AU的节点数目
+        let recexpr: RecExpr<_> =
+          Expr::try_from(au.au.expr.clone()).unwrap().into();
+        let size = recexpr.len();
+        size <= self.liblearn_config.max_lib_size
+      });
       // // 最后使用deduplicate_from_candidates去重(只有当au的数目大于sample_num的1/
       // 2时才去重)
-      let nontrivial_aus = if aus.len() > self.liblearn_config.sample_num / 2 {
-        self.deduplicate_from_candidates(nontrivial_aus.collect::<Vec<_>>())
-      } else {
-        nontrivial_aus.collect()
-      };
+      // let nontrivial_aus = if aus.len() > self.liblearn_config.sample_num / 2
+      // {   self.deduplicate_from_candidates(nontrivial_aus.
+      // collect::<Vec<_>>()) } else {
+      //   nontrivial_aus.collect()
+      // };
 
       // info!(
       //   "length of nontrivial_aus is {}",
