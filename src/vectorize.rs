@@ -712,7 +712,7 @@ where
     // .find_packs()
     .with_find_pack_config(config.find_pack_config.clone())
     .with_bb_query(bb_query.clone())
-    .build(&egraph, &root);
+    .build(&egraph, vec![root]);
   let lib_rewrites: Vec<(
     Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>,
     Pattern<_>,

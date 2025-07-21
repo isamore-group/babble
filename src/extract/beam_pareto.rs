@@ -155,8 +155,10 @@ impl CostSet {
     // Sort the combined set.
     self.set.sort_by(|a, b| {
       a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area).then({
-        let a_libids = a.libs.keys().collect::<Vec<_>>();
-        let b_libids = b.libs.keys().collect::<Vec<_>>();
+        let mut a_libids = a.libs.keys().collect::<Vec<_>>();
+        a_libids.sort();
+        let mut b_libids = b.libs.keys().collect::<Vec<_>>();
+        b_libids.sort();
         a_libids.cmp(&b_libids)
       }))
     });
@@ -227,8 +229,10 @@ impl CostSet {
       // Keeps the `beam_size` `LibSel` with the highest latency gain.
       self.set.sort_by(|a, b| {
         a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area).then({
-          let a_libids = a.libs.keys().collect::<Vec<_>>();
-          let b_libids = b.libs.keys().collect::<Vec<_>>();
+          let mut a_libids = a.libs.keys().collect::<Vec<_>>();
+          a_libids.sort();
+          let mut b_libids = b.libs.keys().collect::<Vec<_>>();
+          b_libids.sort();
           a_libids.cmp(&b_libids)
         }))
       });
@@ -403,6 +407,7 @@ impl LibSel {
                 .partial_cmp(&b.1)
                 .unwrap_or(Ordering::Equal)
                 .then(a.2.cmp(&b.2))
+                .then(a.0.cmp(&b.0)) // 按照lib_id排序，确保稳定性
             });
             // 取出最小的gain的lib
             if let Some((min_lib_id, _, _)) = gain_map.first() {
@@ -488,6 +493,7 @@ impl LibSel {
               .partial_cmp(&b.1)
               .unwrap_or(Ordering::Equal)
               .then(a.2.cmp(&b.2))
+              .then(a.0.cmp(&b.0)) // 按照lib_id排序，确保稳定性
           });
           // 取出最小的gain的lib
           if let Some((min_lib_id, _, _)) = gain_map.first() {
@@ -833,7 +839,7 @@ where
 
     // calculate the type
     // println!("enode: {:?}", enode);
-    let mut children = enode.children().to_vec();
+    let children = enode.children().to_vec();
     // 按照operation进行排序，如果operation可交换
     // if enode.operation().is_commutative() {
     //   children.sort_by_key(|&child| egraph[child].data.hash.cls_hash);
@@ -842,6 +848,14 @@ where
       .iter()
       .map(|&child| egraph[child].data.ty.clone())
       .collect();
+    // println!("operation: {:?}", enode.operation());
+    // // 子节点op
+    // for child in &children {
+    //   println!(
+    //     "child: {:?}, type: {:?}",
+    //     egraph[*child].nodes, egraph[*child].data.ty
+    //   );
+    // }
     let ty = enode.get_rtype(&child_types);
     // // 计算子节点哈希
     // let child_hashes = children
@@ -962,8 +976,7 @@ where
             e.unify();
             // println!("crossed: {:#?}", e);
           }
-          // println!("enode: {:?}, e.len: {}", enode, e.set.len());
-
+          // println!("enode: {:?}, e.len: {}", enode, e.set.len()););
           e.prune(self_ref.inter_beam);
           // println!("e.len after update: {}", e.set.len());
           e.inc_cycles(op_latency * exe_count as f64);

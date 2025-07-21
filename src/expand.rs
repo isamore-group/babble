@@ -369,12 +369,215 @@ where
     + 'static,
   AstNode<Op>: TypeInfo<T>,
 {
-  pub all_au_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
-  pub conditions: HashMap<usize, TypeMatch<T>>,
-  pub libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<AstNode<Op>>)>,
-  pub normal_au_count: usize,
-  pub meta_au_rewrites:
-    HashMap<usize, Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>>,
+  // pub all_au_rewrites: Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+  // pub conditions: HashMap<usize, TypeMatch<T>>,
+  /// 每个lib对应多个searcher
+  pub searchers: HashMap<usize, Vec<PartialExpr<Op, Var>>>,
+  /// 每个lib对应只对应一个applier
+  pub appliers: HashMap<usize, Pattern<AstNode<Op>>>,
+  /// 每个lib对应一组rewrite_condition
+  pub rewrites_conditions: HashMap<
+    usize,
+    Vec<(Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
+  >,
+  // pub libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<AstNode<Op>>)>,
+  // pub normal_au_count: usize,
+  // pub meta_au_rewrites:
+  //   HashMap<usize, Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>>,
+}
+
+impl<Op, T> Default for ExpandMessage<Op, T>
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + Arity
+    + Send
+    + Sync
+    + OperationInfo
+    + Debug
+    + 'static,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + Display
+    + 'static,
+  AstNode<Op>: TypeInfo<T>,
+{
+  fn default() -> Self {
+    ExpandMessage {
+      // all_au_rewrites: Vec::new(),
+      searchers: HashMap::new(),
+      appliers: HashMap::new(),
+      rewrites_conditions: HashMap::new(),
+      // libs: HashMap::new(),
+      // normal_au_count: 0,
+      // meta_au_rewrites: HashMap::new(),
+    }
+  }
+}
+
+impl<Op, T> ExpandMessage<Op, T>
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + Arity
+    + Send
+    + Sync
+    + OperationInfo
+    + Debug
+    + 'static
+    + BBInfo,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + Display
+    + 'static,
+  AstNode<Op>: TypeInfo<T>,
+{
+  pub fn new() -> Self {
+    ExpandMessage::default()
+  }
+
+  pub fn get_exprs(&self) -> Vec<RecExpr<AstNode<Op>>> {
+    let mut exprs = Vec::new();
+    for lib_id in self.rewrites_conditions.keys() {
+      // 首先随便拿出一个condition(同一个lib， condition是一样的)
+      let condition = self
+        .rewrites_conditions
+        .get(lib_id)
+        .unwrap()
+        .first()
+        .unwrap()
+        .1
+        .clone();
+      // 拿出seacher
+      let searchers = self.searchers.get(lib_id).unwrap();
+      for searcher in searchers {
+        let searcher_ast = Pattern::from(searcher.clone()).ast.clone();
+        let new_expr = searcher_ast
+          .iter()
+          .map(|node| match node {
+            egg::ENodeOrVar::ENode(ast_node) => {
+              let new_node = (*ast_node).clone();
+              new_node
+            }
+            egg::ENodeOrVar::Var(var) => {
+              // 搜索var对应的类型信息
+              let tys =
+                condition.type_map.get(var).cloned().unwrap_or_default();
+              let ty = if tys.is_empty() {
+                T::default()
+              } else {
+                tys[0].clone()
+              };
+              let new_name = format!("{}:{}", var, ty);
+              // AstNode::leaf(RdgEgg {
+              //   op: RdgEggOp::RulerVar(Symbol::from(new_name)),
+              //   info: RdgEggInfo {
+              //     result_tys: tys.clone(),
+              //     ..Default::default()
+              //   },
+              // })
+              let mut op = Op::make_rule_var(new_name);
+              op.set_result_type(tys.iter().map(|t| t.to_string()).collect());
+              AstNode::leaf(op)
+            }
+          })
+          .collect::<Vec<AstNode<Op>>>();
+        let mut rec_expr: RecExpr<AstNode<Op>> = new_expr.into();
+        expr_perf_infer(&mut rec_expr);
+        exprs.push(rec_expr);
+      }
+    }
+    exprs
+  }
+
+  pub fn update_message(
+    &mut self,
+    lib_id: usize,
+    rewrites_conditions: Vec<(
+      Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>,
+      TypeMatch<T>,
+    )>,
+    searchers: Vec<PartialExpr<Op, Var>>,
+    applier: Pattern<AstNode<Op>>,
+  ) {
+    // 更新对应的lib_id的rewrite和condition
+    self.rewrites_conditions.insert(lib_id, rewrites_conditions);
+    // 更新对应的lib_id的searcher
+    self.searchers.insert(lib_id, searchers);
+    // 更新对应的lib_id的applier
+    self.appliers.insert(lib_id, applier);
+  }
+
+  pub fn insert_from_messages(&mut self, lib_id: usize, other_messages: &Self) {
+    if self.rewrites_conditions.contains_key(&lib_id) {
+      // 如果已经存在这个lib_id，就不需要更新了
+      return;
+    }
+    // 将other_messages中的内容添加到当前的messages中
+    if let Some(rewrites) = other_messages.rewrites_conditions.get(&lib_id) {
+      self
+        .rewrites_conditions
+        .entry(lib_id)
+        .or_default()
+        .extend(rewrites.clone());
+    }
+    if let Some(searchers) = other_messages.searchers.get(&lib_id) {
+      self
+        .searchers
+        .entry(lib_id)
+        .or_default()
+        .extend(searchers.clone());
+    }
+    if let Some(applier) = other_messages.appliers.get(&lib_id) {
+      self.appliers.insert(lib_id, applier.clone());
+    }
+  }
+
+  pub fn extend_from_messages(&mut self, other_messages: &Self) {
+    // 将other_messages中的内容添加到当前的messages中
+    for (lib_id, rewrites) in other_messages.rewrites_conditions.iter() {
+      if self.rewrites_conditions.contains_key(lib_id) {
+        // 如果已经存在这个lib_id，就不需要更新了
+        continue;
+      }
+      self
+        .rewrites_conditions
+        .insert(lib_id.clone(), rewrites.clone());
+      let searchers = other_messages.searchers[lib_id].clone();
+      self.searchers.insert(lib_id.clone(), searchers);
+      let applier = other_messages.appliers[lib_id].clone();
+      self.appliers.insert(lib_id.clone(), applier);
+    }
+  }
+
+  pub fn retain_with_ids(&mut self, ids: &HashSet<usize>) {
+    // 保留lib_id在ids中的rewrite和condition
+    self
+      .rewrites_conditions
+      .retain(|lib_id, _| ids.contains(lib_id));
+    // 保留lib_id在ids中的searcher
+    self.searchers.retain(|lib_id, _| ids.contains(lib_id));
+    // 保留lib_id在ids中的applier
+    self.appliers.retain(|lib_id, _| ids.contains(lib_id));
+  }
 }
 
 // expand函数的输入是一个EGraph，之后在这个EGraph上进行库学习拿到AU，
@@ -449,7 +652,7 @@ where
     .with_liblearn_config(expansion_lib_config)
     .with_clock_period(config.clock_period)
     .with_bb_query(bb_query.clone())
-    .build(&egraph, &root);
+    .build(&egraph, vec![root]);
   println!("        • expand::learned {} libs", learned_lib.size());
 
   // for lib in learned_lib.libs() {
@@ -545,7 +748,7 @@ where
     .with_area_estimator(config.area_estimator.clone())
     .with_delay_estimator(config.delay_estimator.clone())
     .with_bb_query(bb_query.clone())
-    .build(&meta_egraph, &new_root);
+    .build(&meta_egraph, vec![new_root]);
 
   let meta_messages: Vec<_> = learn_meta_lib.messages();
 
@@ -560,23 +763,29 @@ where
   //   println!("meta lib: {}", lib);
   // }
 
-  let mut all_au_rewrites = Vec::new();
-  let mut conditions = HashMap::new();
-  let mut libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<_>)> =
-    HashMap::new();
-  let mut meta_au_rewrites = HashMap::new();
+  let mut rewrites_conditions: HashMap<
+    usize,
+    Vec<(Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
+  > = HashMap::new();
+  let mut searchers: HashMap<usize, Vec<PartialExpr<Op, Var>>> = HashMap::new();
+  let mut appliers: HashMap<usize, Pattern<AstNode<Op>>> = HashMap::new();
 
   for msg in learned_messages {
-    all_au_rewrites.push(msg.rewrite.clone());
-    conditions.insert(msg.lib_id.clone(), msg.condition.clone());
-    libs.insert(
-      msg.lib_id.clone(),
-      (msg.searcher_pe.clone(), msg.applier_pe.clone().into()),
-    );
+    let lib_id = msg.lib_id;
+    rewrites_conditions
+      .entry(lib_id)
+      .or_default()
+      .push((msg.rewrite.clone(), msg.condition.clone()));
+    // 将searcher_pe和applier_pe加入到对应的lib_id中
+    searchers
+      .entry(lib_id)
+      .or_default()
+      .push(msg.searcher_pe.clone());
+    let applier: Pattern<_> = msg.applier_pe.into();
+    appliers.insert(lib_id, applier);
   }
 
   for msg in meta_messages {
-    let mut rewrites = Vec::new();
     let mut searcher = MetaAUOpSearcher::new(msg.searcher_pe.clone().into());
     // 使用searcher进行搜索
     searcher.search(&egraph);
@@ -654,22 +863,21 @@ where
         new_applier.clone(),
       )
       .unwrap_or_else(|_| unreachable!());
-      rewrites.push(rewrite.clone());
-      all_au_rewrites.push(rewrite.clone());
+      rewrites_conditions
+        .entry(msg.lib_id.clone())
+        .or_default()
+        .push((rewrite, msg.condition.clone()));
+      searchers
+        .entry(msg.lib_id.clone())
+        .or_default()
+        .push(fill_specific_op(msg.searcher_pe.clone(), op.clone()));
     }
-    conditions.insert(msg.lib_id.clone(), msg.condition.clone());
-    libs.insert(
-      msg.lib_id.clone(),
-      (msg.searcher_pe.clone(), new_applier.into()),
-    );
-    meta_au_rewrites.insert(msg.lib_id.clone(), rewrites);
+    appliers.insert(msg.lib_id.clone(), new_applier);
   }
   ExpandMessage {
-    all_au_rewrites,
-    conditions,
-    libs,
-    normal_au_count: max_lib_id + 1,
-    meta_au_rewrites,
+    rewrites_conditions,
+    searchers,
+    appliers,
   }
   //   let var_results: HashMap<Var, HashSet<Id>> =
   // searcher.var_results.clone();   //

@@ -545,14 +545,13 @@ where
   pub fn build(
     self,
     egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
-    root: &Id,
+    roots: Vec<Id>,
   ) -> LearnedLibrary<Op, (Id, Id), Type, LA, LD>
   where
     AstNode<Op>: Language,
     <AstNode<Op> as Language>::Discriminant: Sync + Send,
     Op: crate::ast_node::Printable + OperationInfo,
   {
-    let roots = &self.roots;
     // debug!("Computing co-occurences");
     // let co_occurs = self.co_occurences.unwrap_or_else(|| {
     //   let co_ext = COBuilder::new(egraph, roots);
@@ -562,7 +561,7 @@ where
     debug!("Constructing learned libraries");
     LearnedLibrary::new(
       egraph,
-      root,
+      roots,
       self.learn_trivial,
       self.learn_constants,
       self.max_arity,
@@ -770,16 +769,18 @@ where
 {
   fn calculate_all_hash(
     egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
-    id: Id,
+    ids: Vec<Id>,
   ) -> HashMap<Id, StructuralHash> {
     let mut visited = HashSet::new();
     let mut ecls_hash = HashMap::new();
-    Self::calculate_all_hash_with_visited(
-      egraph,
-      &mut ecls_hash,
-      id,
-      &mut visited,
-    );
+    for id in ids {
+      Self::calculate_all_hash_with_visited(
+        egraph,
+        &mut ecls_hash,
+        id,
+        &mut visited,
+      );
+    }
     ecls_hash
   }
 
@@ -807,12 +808,22 @@ where
         children.retain(|&child| child != id);
         // 按照operation进行排序，如果operation可交换
         if node.operation().is_commutative() {
-          children.sort_by_key(|&child| ecls_hash[&child].cls_hash.clone());
+          children.sort_by_key(|&child| {
+            ecls_hash
+              .get(&child)
+              .map_or_else(|| StructuralHash::default(), |hash| hash.clone())
+              .cls_hash
+          });
         }
         // 计算子节点哈希
         let child_hashes = children
           .iter()
-          .map(|&child| ecls_hash[&child].cls_hash.clone())
+          .map(|&child| {
+            let hash = ecls_hash
+              .get(&child)
+              .map_or_else(|| StructuralHash::default(), |hash| hash.clone());
+            hash.cls_hash.clone()
+          })
           .collect::<Vec<_>>();
         // 计算当前节点哈希
         let current_level = compute_hash_level(node, &child_hashes);
@@ -820,7 +831,10 @@ where
         let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
         subtree_levels.set(current_level, true);
         for child in children.iter() {
-          let child_level = ecls_hash[child].subtree_levels.clone();
+          let child_level = ecls_hash.get(child).map_or_else(
+            || bitvec![u64, Lsb0; 0; 64],
+            |hash| hash.subtree_levels.clone(),
+          );
           subtree_levels |= child_level;
         }
         // 计算完整哈希
@@ -857,7 +871,7 @@ where
   /// of enodes to find their common structure.
   fn new(
     egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
-    root: &Id,
+    roots: Vec<Id>,
     learn_trivial: bool,
     learn_constants: bool,
     max_arity: Option<usize>,
@@ -878,7 +892,16 @@ where
     <AstNode<Op> as Language>::Discriminant: Sync + Send,
   {
     // 计算所有eclass的哈希
-    let ecls_hash = Self::calculate_all_hash(egraph, *root);
+    let ecls_hash = Self::calculate_all_hash(egraph, roots);
+    for ecls in egraph.classes() {
+      // 看看有没有eclass没有被计算哈希
+      if !ecls_hash.contains_key(&ecls.id) {
+        panic!(
+          "Eclass {} has no structural hash, this is a bug in liblearn",
+          ecls.id
+        );
+      }
+    }
     let mut learned_lib = Self {
       egraph: egraph.clone(),
       aus_by_state: BTreeMap::new(),
@@ -975,9 +998,8 @@ where
           .iter()
           .map(|cls| {
             let ty = egraph[*cls].data.get_type()[0].clone();
-            let structural_hash = ecls_hash
-              .get(cls)
-              .expect("ecls_hash should contain all classes");
+            let structural_hash =
+              ecls_hash.get(cls).cloned().unwrap_or_default();
             let cls_hash = structural_hash.cls_hash;
             let subtree_levels = structural_hash.subtree_levels.load();
             (cls, ty, cls_hash, subtree_levels)
@@ -1382,6 +1404,20 @@ where
     new_applier
   }
 
+  fn genericize_pe(&self, pe: PartialExpr<Op, Var>) -> PartialExpr<Op, Var> {
+    match pe {
+      PartialExpr::Hole(_) => pe,
+      PartialExpr::Node(node) => {
+        let mut new_node = node.clone();
+        new_node.operation_mut().genericize();
+        for arg in new_node.args_mut() {
+          *arg = self.genericize_pe(arg.clone());
+        }
+        PartialExpr::Node(new_node)
+      }
+    }
+  }
+
   /// Returns an iterator over rewrite rules that replace expressions with
   /// equivalent calls to a learned library function.
   ///
@@ -1406,40 +1442,77 @@ where
   pub fn messages(
     &self,
   ) -> Vec<LiblearnMessage<Op, Type, ISAXAnalysis<Op, Type>>> {
-    let msgs = self.aus.iter().enumerate().map(|(i, au)| {
-      let new_i = i + self.last_lib_id;
-      let searcher: Pattern<_> = au.au.expr.clone().into();
-      let applier_pe = reify(
-        LibId(new_i),
-        au.au.expr.clone(),
-        self.clock_period,
-        self.area_estimator.clone(),
-        self.delay_estimator.clone(),
-        self.bb_query.clone(),
-      );
-      let applier: Pattern<_> = applier_pe.clone().into();
-      let conditional_applier = ConditionalApplier {
-        condition: TypeMatch::new(au.ty_map.clone()),
-        applier: applier.clone(),
-      };
-      let name = if self.meta_au_config.enable_meta_au {
-        format!("meta_anti-unify {new_i}")
+    // 直接使用aus会导致问题，因为类似arg这样的节点会带入多余信息，
+    // 实际上使用的是同一个库，
+    // 所以需要一个HashMap记录libid和对应的去除了多余信息的au
+    let mut au_map_to_libid: HashMap<
+      PartialExpr<Op, Var>,
+      (usize, HashMap<Var, Vec<Type>>),
+    > = HashMap::new();
+    // 双向映射
+    let mut libid_to_generic_au: HashMap<usize, PartialExpr<Op, Var>> =
+      HashMap::new();
+    let mut generic_au_to_libid: HashMap<PartialExpr<Op, Var>, usize> =
+      HashMap::new();
+    let mut new_lib_id = self.last_lib_id;
+    for au in self.aus.iter() {
+      let genericized_pe = self.genericize_pe(au.au.expr.clone());
+      if let Some(lib_id) = generic_au_to_libid.get(&genericized_pe) {
+        // 如果已经存在这个库，就不需要再添加了
+        // 只将库id加入对应的au
+        au_map_to_libid
+          .insert(au.au.expr.clone(), (lib_id.clone(), au.ty_map.clone()));
       } else {
-        format!("anti-unify {new_i}")
-      };
-      debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
-      let condition = TypeMatch::new(au.ty_map.clone());
-
-      // Both patterns contain the same variables, so this can never fail.
-      LiblearnMessage {
-        lib_id: new_i,
-        rewrite: Rewrite::new(name, searcher.clone(), conditional_applier)
-          .unwrap_or_else(|_| unreachable!()),
-        searcher_pe: au.au.expr.clone(),
-        applier_pe: applier_pe.clone(),
-        condition,
+        // 如果不存在这个库，就添加一个新的库
+        au_map_to_libid
+          .insert(au.au.expr.clone(), (new_lib_id, au.ty_map.clone()));
+        libid_to_generic_au.insert(new_lib_id, genericized_pe.clone());
+        generic_au_to_libid.insert(genericized_pe, new_lib_id);
+        new_lib_id += 1;
       }
-    });
+    }
+
+    // 把lib_id打印出来
+
+    let msgs =
+      au_map_to_libid
+        .iter()
+        .enumerate()
+        .map(|(iter, (au_pe, (i, ty_map)))| {
+          let searcher: Pattern<_> = au_pe.clone().into();
+          let applier_pe = reify(
+            LibId(*i),
+            libid_to_generic_au.get(i).unwrap().clone(),
+            self.clock_period,
+            self.area_estimator.clone(),
+            self.delay_estimator.clone(),
+            self.bb_query.clone(),
+          );
+          let applier: Pattern<_> = applier_pe.clone().into();
+          let conditional_applier = ConditionalApplier {
+            condition: TypeMatch::new(ty_map.clone()),
+            applier: applier.clone(),
+          };
+          let id = iter + self.last_lib_id;
+          let name = if self.meta_au_config.enable_meta_au {
+            format!("meta_anti-unify {id}")
+          } else {
+            format!("anti-unify {id}")
+          };
+          debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
+          let condition = TypeMatch::new(ty_map.clone());
+
+          // Both patterns contain the same variables, so this can never fail.
+          LiblearnMessage {
+            lib_id: *i,
+            rewrite: Rewrite::new(name, searcher.clone(), conditional_applier)
+              .unwrap_or_else(|_| unreachable!()),
+            searcher_pe: au_pe.clone(),
+            applier_pe: applier_pe.clone(),
+            condition,
+          }
+        });
+    // 需要先进行去重处理
     let rules = msgs
       .clone()
       .map(|msg| msg.rewrite)
@@ -1451,11 +1524,9 @@ where
       .run(&rules);
     let max_bitwidths = Self::get_max_bitwidth(runner.egraph);
     msgs
-      .enumerate()
-      .map(|(i, msg)| {
-        let new_i = i + self.last_lib_id;
-        let max_bitwidth =
-          max_bitwidths.get(&LibId(new_i)).cloned().unwrap_or(32);
+      .map(|msg| {
+        let i = msg.lib_id;
+        let max_bitwidth = max_bitwidths.get(&LibId(i)).cloned().unwrap_or(32);
         let applier = self.make_cost(
           msg.searcher_pe.clone().into(),
           msg.applier_pe.clone().into(),
@@ -1468,13 +1539,13 @@ where
           applier: applier.clone(),
         };
         let name = if self.meta_au_config.enable_meta_au {
-          format!("meta_anti-unify {new_i}")
+          format!("meta_anti-unify {i}")
         } else {
-          format!("anti-unify {new_i}")
+          format!("anti-unify {i}")
         };
         let applier_pe = applier.into();
         LiblearnMessage {
-          lib_id: new_i,
+          lib_id: i,
           rewrite: Rewrite::new(name, searcher, conditional_applier)
             .unwrap_or_else(|_| unreachable!()),
           searcher_pe,

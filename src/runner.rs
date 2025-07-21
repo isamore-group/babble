@@ -11,7 +11,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use bitvec::{bitvec, order::Lsb0};
+use bitvec::{bitvec, order::Lsb0, vec};
 use lexpr::print;
 use serde::Deserialize;
 
@@ -144,6 +144,8 @@ pub trait OperationInfo {
   }
   fn is_mem(&self) -> bool;
   fn op_execution_count(&self, bb_query: &BBQuery) -> usize;
+  // 在lib_learn的时候，有时候需要删除某些信息，将操作符generic化
+  fn genericize(&mut self);
 }
 
 /// A trait for running library learning experiments with Pareto optimization
@@ -161,7 +163,16 @@ where
     + Send
     + DiscriminantEq
     + 'static,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash + 'static + Send + Sync,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + 'static
+    + Send
+    + Sync
+    + Display,
   AstNode<Op>: TypeInfo<T>,
 {
   /// Run the experiment on a single expression
@@ -272,24 +283,20 @@ where
     + OperationInfo
     + Send
     + Sync,
-  T: Debug + Ord + Clone + Default + Hash + 'static + Send + Sync,
+  T: Debug + Ord + Clone + Default + Hash + 'static + Send + Sync + Display,
   AstNode<Op>: TypeInfo<T>,
 {
   /// The number of libraries learned
   pub num_libs: usize,
-  /// The rewrites representing the learned libraries
-  pub rewrites_with_conditon:
-    HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
   /// The final result of pareto: a series of AnnotatedEGraph
   pub extract_results: Vec<ExtractResult<Op, T>>,
   /// when vectorizing, vectorized_expr is needed
   pub vectorized_egraph_with_root:
     Option<(EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id)>,
+  /// the message for the chosen libs
+  pub lib_message: ExpandMessage<Op, T>,
   /// The time taken to run the experiment
   pub run_time: Duration,
-  /// the learned lib
-  pub learned_lib:
-    Vec<(usize, (PartialExpr<Op, Var>, egg::Pattern<AstNode<Op>>))>,
   /// message map to record the message
   pub message: HashMap<String, String>,
 }
@@ -307,7 +314,16 @@ where
     + OperationInfo
     + Send
     + Sync,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash + 'static + Send + Sync,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + 'static
+    + Send
+    + Sync
+    + Display,
   AstNode<Op>: TypeInfo<T>,
 {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -516,10 +532,21 @@ where
     + Send
     + Sync
     + Debug
-    + 'static,
+    + 'static
+    + OperationInfo,
   LA: Debug + Default + Clone,
   LD: Debug + Default + Clone,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr,
   TypeSet<T>: ClassMatch,
   AstNode<Op>: TypeInfo<T>,
 {
@@ -529,12 +556,14 @@ where
   dsr_rewrite_iters: usize,
   /// BB query
   bb_query: BBQuery,
-  /// lib rewrites
-  lib_rewrites_with_condition:
-    HashMap<usize, (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
-  /// lib exprs
-  past_exprs: HashMap<usize, RecExpr<AstNode<Op>>>,
-  past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
+  // /// lib rewrites
+  // lib_rewrites_with_condition:
+  //   HashMap<usize, Vec<(Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  // TypeMatch<T>)>>, /// lib exprs
+  // past_exprs: HashMap<usize, RecExpr<AstNode<Op>>>,
+  // past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
+  /// past lib_messages
+  past_lib_message: ExpandMessage<Op, T>,
   /// Configuration for the beam search
   config: ParetoConfig<LA, LD>,
   /// lift_dsrs
@@ -585,12 +614,13 @@ where
     dsrs: I,
     dsr_rewrite_iters: usize,
     bb_query: BBQuery,
-    lib_rewrites_with_condition: HashMap<
-      usize,
-      (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>),
-    >,
-    past_exprs: HashMap<usize, RecExpr<AstNode<Op>>>,
-    past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
+    // lib_rewrites_with_condition: HashMap<
+    //   usize,
+    //   (Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>),
+    // >,
+    // past_exprs: HashMap<usize, RecExpr<AstNode<Op>>>,
+    // past_libs: HashMap<usize, Pattern<AstNode<Op>>>,
+    past_lib_message: ExpandMessage<Op, T>,
     config: ParetoConfig<LA, LD>,
   ) -> Self
   where
@@ -602,9 +632,10 @@ where
       dsrs,
       dsr_rewrite_iters,
       bb_query,
-      lib_rewrites_with_condition,
-      past_exprs,
-      past_libs,
+      // lib_rewrites_with_condition,
+      // past_exprs,
+      // past_libs,
+      past_lib_message,
       config,
       lift_dsrs: vec![],
       lower_dsrs: vec![],
@@ -622,7 +653,6 @@ where
     self.lower_dsrs = lower_dsrs;
     self.transform_dsrs = transform_dsrs;
   }
-
   /// Run the e-graph and library learning process
   pub fn run_egraph(
     &self,
@@ -697,9 +727,10 @@ where
 
     // 接下来使用lib_rewrites_with_condition在进行重写, Analysis不能是空
     let past_lib_rewrites = self
-      .lib_rewrites_with_condition
-      .iter()
-      .map(|(_, (rewrite, _))| rewrite.clone())
+      .past_lib_message
+      .rewrites_conditions
+      .values()
+      .flat_map(|v| v.iter().map(|(r, _)| r.clone()))
       .collect::<Vec<_>>();
 
     // let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::empty())
@@ -712,14 +743,16 @@ where
     // 这样可以忽略掉不必要的lambda和apply节点
 
     let mut aeg = origin_aeg.clone();
+    let mut aeg_roots = vec![root];
 
-    for expr in self.past_exprs.values() {
+    for partial_expr in self.past_lib_message.get_exprs() {
       // println!("Adding past expr: {}", expr);
-      aeg.add_expr(expr);
+
+      aeg_roots.push(aeg.add_expr(&partial_expr));
     }
 
     // 进行BB信息的推断
-    perf_infer::perf_infer(&mut aeg, &[root]);
+    perf_infer::perf_infer(&mut aeg, &aeg_roots);
 
     let mut vectorized_liblearn_messages = vec![];
     let mut vectorized_egraph_with_root = None;
@@ -786,7 +819,12 @@ where
     println!("      🧠 Anti-Unification Phase...");
     let au_time = Instant::now();
     // 在进行learn之前，先提取出之前库学习最大的lib，直接利用past_libs的keys就行
-    let max_lib_id = self.past_libs.keys().max().map_or(0, |&id| id + 1); // past_libs的keys是从0开始的，所以+1
+    let max_lib_id = self
+      .past_lib_message
+      .appliers
+      .keys()
+      .max()
+      .map_or(0, |&id| id + 1); // past_libs的keys是从0开始的，所以+1
     // 如果启用了expand选项，那么就不走这一条路，
     // 直接使用expand的操作获取到所以用到的rewrites
     let expand_message = if self.config.op_pack_config.enable_meta_au {
@@ -812,7 +850,7 @@ where
           .with_area_estimator(self.config.area_estimator.clone())
           .with_delay_estimator(self.config.delay_estimator.clone())
           .with_bb_query(self.bb_query.clone())
-          .build(&aeg, &root);
+          .build(&aeg, aeg_roots);
 
         println!(
           "       - Found {} patterns in {}ms",
@@ -853,75 +891,54 @@ where
         learned_lib.messages()
       };
 
-      let mut lib_rewrites = Vec::new();
-      let mut rewrite_conditions = HashMap::new();
-      let mut libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<_>)> =
-        HashMap::new();
+      let mut rewrites_conditions = HashMap::new();
+      let mut searchers = HashMap::new();
+      let mut appliers = HashMap::new();
       for msg in liblearn_messages {
-        lib_rewrites.push(msg.rewrite.clone());
-        rewrite_conditions.insert(msg.lib_id, msg.condition.clone());
-        libs.insert(
-          msg.lib_id,
-          (
-            msg.searcher_pe.clone().into(),
-            msg.applier_pe.clone().into(),
-          ),
-        );
+        let lib_id = msg.lib_id;
+        rewrites_conditions
+          .insert(lib_id, vec![(msg.rewrite.clone(), msg.condition)]);
+        searchers.insert(lib_id, vec![msg.searcher_pe.clone()]);
+        let applier: Pattern<_> = msg.applier_pe.into();
+        appliers.insert(lib_id, applier);
       }
 
-      // for i in 0..lib_rewrites.len() {
-      //   println!("lib{}: {}", i, Pattern::from(libs[&i].1.clone()));
-      // }
-
       ExpandMessage {
-        all_au_rewrites: lib_rewrites,
-        conditions: rewrite_conditions.clone(),
-        libs: libs.clone(),
-        normal_au_count: usize::MAX, // 不会被用到，设置成最大值
-        meta_au_rewrites: HashMap::new(),
+        rewrites_conditions,
+        searchers,
+        appliers,
       }
     };
 
     println!("      🔁 Adding Libs + Beam Search...");
+    // let mut vec_applier = Vec::new();
+    // for (i, applier) in expand_message.appliers.iter() {
+    //   vec_applier.push((i.clone(), applier.clone()));
+    // }
+    // vec_applier.sort_by(|a, b| a.0.cmp(&b.0));
+    // for (lib_id, applier) in vec_applier {
+    //   println!("lib_id: {}, applier: {}", lib_id, applier);
+    // }
+
+    // rewrites_conditions中项的个数表示lib的数目，
+    // vec中元素总个数表明rewrite的数目
+    let num_libs = expand_message.rewrites_conditions.len();
+    let num_rewrites = expand_message
+      .rewrites_conditions
+      .values()
+      .map(|v| v.len())
+      .sum::<usize>();
 
     println!(
       "       • There are {} rewrites and {} libs",
-      expand_message.all_au_rewrites.len(),
-      expand_message.libs.len()
+      num_rewrites, num_libs
     );
     let lib_rewrite_time = Instant::now();
 
-    // // FIXME: test
-    // let mut eg = aeg.clone();
-    // for rewrite in expand_message.all_au_rewrites.iter().rev() {
-    //   println!("rewrite: {}", rewrite.name);
-    //   println!("rewrite: {:?}", rewrite);
-    //   let matches = rewrite.search(&aeg);
-    //   println!("search done");
-    //   //apply
-    //   rewrite.apply(&mut eg, &matches);
-    //   println!("apply done");
-    //   eg.rebuild();
-    //   println!("rebuild done");
-    //   let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
-    //     self.config.final_beams,
-    //     self.config.inter_beams,
-    //     self.config.lps,
-    //     self.config.strategy,
-    //     self.bb_query.clone(),
-    //   ))
-    //   .with_egraph(aeg.clone())
-    //   .with_iter_limit(self.config.lib_iter_limit)
-    //   .with_time_limit(timeout)
-    //   .with_node_limit(1_000_000)
-    //   .run(&vec![rewrite.clone()]);
-    // }
-    // println!("beginning to run lib rewrites");
     let mut new_all_rewrites = expand_message
-      .all_au_rewrites
-      .clone()
-      .into_iter()
-      .rev()
+      .rewrites_conditions
+      .values()
+      .flat_map(|v| v.iter().map(|(r, _)| r.clone()))
       .collect::<Vec<_>>();
     // 将past_lib_rewrites加入，同台竞技，使用的是origin_aeg
     new_all_rewrites.extend(past_lib_rewrites);
@@ -989,6 +1006,10 @@ where
     // }
 
     let isax_cost = egraph[egraph.find(root)].data.clone();
+    // for ecls in egraph.classes() {
+    //   println!("eclass {}: nodes: {:?}, cs: {:?}", ecls.id, ecls.nodes,
+    // ecls.data.cs); }
+    // println!("root: {}", root);
     // let args1 = egraph[egraph.find(root)].nodes[0].args();
     // let args2 = egraph[egraph.find(root)].nodes[1].args();
     // for arg in args1 {
@@ -1020,18 +1041,11 @@ where
     // let all_libs: Vec<_> = learned_lib.libs().collect();
     let mut extract_results = Vec::new();
     let mut chosen_rewrites = Vec::new();
-    let mut learned_libs = Vec::new();
-    let mut rewrites_map = HashMap::new();
+    let mut chosen_libids = HashSet::new();
+    // 存储每个lib选择的重写和库
+    let mut lib_message = ExpandMessage::default();
+
     for i in 0..isax_cost.cs.set.len() {
-      println!(
-        "
-        • Processing lib selection {} of {}, latency: {}, area: {}, libsel: {:?}",
-        i + 1,
-        isax_cost.cs.set.len(),
-        isax_cost.cs.set[i].cycles,
-        isax_cost.cs.set[i].area,
-        isax_cost.cs.set[i].libs.keys(),
-      );
       let mut chosen_rewrites_per_libsel = vec![];
       let mut chosen_libs_per_libsel: HashMap<usize, Pattern<AstNode<Op>>> =
         HashMap::new();
@@ -1041,24 +1055,20 @@ where
           // 从self.lib_rewrites中取出
           // 打印self.lib_rewrites
           // println!("{}: {:?}", lib.0.0, self.lib_rewrites_with_condition);
-          chosen_rewrites_per_libsel.push(
+
+          chosen_rewrites_per_libsel.extend(
             self
-              .lib_rewrites_with_condition
+              .past_lib_message
+              .rewrites_conditions
               .get(&lib.0.0)
               .unwrap()
-              .0
+              .iter()
+              .map(|(r, _)| r.clone())
               .clone(),
           );
           chosen_libs_per_libsel
-            .insert(lib.0.0, self.past_libs.get(&lib.0.0).unwrap().clone());
-          rewrites_map.insert(
-            lib.0.0,
-            self
-              .lib_rewrites_with_condition
-              .get(&lib.0.0)
-              .unwrap()
-              .clone(),
-          );
+            .insert(lib.0.0, self.past_lib_message.appliers[&lib.0.0].clone());
+          lib_message.insert_from_messages(lib.0.0, &self.past_lib_message);
         } else {
           // let new_lib = lib.0.0 - max_lib_id;
           // chosen_rewrites.push(lib_rewrites[new_lib].clone());
@@ -1070,44 +1080,45 @@ where
           //     rewrite_conditions[new_lib].clone(),
           //   ),
           // );
-          if lib.0.0 < expand_message.normal_au_count {
-            // 说明是一个正常的lib
-            let new_lib = lib.0.0 - max_lib_id;
-            // println!("new_lib: {}", new_lib);
-            chosen_rewrites_per_libsel
-              .push(expand_message.all_au_rewrites[new_lib].clone());
-            learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
-            chosen_libs_per_libsel
-              .insert(lib.0.0, expand_message.libs[&lib.0.0].clone().1);
-            // println!(
-            //   "choose: {}",
-            //   Pattern::from(expand_message.libs[&lib.0.0].0.clone())
-            // );
-            rewrites_map.insert(
-              lib.0.0,
-              (
-                expand_message.all_au_rewrites[new_lib].clone(),
-                expand_message.conditions[&lib.0.0].clone(),
-              ),
-            );
-          } else {
-            // 说明是一个meta lib
-            println!("        • We have leaned a meta lib !");
-            chosen_rewrites_per_libsel
-              .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
-            learned_libs.push((lib.0.0, expand_message.libs[&lib.0.0].clone()));
-            chosen_libs_per_libsel
-              .insert(lib.0.0, expand_message.libs[&lib.0.0].clone().1);
-            for rewrite in expand_message.meta_au_rewrites[&lib.0.0].clone() {
-              rewrites_map.insert(
-                lib.0.0,
-                (rewrite.clone(), expand_message.conditions[&lib.0.0].clone()),
-              );
-            }
-          }
+
+          // println!("new_lib: {}", new_lib);
+          chosen_rewrites_per_libsel.extend(
+            expand_message
+              .rewrites_conditions
+              .get(&lib.0.0)
+              .unwrap()
+              .iter()
+              .map(|(r, _)| r.clone())
+              .clone(),
+          );
+          chosen_libs_per_libsel
+            .insert(lib.0.0, expand_message.appliers[&lib.0.0].clone());
+          // println!(
+          //   "choose: {}",
+          //   Pattern::from(expand_message.libs[&lib.0.0].0.clone())
+          // );
+          lib_message.insert_from_messages(lib.0.0, &expand_message);
+
+          // } else {
+          //   // 说明是一个meta lib
+          //   println!("        • We have leaned a meta lib !");
+          //   chosen_rewrites_per_libsel
+          //     .extend(expand_message.meta_au_rewrites[&lib.0.0].clone());
+          //   learned_libs.push((lib.0.0,
+          // expand_message.libs[&lib.0.0].clone()));
+          //   chosen_libs_per_libsel
+          //     .insert(lib.0.0, expand_message.libs[&lib.0.0].clone().1);
+          //   for rewrite in expand_message.meta_au_rewrites[&lib.0.0].clone()
+          // {     rewrites_map.insert(
+          //       lib.0.0,
+          //       (rewrite.clone(),
+          // expand_message.conditions[&lib.0.0].clone()),     );
+          //   }
+          // }
         }
       }
       chosen_rewrites.extend(chosen_rewrites_per_libsel.clone());
+
       // 更新annotated_egraphs
       // annotated_egraphs.push(AnnotatedEGraph::new(
       //   origin_aeg.clone(),
@@ -1141,8 +1152,12 @@ where
       let (cycles, area) = rec_cost(&best, &self.bb_query);
       // 组装成一个ExtractResult
       let es = ExtractResult::new(best, chosen_libs_per_libsel, cycles, area);
+      chosen_libids.extend(es.libs.keys().cloned());
       extract_results.push(es);
     }
+
+    // 使用chosen_libids过滤lib_message
+    lib_message.retain_with_ids(&chosen_libids);
 
     // deduplicate chosen_rewrites
     chosen_rewrites.sort_unstable_by_key(|r| r.name.clone());
@@ -1157,13 +1172,20 @@ where
     //   "extract_time".to_string(),
     //   format!("{}ms", ex_time.elapsed().as_millis()).to_string(),
     // );
+    println!("         • Extracted {} results.", extract_results.len());
+
+    for (i, es) in extract_results.iter().enumerate() {
+      println!(
+        "           • es{}: cycles: {}, area: {}",
+        i, es.cycles, es.area
+      );
+    }
     ParetoResult {
       num_libs: chosen_rewrites.len(),
-      rewrites_with_conditon: rewrites_map,
+      lib_message,
       extract_results,
       vectorized_egraph_with_root: vectorized_egraph_with_root,
       run_time: start_time.elapsed(),
-      learned_lib: learned_libs,
       message,
     }
   }
@@ -1362,8 +1384,20 @@ where
     + Send
     + Sync
     + Debug
-    + 'static,
-  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+    + 'static
+    + OperationInfo,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + 'static
+    + Display
+    + FromStr
+    + TypeAnalysis,
   LA: Debug + Default + Clone,
   LD: Debug + Default + Clone,
   TypeSet<T>: ClassMatch,
