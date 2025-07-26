@@ -1007,8 +1007,11 @@ where
 
     let isax_cost = egraph[egraph.find(root)].data.clone();
     // for ecls in egraph.classes() {
-    //   println!("eclass {}: nodes: {:?}, cs: {:?}", ecls.id, ecls.nodes,
-    // ecls.data.cs); }
+    //   println!(
+    //     "eclass {}: nodes: {:?}, cs: {:?}",
+    //     ecls.id, ecls.nodes, ecls.data.cs
+    //   );
+    // }
     // println!("root: {}", root);
     // let args1 = egraph[egraph.find(root)].nodes[0].args();
     // let args2 = egraph[egraph.find(root)].nodes[1].args();

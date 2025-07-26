@@ -781,6 +781,17 @@ where
         &mut visited,
       );
     }
+    // 如果还存在没有访问的eclass，则计算它们的哈希
+    for eclass in egraph.classes() {
+      if !visited.contains(&eclass.id) {
+        Self::calculate_all_hash_with_visited(
+          egraph,
+          &mut ecls_hash,
+          eclass.id,
+          &mut visited,
+        );
+      }
+    }
     ecls_hash
   }
 
@@ -1534,19 +1545,19 @@ where
         );
         let searcher_pe = msg.searcher_pe.clone();
         let searcher: Pattern<_> = searcher_pe.clone().into();
-        let conditional_applier = ConditionalApplier {
-          condition: msg.condition.clone(),
-          applier: applier.clone(),
-        };
+        // let conditional_applier = ConditionalApplier {
+        //   condition: msg.condition.clone(),
+        //   applier: applier.clone(),
+        // };
         let name = if self.meta_au_config.enable_meta_au {
           format!("meta_anti-unify {i}")
         } else {
           format!("anti-unify {i}")
         };
-        let applier_pe = applier.into();
+        let applier_pe = applier.clone().into();
         LiblearnMessage {
           lib_id: i,
-          rewrite: Rewrite::new(name, searcher, conditional_applier)
+          rewrite: Rewrite::new(name, searcher, applier)
             .unwrap_or_else(|_| unreachable!()),
           searcher_pe,
           applier_pe,

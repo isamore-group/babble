@@ -1109,7 +1109,6 @@ where
       .with_iter_limit(4)
       .run(lower_dsrs);
     let egraph = runner.egraph;
-
     (egraph.clone(), egraph.find(new_id))
   };
 
