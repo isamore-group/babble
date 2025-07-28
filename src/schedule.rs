@@ -224,7 +224,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     for node in expr {
       if node.operation().is_op() {
         let node_latency = node.op_latency_cpu(&self.bb_query);
-        // println!("Node {:?} latency: {}", node, node_latency);
+        println!("Node {:?} latency: {}", node, node_latency);
         if have_loop {
           latency_cpu_f64 += node_latency
             * node.operation().op_execution_count(&self.bb_query) as f64
@@ -300,11 +300,21 @@ where
       node.as_binding_expr()
     {
       cycles += (lat_acc * exe_count) as f64;
+      println!(
+        "Node {:?} has lib {}, latency: {}, execution count: {}",
+        node, lid, lat_acc, exe_count
+      );
       if used_lib.insert(lid) {
         area += cost;
       }
     } else if node.operation().is_op() {
       cycles += node.op_latency_cpu(bb_query) * exe_count as f64;
+      println!(
+        "Node {:?} is an op, latency: {}, execution count: {}",
+        node,
+        node.op_latency_cpu(bb_query),
+        exe_count
+      );
     }
   }
   (cycles, area)

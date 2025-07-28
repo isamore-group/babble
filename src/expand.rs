@@ -759,9 +759,9 @@ where
     "        • expand::learned {} meta libs",
     learn_meta_lib.size()
   );
-  // for lib in learn_meta_lib.libs() {
-  //   println!("meta lib: {}", lib);
-  // }
+  for lib in learn_meta_lib.libs() {
+    println!("meta lib: {}", lib);
+  }
 
   let mut rewrites_conditions: HashMap<
     usize,

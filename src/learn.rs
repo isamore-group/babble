@@ -1528,6 +1528,7 @@ where
       .clone()
       .map(|msg| msg.rewrite)
       .collect::<Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, Type>>>>();
+
     let runner = Runner::<_, _, ()>::new(ISAXAnalysis::default())
       .with_egraph(self.egraph.clone())
       .with_time_limit(Duration::from_secs(1000))

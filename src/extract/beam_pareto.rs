@@ -133,26 +133,24 @@ impl CostSet {
       }
     }
 
-    // // if the set is empty, we return one of the lib selections
-    // if set.is_empty() {
-    //   set = if self.set.len() > 0 {
-    //     self.set.clone()
-    //   } else if other.set.len() > 0 {
-    //     other.set.clone()
-    //   } else {
-    //     vec![LibSel::new()]
-    //   };
-    // }
     // println!("set: {:?}", set);
     CostSet { set }
   }
 
   /// Combines two `CostSets` by unioning them together.
   /// Used for e.g. different `ENodes` of an `EClass`.
+
   pub fn combine(&mut self, other: CostSet) {
-    // println!("combine");
-    self.set.append(other.set.clone().as_mut());
-    // Sort the combined set.
+    // 使用HashSet去重，假设Cost实现了Eq和Hash
+    let mut seen = HashSet::new();
+
+    // 先合并两个CostSets
+    self.set.append(&mut other.set.clone());
+
+    // 使用HashSet去重
+    self.set.retain(|cost| seen.insert(cost.clone()));
+
+    // 排序
     self.set.sort_by(|a, b| {
       a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area).then({
         let mut a_libids = a.libs.keys().collect::<Vec<_>>();
@@ -190,7 +188,27 @@ impl CostSet {
         new_set.push(cand.clone());
       }
     }
-    self.set = new_set;
+    // 使用HashMap来去重，并选择最小的cycles
+    let mut unique_set: HashMap<Vec<(LibId, LibInfo)>, LibSel> = HashMap::new();
+
+    for cand in new_set.into_iter() {
+      // 将 HashMap<LibId, LibInfo> 转换为 Vec<(LibId, LibInfo)>
+      let libs_as_vec: Vec<(LibId, LibInfo)> =
+        cand.libs.clone().into_iter().collect();
+
+      // 如果libs已存在，选择cycles最小的
+      unique_set
+        .entry(libs_as_vec)
+        .and_modify(|existing| {
+          if existing.cycles > cand.cycles {
+            *existing = cand.clone();
+          }
+        })
+        .or_insert(cand);
+    }
+
+    // 最后把去重后的集合赋值回self.set
+    self.set = unique_set.into_iter().map(|(_, v)| v).collect();
   }
 
   #[must_use]
@@ -224,6 +242,9 @@ impl CostSet {
 
   /// If the set is too large, prune it down to the best `beam_size` items.
   pub fn prune(&mut self, beam_size: usize) {
+    if beam_size == 0 {
+      self.set.clear();
+    }
     // println!("prune");
     if self.set.len() > beam_size {
       // Keeps the `beam_size` `LibSel` with the highest latency gain.
@@ -288,6 +309,21 @@ pub struct LibInfo {
   /// The key is the Id of the instance, and the value is the number of times
   /// it appears.
   pub instances: HashMap<Id, usize>,
+}
+
+// 为LibInfo实现Hash
+impl Hash for LibInfo {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    self.latency_acc.hash(state);
+    self.latency_cpu.hash(state);
+    self.area.hash(state);
+    // 对instances的keys进行哈希
+    let mut keys: Vec<&Id> = self.instances.keys().collect();
+    keys.sort(); // Sort to ensure consistent ordering
+    for key in keys {
+      key.hash(state);
+    }
+  }
 }
 
 /// A `LibSel` is a selection of library functions, paired with two
@@ -424,6 +460,7 @@ impl LibSel {
       }
     }
     res.cycles += other.cycles;
+    // println!("res: {:?}", res);
     Some(res)
   }
 
@@ -777,18 +814,18 @@ where
   type Data = ISAXCost<T>;
 
   fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-    // println!("merge");
+    // println!("merge: {:?} -> {:?}", from, to);
     // println!("{:?}", to);
     // println!("{:?}", &from);
     let a0 = to.clone();
-    if to.bb.len() == 0 {
-      to.bb = from.bb.clone();
-    }
+    // to和from的bb信息合并，并排序
+    to.bb.extend(from.bb.clone());
+    to.bb.sort();
+    to.bb.dedup(); // 去重
 
     // Merging consists of combination, followed by unification and beam
     // pruning.
     to.cs.combine(from.cs.clone());
-    // println!("combined cost set: {:?}", to.cs);
 
     // let exe_count = match to.bb.len() {
     //   0 => 1,
@@ -835,8 +872,6 @@ where
     egraph: &mut EGraph<AstNode<Op>, Self>,
     enode: &AstNode<Op>,
   ) -> Self::Data {
-    // println!("make");
-
     // calculate the type
     // println!("enode: {:?}", enode);
     let children = enode.children().to_vec();
@@ -886,8 +921,11 @@ where
       .max()
       .unwrap_or(1);
     let mut vec_len = enode.operation().get_vec_len();
-    if let Some(_) = enode.as_binding_expr() {
+    // 如果是vec节点，那么取vec_len的最大值，否则直接设置成1
+    if enode.operation().is_vector_op() {
       vec_len = vec_len.max(children_vec_len);
+    } else {
+      vec_len = 1;
     }
 
     let x = |i: &Id| &egraph[*i].data.cs;
@@ -913,6 +951,9 @@ where
 
     match Teachable::as_binding_expr(enode) {
       Some(BindingExpr::Lib(id, _, b, lat_cpu, lat_acc, area)) => {
+        if lat_cpu <= lat_acc || area == 0 {
+          return ISAXCost::new(x(b).clone(), ty, bbs, vec_len);
+        }
         // This is a lib binding!
         // cross e1, e2 and introduce a lib!
         // println!("before adding lib: {:#?}", x(b));
@@ -920,8 +961,8 @@ where
         // e.split_cycles(vec_len);
         let mut e = x(b).add_lib(
           id,
-          lat_acc as f64 / vec_len as f64,
-          lat_cpu as f64 / vec_len as f64,
+          lat_acc as f64, // as f64 / vec_len as f64,
+          lat_cpu as f64, // as f64 / vec_len as f64,
           area,
           *b,
           // x(f),
@@ -946,7 +987,7 @@ where
           // 0 args. Return new.
           let mut cs = CostSet::new();
           cs.inc_cycles(op_latency * exe_count as f64);
-          cs.split_cycles(vec_len);
+          // cs.split_cycles(vec_len);
           ISAXCost::new(cs, ty, enode.operation().get_bbs_info(), vec_len)
         } else if enode.args().len() == 1 {
           // 1 arg. Get child cost set, inc, and return.
@@ -957,8 +998,12 @@ where
 
           e.inc_cycles(op_latency * exe_count as f64);
 
-          // println!("make done");
-          e.split_cycles(vec_len);
+          // 如果是get_vec节点，那么就需要除以vec_len
+          if enode.operation().is_get_from_vec() {
+            // 拿到子节点的vec_len
+            let child_vec_len = egraph[enode.args()[0]].data.vec_len;
+            e.split_cycles(child_vec_len);
+          }
 
           ISAXCost::new(e, ty, bbs, vec_len)
         } else {
@@ -970,19 +1015,25 @@ where
           // println!("begin cross,args.len: {}", enode.args().len());
           // println!("{:#?}", e);
           for cs in &args[1..] {
-            // println!("crossing with: {:#?}", x(cs));
+            // println!("crossing with: {:#?}", cs);
             e = e.cross(cs, self_ref.lps);
 
             e.unify();
             // println!("crossed: {:#?}", e);
           }
-          // println!("enode: {:?}, e.len: {}", enode, e.set.len()););
+
           e.prune(self_ref.inter_beam);
+          // println!("inter beam: {}", self_ref.inter_beam);
           // println!("e.len after update: {}", e.set.len());
           e.inc_cycles(op_latency * exe_count as f64);
+          // // 如果是vec节点，那么就需要除以vec_len
+          // if enode.operation().is_vec() {
+          //   e.split_cycles(vec_len);
+          // }
           // println!("make done");
-          e.split_cycles(vec_len);
+          // e.split_cycles(vec_len);
           // println!("make done");
+          // println!("e: {:?}", e);
           ISAXCost::new(e, ty, bbs, vec_len)
         }
       }
@@ -1621,7 +1672,7 @@ where
     } else if enode.operation().is_op() {
       enode.op_latency_cpu(&self.bb_query) * exe_count as f64
     } else {
-      0.0
+      0.0 // This is a no-op, so no cost
     }
   }
 }

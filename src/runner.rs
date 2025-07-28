@@ -30,7 +30,7 @@ use crate::{
   perf_infer,
   rewrites::{self, TypeMatch},
   schedule::{Schedulable, rec_cost},
-  vectorize::{VectorCF, VectorConfig, vectorize},
+  vectorize::{VectorConfig, vectorize},
 };
 use egg::{
   Analysis, EGraph, Extractor, Id, Language, LpExtractor, Pattern, RecExpr,
@@ -1012,7 +1012,8 @@ where
     //     ecls.id, ecls.nodes, ecls.data.cs
     //   );
     // }
-    // println!("root: {}", root);
+
+    println!("root: {}", root);
     // let args1 = egraph[egraph.find(root)].nodes[0].args();
     // let args2 = egraph[egraph.find(root)].nodes[1].args();
     // for arg in args1 {
@@ -1034,20 +1035,23 @@ where
     // egraph.dot().to_png("target/foo.png").unwrap();
 
     // for ecls in egraph.classes() {
-    //   if ecls.nodes.iter().any(|n| n.operation().is_lib()) {
-    //     println!("nodes: {:#?}", ecls.nodes);
-    //     println!("cs: {:?}", ecls.data.cs);
-    //   }
+    //   // if ecls.nodes.iter().any(|n| n.operation().is_lib()) {
+    //   println!(
+    //     "ecls: {}, nodes: {:?}, cs: {:?}",
+    //     ecls.id, ecls.nodes, ecls.data.cs
+    //   );
+    //   // println!("cs: {:?}", ecls.data.cs);
+    //   // }
     // }
     // panic!("Debugging egraph");
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
+    println!("cs: {:?}", isax_cost.cs);
     let mut extract_results = Vec::new();
     let mut chosen_rewrites = Vec::new();
     let mut chosen_libids = HashSet::new();
     // 存储每个lib选择的重写和库
     let mut lib_message = ExpandMessage::default();
-
     for i in 0..isax_cost.cs.set.len() {
       let mut chosen_rewrites_per_libsel = vec![];
       let mut chosen_libs_per_libsel: HashMap<usize, Pattern<AstNode<Op>>> =
@@ -1152,6 +1156,20 @@ where
       aeg = eliminate_lambda(&aeg);
       let mut lp_extractor = LpExtractor::new(&aeg, lp_cf);
       let best = lp_extractor.solve(root);
+      println!("the best solution: ");
+      for (id, node) in best.iter().enumerate() {
+        println!("  {}: {:?}", id, node);
+      }
+      // 取出来最终表达式之后，取出真正选择的lib_id
+      let mut lib_ids = HashSet::new();
+      for node in best.iter() {
+        if node.operation().is_lib() {
+          let lib_id = node.operation().get_libid();
+          lib_ids.insert(lib_id);
+          // println!("lib_id: {}", lib_id,);
+        }
+      }
+      chosen_libs_per_libsel.retain(|lib_id, _| lib_ids.contains(lib_id));
       let (cycles, area) = rec_cost(&best, &self.bb_query);
       // 组装成一个ExtractResult
       let es = ExtractResult::new(best, chosen_libs_per_libsel, cycles, area);
