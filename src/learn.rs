@@ -1399,6 +1399,7 @@ where
     );
     let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
     let mut new_applier = applier.clone();
+    // println!("applier: {}, area: {}", applier, area);
     for node in new_applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
@@ -1528,7 +1529,6 @@ where
       .clone()
       .map(|msg| msg.rewrite)
       .collect::<Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, Type>>>>();
-
     let runner = Runner::<_, _, ()>::new(ISAXAnalysis::default())
       .with_egraph(self.egraph.clone())
       .with_time_limit(Duration::from_secs(1000))
@@ -1539,6 +1539,8 @@ where
       .map(|msg| {
         let i = msg.lib_id;
         let max_bitwidth = max_bitwidths.get(&LibId(i)).cloned().unwrap_or(32);
+        // 如果max_bitwidth为0，就设置为32
+        let max_bitwidth = if max_bitwidth == 0 { 32 } else { max_bitwidth };
         let applier = self.make_cost(
           msg.searcher_pe.clone().into(),
           msg.applier_pe.clone().into(),

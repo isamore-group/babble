@@ -13,6 +13,7 @@ use std::{
 
 use bitvec::{bitvec, order::Lsb0, vec};
 use lexpr::print;
+use nom::lib;
 use serde::Deserialize;
 
 use crate::{
@@ -29,7 +30,7 @@ use crate::{
   },
   perf_infer,
   rewrites::{self, TypeMatch},
-  schedule::{Schedulable, rec_cost},
+  schedule::{Schedulable, Scheduler, rec_cost},
   vectorize::{VectorConfig, vectorize},
 };
 use egg::{
@@ -1013,7 +1014,7 @@ where
     //   );
     // }
 
-    println!("root: {}", root);
+    // println!("root: {}", root);
     // let args1 = egraph[egraph.find(root)].nodes[0].args();
     // let args2 = egraph[egraph.find(root)].nodes[1].args();
     // for arg in args1 {
@@ -1046,7 +1047,7 @@ where
     // panic!("Debugging egraph");
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
-    println!("cs: {:?}", isax_cost.cs);
+    // println!("cs: {:#?}", isax_cost.cs);
     let mut extract_results = Vec::new();
     let mut chosen_rewrites = Vec::new();
     let mut chosen_libids = HashSet::new();
@@ -1135,6 +1136,7 @@ where
       //   isax_cost.cs.set[i].cycles.into_inner() as usize,
       //   isax_cost.cs.set[i].area,
       // ));
+
       let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
         self.config.final_beams,
         self.config.inter_beams,
@@ -1149,17 +1151,64 @@ where
       let mut aeg = runner.egraph;
       perf_infer::perf_infer(&mut aeg, &vec![root]);
 
+      // 在此之前，为aeg带上准确的lat_acc，用于ILP
+      let mut exact_lat_acc_map = HashMap::new();
+      let scheduler = Scheduler::new(
+        self.config.clock_period,
+        self.config.area_estimator.clone(),
+        self.config.delay_estimator.clone(),
+        self.bb_query.clone(),
+      );
+      for ecls in aeg.classes() {
+        for node in ecls.nodes.iter() {
+          if node.operation().is_lib() {
+            let mut bbs = node.operation().get_bbs_info();
+            bbs.sort();
+            let lib_id = node.operation().get_libid();
+            if !exact_lat_acc_map.contains_key(&(lib_id, bbs.clone())) {
+              // 拿到lib_id对应的applier
+              let applier_expr =
+                chosen_libs_per_libsel.get(&lib_id).unwrap().clone().ast;
+              let new_expr = applier_expr
+                .iter()
+                .map(|node| match node {
+                  egg::ENodeOrVar::ENode(ast_node) => {
+                    let mut new_ast_node = ast_node.clone();
+                    // 更新正确的bbs信息
+                    new_ast_node.operation_mut().set_bbs_info(bbs.clone());
+                    new_ast_node
+                  }
+                  egg::ENodeOrVar::Var(_) => Op::var(0),
+                })
+                .collect::<Vec<AstNode<Op>>>();
+              let new_expr = RecExpr::from(new_expr);
+              let (_, lat_acc, _) = scheduler.asap_schedule(&new_expr);
+              exact_lat_acc_map.insert((lib_id, bbs), lat_acc);
+            }
+          }
+        }
+      }
+      // 打印extract_lat_acc_map
+      // println!("extract_lat_acc_map: {:#?}", exact_lat_acc_map);
+      aeg.analysis.with_lat_map(exact_lat_acc_map.clone());
+
       // let mut extractor = LibExtractor::new(&aeg, self.bb_query.clone());
       // let best = extractor.best(annotated_egraph.root);
+
+      // for ecls in aeg.classes() {
+      //   println!("eclass {}: nodes: {:?}", ecls.id, ecls.nodes,);
+      // }
+
+      // aeg.dot().to_png("target/aeg.png").unwrap();
 
       let lp_cf = ISAXLpCF::new(self.bb_query.clone());
       aeg = eliminate_lambda(&aeg);
       let mut lp_extractor = LpExtractor::new(&aeg, lp_cf);
       let best = lp_extractor.solve(root);
-      println!("the best solution: ");
-      for (id, node) in best.iter().enumerate() {
-        println!("  {}: {:?}", id, node);
-      }
+      // println!("best solution:");
+      // for (id, node) in best.iter().enumerate() {
+      //   println!("  {}: {:?}", id, node);
+      // }
       // 取出来最终表达式之后，取出真正选择的lib_id
       let mut lib_ids = HashSet::new();
       for node in best.iter() {
@@ -1170,7 +1219,7 @@ where
         }
       }
       chosen_libs_per_libsel.retain(|lib_id, _| lib_ids.contains(lib_id));
-      let (cycles, area) = rec_cost(&best, &self.bb_query);
+      let (cycles, area) = rec_cost(&best, &self.bb_query, exact_lat_acc_map);
       // 组装成一个ExtractResult
       let es = ExtractResult::new(best, chosen_libs_per_libsel, cycles, area);
       chosen_libids.extend(es.libs.keys().cloned());

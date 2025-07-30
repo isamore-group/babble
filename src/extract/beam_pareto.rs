@@ -1,7 +1,7 @@
 //! `extract::partial` implements a non-ILP-based extractor based on partial
 //! orderings of learned library sets.
 use crate::{
-  analysis::SimpleAnalysis,
+  analysis::{self, SimpleAnalysis},
   ast_node::{Arity, AstNode},
   bb_query::BBQuery,
   learn::LibId,
@@ -584,6 +584,8 @@ where
   /// larger amount will be pruned.
   lps: usize,
   bb_query: BBQuery,
+  /// a map to store the true lat_acc for (lib_id, bbs)
+  lat_acc_map: HashMap<(usize, Vec<String>), usize>,
   /// Marker to indicate that this struct uses the Op type parameter
   op_phantom: PhantomData<Op>,
   ty_phantom: PhantomData<T>,
@@ -605,6 +607,7 @@ where
       inter_beam,
       lps,
       bb_query,
+      lat_acc_map: HashMap::new(),
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
     }
@@ -617,8 +620,28 @@ where
       inter_beam: 0,
       lps: 1,
       bb_query: BBQuery::default(),
+      lat_acc_map: HashMap::new(),
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
+    }
+  }
+
+  pub fn with_lat_map(
+    &mut self,
+    lat_map: HashMap<(usize, Vec<String>), usize>,
+  ) -> &mut Self {
+    self.lat_acc_map = lat_map;
+    self
+  }
+
+  #[must_use]
+  pub fn get_lat_acc(&self, lib_id: usize, bbs: Vec<String>) -> Option<usize> {
+    // 如果lat_acc_map中有对应的key，则返回对应的值
+    if let Some(lat_acc) = self.lat_acc_map.get(&(lib_id, bbs)) {
+      Some(*lat_acc)
+    } else {
+      // 否则返回0
+      None
     }
   }
 }
@@ -954,11 +977,8 @@ where
         if lat_cpu <= lat_acc || area == 0 {
           return ISAXCost::new(x(b).clone(), ty, bbs, vec_len);
         }
-        // This is a lib binding!
-        // cross e1, e2 and introduce a lib!
-        // println!("before adding lib: {:#?}", x(b));
-        // println!("nested libs: {:#?}", x(f));
-        // e.split_cycles(vec_len);
+        // 固连的latency是错误的，需要进一步schedule计算，
+        // 首先从f中利用extractor获取完整的表达式
         let mut e = x(b).add_lib(
           id,
           lat_acc as f64, // as f64 / vec_len as f64,
@@ -1253,7 +1273,7 @@ where
 
   /// Expression gain used by this extractor
   pub fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> ParetoCost {
-    let (cycles, area) = rec_cost(expr, &self.bb_query);
+    let (cycles, area) = rec_cost(expr, &self.bb_query, HashMap::new());
     // println!("cycles: {}", cycles);
     ParetoCost {
       cycles: OrderedFloat::from(cycles),
@@ -1583,7 +1603,7 @@ where
   }
 
   fn cost_rec(&mut self, expr: &RecExpr<AstNode<Op>>) -> Self::Cost {
-    let (cycles, _) = rec_cost(expr, &self.bb_query);
+    let (cycles, _) = rec_cost(expr, &self.bb_query, HashMap::new());
     println!("cycles: {:?}", cycles);
     OrderedFloat::from(cycles)
   }
@@ -1646,28 +1666,46 @@ where
   egraph_mut
 }
 
-impl<LA, LD, Op, N> LpCostFunction<AstNode<Op>, N> for ISAXLpCF<LA, LD>
+impl<LA, LD, Op, T> LpCostFunction<AstNode<Op>, ISAXAnalysis<Op, T>>
+  for ISAXLpCF<LA, LD>
 where
   AstNode<Op>: Schedulable<LA, LD>,
-  N: Analysis<AstNode<Op>>,
   Op: Clone
     + std::fmt::Debug
     + std::hash::Hash
     + Ord
     + Teachable
     + std::fmt::Display
-    + OperationInfo,
+    + OperationInfo
+    + Arity
+    + Send
+    + Sync
+    + 'static,
+  T: Debug + Default + Clone + PartialEq + Ord + Hash,
+  AstNode<Op>: TypeInfo<T>,
 {
   fn node_cost(
     &mut self,
-    _egraph: &EGraph<AstNode<Op>, N>,
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
     _eclass: Id,
     enode: &AstNode<Op>,
   ) -> f64 {
+    let analysis = egraph.analysis.clone();
     let exe_count = enode.operation().op_execution_count(&self.bb_query);
-    if let Some(BindingExpr::Lib(_, _, _, _, lat_acc, _)) =
+    if let Some(BindingExpr::Lib(lib_id, _, _, _, lat_acc, _)) =
       enode.as_binding_expr()
     {
+      let lib_id = lib_id.0;
+      let mut bbs = enode.operation().get_bbs_info();
+      bbs.sort();
+      let extract_lat_acc = analysis.get_lat_acc(lib_id, bbs.clone());
+      let lat_acc = if let Some(lat) = extract_lat_acc {
+        lat
+      } else {
+        // If we don't have latency for this lib, use the default
+        // latency from the binding expr
+        lat_acc
+      };
       (lat_acc * exe_count) as f64
     } else if enode.operation().is_op() {
       enode.op_latency_cpu(&self.bb_query) * exe_count as f64
@@ -1770,7 +1808,7 @@ where
   }
 
   fn cost(&self, expr: &RecExpr<AstNode<Op>>) -> OrderedFloat<f64> {
-    let (cycles, _) = rec_cost(expr, &self.bb_query);
+    let (cycles, _) = rec_cost(expr, &self.bb_query, HashMap::new());
     // println!("cycles: {}", cycles);
     OrderedFloat::from(cycles)
   }

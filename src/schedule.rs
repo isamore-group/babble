@@ -1,7 +1,12 @@
 //! A simple HLS scheduler used for estimating the area and latency of the
 //! learned libraries.
 
-use std::{cmp, collections::HashSet, fmt::Debug, hash::Hash};
+use std::{
+  cmp,
+  collections::{HashMap, HashSet},
+  fmt::Debug,
+  hash::Hash,
+};
 
 use crate::{
   BindingExpr, LibId, Teachable, ast_node::AstNode, bb_query::BBQuery,
@@ -224,7 +229,6 @@ impl<LA, LD> Scheduler<LA, LD> {
     for node in expr {
       if node.operation().is_op() {
         let node_latency = node.op_latency_cpu(&self.bb_query);
-        println!("Node {:?} latency: {}", node, node_latency);
         if have_loop {
           latency_cpu_f64 += node_latency
             * node.operation().op_execution_count(&self.bb_query) as f64
@@ -246,6 +250,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     for node in expr {
       let node_area =
         node.op_area(&self.area_estimator, node.get_op_args(expr));
+      // println!("Node: {:?}, Area: {}", &node.operation(), node_area,);
       area += node_area;
     }
     // println!("Number of nodes: {}", expr.len());
@@ -268,6 +273,7 @@ impl<LA, LD> Scheduler<LA, LD> {
 pub fn rec_cost<Op, LA, LD>(
   expr: &RecExpr<AstNode<Op>>,
   bb_query: &BBQuery,
+  lat_acc_map: HashMap<(usize, Vec<String>), usize>,
 ) -> (f64, usize)
 where
   AstNode<Op>: Schedulable<LA, LD>,
@@ -299,22 +305,19 @@ where
     if let Some(BindingExpr::Lib(lid, _, _, _, lat_acc, cost)) =
       node.as_binding_expr()
     {
+      let mut bbs = node.operation().get_bbs_info();
+      bbs.sort();
+      let lat_acc = if let Some(lat) = lat_acc_map.get(&(lid.0, bbs.clone())) {
+        *lat
+      } else {
+        lat_acc
+      };
       cycles += (lat_acc * exe_count) as f64;
-      println!(
-        "Node {:?} has lib {}, latency: {}, execution count: {}",
-        node, lid, lat_acc, exe_count
-      );
       if used_lib.insert(lid) {
         area += cost;
       }
     } else if node.operation().is_op() {
       cycles += node.op_latency_cpu(bb_query) * exe_count as f64;
-      println!(
-        "Node {:?} is an op, latency: {}, execution count: {}",
-        node,
-        node.op_latency_cpu(bb_query),
-        exe_count
-      );
     }
   }
   (cycles, area)
