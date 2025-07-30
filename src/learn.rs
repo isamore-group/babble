@@ -1093,7 +1093,7 @@ where
               let (ecls1, _, cls_hash1, subtree_levels1) = &class_data[i];
               let popcount1 = cls_hash1.count_ones();
               let subtree_cnt1 = subtree_levels1.count_ones();
-              for j in i + 1..end {
+              for j in i..end {
                 let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
                 // 包搜索模式下，只使用类型匹配
                 if find_packs && !find_pack_config.prune_similar {

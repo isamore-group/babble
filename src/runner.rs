@@ -35,7 +35,7 @@ use crate::{
 };
 use egg::{
   Analysis, EGraph, Extractor, Id, Language, LpExtractor, Pattern, RecExpr,
-  Rewrite, Runner as EggRunner, SimpleScheduler, Var,
+  Rewrite, Runner as EggRunner, Searcher, SimpleScheduler, Var,
 };
 use log::{debug, info};
 
@@ -828,7 +828,7 @@ where
       .map_or(0, |&id| id + 1); // past_libs的keys是从0开始的，所以+1
     // 如果启用了expand选项，那么就不走这一条路，
     // 直接使用expand的操作获取到所以用到的rewrites
-    let expand_message = if self.config.op_pack_config.enable_meta_au {
+    let mut expand_message = if self.config.op_pack_config.enable_meta_au {
       expand(
         aeg.clone(),
         root,
@@ -910,6 +910,25 @@ where
         appliers,
       }
     };
+
+    // FIXME: 复用性至上！！！
+    // 需要筛掉一些lib，如果所有lib对应的searcher匹配到的片段只有一个，
+    // 那么就删除这个lib
+    for lib in expand_message.libs() {
+      let searchers = expand_message.searchers.get(&lib).unwrap();
+      let mut cnt = 0;
+      for searcher in searchers {
+        let searcher = Pattern::from(searcher.clone());
+        let results = searcher.search(&aeg);
+        cnt += results.len();
+        if cnt > 1 {
+          break;
+        }
+      }
+      if cnt <= 1 {
+        expand_message.delete_lib(lib);
+      }
+    }
 
     println!("      🔁 Adding Libs + Beam Search...");
     // let mut vec_applier = Vec::new();
@@ -1205,10 +1224,10 @@ where
       aeg = eliminate_lambda(&aeg);
       let mut lp_extractor = LpExtractor::new(&aeg, lp_cf);
       let best = lp_extractor.solve(root);
-      println!("best solution:");
-      for (id, node) in best.iter().enumerate() {
-        println!("  {}: {:?}", id, node);
-      }
+      // println!("best solution:");
+      // for (id, node) in best.iter().enumerate() {
+      //   println!("  {}: {:?}", id, node);
+      // }
       // 取出来最终表达式之后，取出真正选择的lib_id
       let mut lib_ids = HashSet::new();
       for node in best.iter() {

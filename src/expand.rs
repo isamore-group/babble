@@ -454,6 +454,10 @@ where
     ExpandMessage::default()
   }
 
+  pub fn libs(&self) -> Vec<usize> {
+    self.rewrites_conditions.keys().cloned().collect()
+  }
+
   pub fn get_exprs(&self) -> Vec<RecExpr<AstNode<Op>>> {
     let mut exprs = Vec::new();
     for lib_id in self.rewrites_conditions.keys() {
@@ -577,6 +581,15 @@ where
     self.searchers.retain(|lib_id, _| ids.contains(lib_id));
     // 保留lib_id在ids中的applier
     self.appliers.retain(|lib_id, _| ids.contains(lib_id));
+  }
+
+  pub fn delete_lib(&mut self, lib_id: usize) {
+    // 删除lib_id对应的rewrite和condition
+    self.rewrites_conditions.remove(&lib_id);
+    // 删除lib_id对应的searcher
+    self.searchers.remove(&lib_id);
+    // 删除lib_id对应的applier
+    self.appliers.remove(&lib_id);
   }
 }
 
