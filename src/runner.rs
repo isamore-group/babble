@@ -1205,10 +1205,10 @@ where
       aeg = eliminate_lambda(&aeg);
       let mut lp_extractor = LpExtractor::new(&aeg, lp_cf);
       let best = lp_extractor.solve(root);
-      // println!("best solution:");
-      // for (id, node) in best.iter().enumerate() {
-      //   println!("  {}: {:?}", id, node);
-      // }
+      println!("best solution:");
+      for (id, node) in best.iter().enumerate() {
+        println!("  {}: {:?}", id, node);
+      }
       // 取出来最终表达式之后，取出真正选择的lib_id
       let mut lib_ids = HashSet::new();
       for node in best.iter() {
