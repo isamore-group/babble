@@ -14,6 +14,7 @@ use egg::{ENodeOrVar, Id, Language, Pattern, RecExpr};
 use itertools::Itertools;
 use log::info;
 use nom::lib;
+use ordered_float::OrderedFloat;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::collections::{HashMap, HashSet};
@@ -115,7 +116,7 @@ where
     let rec_expr: RecExpr<AstNode<Op>> = expr.into();
     let (lat_cpu, lat_acc, area) = self.scheduler.asap_schedule(&rec_expr);
     let gain = if lat_acc >= lat_cpu {
-      0
+      0.0
     } else {
       lat_cpu - lat_acc
     };
@@ -147,8 +148,8 @@ where
     for (_, vec) in hole_map {
       let mut vec = vec;
       vec.sort_by(|a, b| {
-        a.latency_gain()
-          .cmp(&b.latency_gain())
+        OrderedFloat(a.latency_gain())
+          .cmp(&OrderedFloat(b.latency_gain()))
           .reverse()
           .then(a.area_cost().cmp(&b.area_cost()))
       }); // sort by gain desc, then area asc

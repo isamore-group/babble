@@ -29,15 +29,15 @@ impl<Op: PartialEq + OperationInfo, T: PartialEq + Clone + Ord> PartialEq
   fn eq(&self, other: &Self) -> bool {
     // if the operation is list or vec , the args can be equai when they have
     // different order but the same element
-    if self.operation.is_vec() && other.operation.is_vec() {
-      let mut self_args = self.args.clone();
-      let mut other_args = other.args.clone();
-      self_args.sort();
-      other_args.sort();
-      return self.operation == other.operation && self_args == other_args;
-    } else {
-      return self.operation == other.operation && self.args == other.args;
-    }
+    // if self.operation.is_vec() && other.operation.is_vec() {
+    //   let mut self_args = self.args.clone();
+    //   let mut other_args = other.args.clone();
+    //   self_args.sort();
+    //   other_args.sort();
+    //   return self.operation == other.operation && self_args == other_args;
+    // } else {
+    return self.operation == other.operation && self.args == other.args;
+    // }
   }
 }
 
@@ -79,13 +79,13 @@ where
     // if the operation is list or vec , the args can be equai when they have
     // different order but the same element
     self.operation.hash(state);
-    if self.operation.is_vec() {
-      let mut args = self.args.clone();
-      args.sort();
-      args.hash(state);
-    } else {
-      self.args.hash(state);
-    }
+    // if self.operation.is_vec() {
+    //   let mut args = self.args.clone();
+    //   args.sort();
+    //   args.hash(state);
+    // } else {
+    self.args.hash(state);
+    // }
   }
 }
 

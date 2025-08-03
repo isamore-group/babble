@@ -45,6 +45,7 @@ use egg::{
 use itertools::Itertools;
 use lexpr::print;
 use log::{debug, info};
+use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops;
@@ -133,11 +134,13 @@ pub struct AU<Op: OperationInfo + Clone + Ord, T: Clone + Ord, Type> {
   /// delay
   delay: usize,
   /// latency gain
-  latency_gain: usize,
+  latency_gain: f64,
   /// area_cost
   area_cost: usize,
   /// strategy for sort
   liblearn_cost: LiblearnCost,
+  /// search len
+  search_len: usize,
   /// Type info
   _phantom: std::marker::PhantomData<Type>,
 }
@@ -185,7 +188,7 @@ where
   pub fn new(
     expr: PartialExpr<Op, T>,
     delay: usize,
-    latency_gain: usize,
+    latency_gain: f64,
     area_cost: usize,
     liblearn_cost: LiblearnCost,
   ) -> Self {
@@ -195,6 +198,7 @@ where
       latency_gain,
       area_cost,
       liblearn_cost,
+      search_len: 0,
       _phantom: std::marker::PhantomData,
     }
   }
@@ -221,9 +225,10 @@ where
     Self {
       expr,
       delay,
-      latency_gain: 0,
+      latency_gain: 0.0,
       area_cost: 0,
       liblearn_cost,
+      search_len: 0,
       _phantom: std::marker::PhantomData,
     }
   }
@@ -238,7 +243,7 @@ impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord, Type> AU<Op, T, Type> {
     self.delay
   }
 
-  pub fn latency_gain(&self) -> usize {
+  pub fn latency_gain(&self) -> f64 {
     self.latency_gain
   }
 
@@ -248,6 +253,10 @@ impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord, Type> AU<Op, T, Type> {
 
   pub fn liblearn_cost(&self) -> LiblearnCost {
     self.liblearn_cost
+  }
+
+  pub fn set_search_len(&mut self, search_len: usize) {
+    self.search_len = search_len;
   }
 }
 // 为AU实现Ord，只对比matches的大小
@@ -263,11 +272,12 @@ impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> PartialOrd
     let ord = match self.liblearn_cost {
       LiblearnCost::Size => self.expr.size().cmp(&other.expr.size()),
       LiblearnCost::Delay => self.delay.cmp(&other.delay),
-      LiblearnCost::LatencyGainArea => self
-        .area_cost
-        .cmp(&other.area_cost)
-        .then(other.latency_gain.cmp(&self.latency_gain)),
-      // area从小到大，延迟增益从大到小
+      LiblearnCost::LatencyGainArea => {
+        self.area_cost.cmp(&other.area_cost).then(
+          OrderedFloat(other.latency_gain)
+            .cmp(&OrderedFloat(self.latency_gain)),
+        )
+      } // area从小到大，延迟增益从大到小
     }
     .then(other_holes.cmp(&self_holes))
     .then(self.expr.cmp(&other.expr));
@@ -287,10 +297,12 @@ impl<Op: Eq + OperationInfo + Clone + Ord, T: Eq + Clone + Ord, Type> Ord
     match self.liblearn_cost {
       LiblearnCost::Size => self.expr.size().cmp(&other.expr.size()),
       LiblearnCost::Delay => self.delay.cmp(&other.delay),
-      LiblearnCost::LatencyGainArea => self
-        .area_cost
-        .cmp(&other.area_cost)
-        .then(other.latency_gain.cmp(&self.latency_gain)),
+      LiblearnCost::LatencyGainArea => {
+        self.area_cost.cmp(&other.area_cost).then(
+          OrderedFloat(other.latency_gain)
+            .cmp(&OrderedFloat(self.latency_gain)),
+        )
+      }
     }
     .then(other_holes.cmp(&self_holes))
     .then(self.expr.cmp(&other.expr))
@@ -613,6 +625,7 @@ where
   pub searcher_pe: PartialExpr<Op, Var>,
   pub applier_pe: PartialExpr<Op, Var>,
   pub condition: TypeMatch<Type>,
+  pub search_len: usize,
 }
 
 pub trait DiscriminantEq {
@@ -623,7 +636,7 @@ pub trait DiscriminantEq {
 pub struct AUWithType<Op: OperationInfo + Clone + Ord, Type> {
   pub au: AU<Op, Var, Type>,
   pub ty_map: HashMap<Var, Vec<Type>>,
-  pub detailed_io: Vec<Type>,
+  pub detailed_io: HashMap<String, Type>,
 }
 impl<Op: PartialEq + Eq + OperationInfo + Clone + Ord, Type> PartialEq
   for AUWithType<Op, Type>
@@ -1293,6 +1306,13 @@ where
       }
       learned_lib.aus = sampled_aus;
     }
+    // // 打印一下au_by_state
+    // for (state, aus) in &learned_lib.aus_by_state {
+    //   println!("State {:?}: {:?}", state, aus);
+    // }
+    // for au in learned_lib.aus.iter() {
+    //   println!("Learned AU: {}", Pattern::from(au.au.expr.clone()));
+    // }
     learned_lib
   }
 }
@@ -1399,7 +1419,10 @@ where
     );
     let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
     let mut new_applier = applier.clone();
-    // println!("applier: {}, area: {}", applier, area);
+    // println!(
+    //   "applier: {}, lat_acc: {}, lat_cpu: {}, area: {}",
+    //   applier, lat_acc, lat_cpu, area
+    // );
     for node in new_applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
@@ -1459,7 +1482,7 @@ where
     // 所以需要一个HashMap记录libid和对应的去除了多余信息的au
     let mut au_map_to_libid: HashMap<
       PartialExpr<Op, Var>,
-      (usize, HashMap<Var, Vec<Type>>),
+      (usize, HashMap<Var, Vec<Type>>, usize),
     > = HashMap::new();
     // 双向映射
     let mut libid_to_generic_au: HashMap<usize, PartialExpr<Op, Var>> =
@@ -1472,12 +1495,16 @@ where
       if let Some(lib_id) = generic_au_to_libid.get(&genericized_pe) {
         // 如果已经存在这个库，就不需要再添加了
         // 只将库id加入对应的au
-        au_map_to_libid
-          .insert(au.au.expr.clone(), (lib_id.clone(), au.ty_map.clone()));
+        au_map_to_libid.insert(
+          au.au.expr.clone(),
+          (lib_id.clone(), au.ty_map.clone(), au.au.search_len),
+        );
       } else {
         // 如果不存在这个库，就添加一个新的库
-        au_map_to_libid
-          .insert(au.au.expr.clone(), (new_lib_id, au.ty_map.clone()));
+        au_map_to_libid.insert(
+          au.au.expr.clone(),
+          (new_lib_id, au.ty_map.clone(), au.au.search_len),
+        );
         libid_to_generic_au.insert(new_lib_id, genericized_pe.clone());
         generic_au_to_libid.insert(genericized_pe, new_lib_id);
         new_lib_id += 1;
@@ -1486,44 +1513,43 @@ where
 
     // 把lib_id打印出来
 
-    let msgs =
-      au_map_to_libid
-        .iter()
-        .enumerate()
-        .map(|(iter, (au_pe, (i, ty_map)))| {
-          let searcher: Pattern<_> = au_pe.clone().into();
-          let applier_pe = reify(
-            LibId(*i),
-            libid_to_generic_au.get(i).unwrap().clone(),
-            self.clock_period,
-            self.area_estimator.clone(),
-            self.delay_estimator.clone(),
-            self.bb_query.clone(),
-          );
-          let applier: Pattern<_> = applier_pe.clone().into();
-          let conditional_applier = ConditionalApplier {
-            condition: TypeMatch::new(ty_map.clone()),
-            applier: applier.clone(),
-          };
-          let id = iter + self.last_lib_id;
-          let name = if self.meta_au_config.enable_meta_au {
-            format!("meta_anti-unify {id}")
-          } else {
-            format!("anti-unify {id}")
-          };
-          debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
-          let condition = TypeMatch::new(ty_map.clone());
+    let msgs = au_map_to_libid.iter().enumerate().map(
+      |(iter, (au_pe, (i, ty_map, search_len)))| {
+        let searcher: Pattern<_> = au_pe.clone().into();
+        let applier_pe = reify(
+          LibId(*i),
+          libid_to_generic_au.get(i).unwrap().clone(),
+          self.clock_period,
+          self.area_estimator.clone(),
+          self.delay_estimator.clone(),
+          self.bb_query.clone(),
+        );
+        let applier: Pattern<_> = applier_pe.clone().into();
+        let conditional_applier = ConditionalApplier {
+          condition: TypeMatch::new(ty_map.clone()),
+          applier: applier.clone(),
+        };
+        let id = iter + self.last_lib_id;
+        let name = if self.meta_au_config.enable_meta_au {
+          format!("meta_anti-unify {id}")
+        } else {
+          format!("anti-unify {id}")
+        };
+        debug!("Found rewrite \"{name}\":\n{searcher} => {applier}");
+        let condition = TypeMatch::new(ty_map.clone());
 
-          // Both patterns contain the same variables, so this can never fail.
-          LiblearnMessage {
-            lib_id: *i,
-            rewrite: Rewrite::new(name, searcher.clone(), conditional_applier)
-              .unwrap_or_else(|_| unreachable!()),
-            searcher_pe: au_pe.clone(),
-            applier_pe: applier_pe.clone(),
-            condition,
-          }
-        });
+        // Both patterns contain the same variables, so this can never fail.
+        LiblearnMessage {
+          lib_id: *i,
+          rewrite: Rewrite::new(name, searcher.clone(), conditional_applier)
+            .unwrap_or_else(|_| unreachable!()),
+          searcher_pe: au_pe.clone(),
+          applier_pe: applier_pe.clone(),
+          condition,
+          search_len: *search_len,
+        }
+      },
+    );
     // 需要先进行去重处理
     let rules = msgs
       .clone()
@@ -1565,6 +1591,7 @@ where
           searcher_pe,
           applier_pe,
           condition: msg.condition.clone(),
+          search_len: msg.search_len,
         }
       })
       .collect::<Vec<LiblearnMessage<Op, Type, ISAXAnalysis<Op, Type>>>>()
@@ -1630,6 +1657,14 @@ where
     self.aus.len()
   }
 
+  pub fn delete_libs_according_size(&mut self) {
+    // 删除小于liblearn_config.min_lib_size的库
+    self.aus.retain(|au| {
+      au.au.expr.size() >= self.liblearn_config.min_lib_size
+        && au.au.expr.size() <= self.liblearn_config.max_lib_size
+    });
+  }
+
   /// If two candidate patterns (stored in `nontrivial_aus`) have the same set
   /// of matches, only preserve the smaller one of them.
   /// Here a match is a pair of the e-class where the match was found
@@ -1671,7 +1706,7 @@ where
         continue;
       }
       // 如果latency_gain和area_cost有一项为0，就直接去掉
-      if au.au.latency_gain == 0 {
+      if au.au.latency_gain == 0.0 {
         // println!("pattern: {}", Pattern::from(au.au.expr.clone()));
         // println!("{}: latency_gain is 0", i);
 
@@ -1681,15 +1716,16 @@ where
         );
         continue;
       }
+      // FIXME: 这个需要拉到后面
       // 如果io不满足约束，那么就直接跳过
-      if !io_filter(&self.ci_encoding_config, &au.detailed_io) {
-        // println!("{}: io filter failed", i);
-        debug!(
-          "Pruning pattern {} as it does not satisfy IO constraints",
-          Pattern::from(au.au.expr.clone())
-        );
-        continue;
-      }
+      // if !io_filter(&self.ci_encoding_config, &au.detailed_io) {
+      //   // println!("{}: io filter failed", i);
+      //   debug!(
+      //     "Pruning pattern {} as it does not satisfy IO constraints",
+      //     Pattern::from(au.au.expr.clone())
+      //   );
+      //   continue;
+      // }
 
       let pattern: Pattern<_> = au.au.expr.clone().into();
       // A key in `cache` is a set of matches
@@ -1755,12 +1791,33 @@ where
         }
       };
 
-      if results.is_err() {
-        debug!("Due to search timeout or error, I just skip this pattern",);
+      // 如果results.len() <= 1，就说明没有被复用，直接跳过即可
+      if results.is_err()
+        || (results.as_ref().unwrap().len() <= 1 && au.au.expr.has_vector_op())
+      {
+        debug!(
+          "Pruning pattern {} as it has no matches or search timed out",
+          Pattern::from(au.au.expr.clone())
+        );
         continue;
       }
 
-      for (ecls_id, substs) in results.unwrap() {
+      // 首先将结果填充为具体的节点
+      let results = results.unwrap();
+      // let au = Self::fill_au(au, egraph, &results);
+
+      // 填充后，使用io_filter来过滤
+      let detailed_io: Vec<Type> = au.detailed_io.values().cloned().collect();
+      if !io_filter(&self.ci_encoding_config, &detailed_io) {
+        debug!(
+          "Pruning pattern {} as it does not satisfy IO constraints after
+      filling",
+          Pattern::from(au.au.expr.clone())
+        );
+        continue;
+      }
+
+      for (ecls_id, substs) in results {
         for sub in substs {
           let actuals: Vec<_> =
             pattern.vars().iter().map(|v| sub[*v]).collect();
@@ -1793,9 +1850,8 @@ where
     if deduplicated_aus.len() > self.liblearn_config.max_libs {
       let mut sorted_aus: Vec<_> = deduplicated_aus.into_iter().collect();
       sorted_aus.sort_by(|a, b| {
-        b.au
-          .latency_gain
-          .cmp(&a.au.latency_gain)
+        OrderedFloat(b.au.latency_gain)
+          .cmp(&OrderedFloat(a.au.latency_gain))
           .then(a.au.area_cost.cmp(&b.au.area_cost))
           .then(a.au.expr.size().cmp(&b.au.expr.size()))
       });
@@ -1812,6 +1868,73 @@ where
     //     au.au.latency_gain, au.au.area_cost
     //   );
     // }
+  }
+  /// 本函数用来将au中部分var填充为具体的节点
+  pub fn fill_au(
+    au: &AUWithType<Op, Type>,
+    egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
+    results: &Vec<(Id, Vec<Subst>)>,
+  ) -> AUWithType<Op, Type> {
+    let vars = Pattern::from(au.au.expr.clone()).vars().clone();
+    // 将results中的Vec<Subst>展平成一个
+    let substs = results
+      .iter()
+      .flat_map(|(_, subs)| subs.iter())
+      .collect::<Vec<_>>();
+    // 每个subst是一个SmallVec<Var, Id>，需要收集每个Var对应的Id为一个HashSet
+    let mut var_match_map: HashMap<Var, HashSet<Id>> = HashMap::new();
+    for sub in substs {
+      for var in vars.iter() {
+        if let Some(id) = sub.get(*var) {
+          var_match_map
+            .entry(*var)
+            .or_insert_with(HashSet::new)
+            .insert(*id);
+        }
+      }
+    }
+    // 对于每个Var，如果匹配的Id只有一个，
+    // 并且对应在egraph中存在args数目为0的enode，那么取出这个enode
+    let mut filled_vars = HashMap::new();
+    for (var, ids) in var_match_map.iter() {
+      if ids.len() == 1 {
+        // 取出这个Id
+        let id = *ids.iter().next().unwrap();
+        // 在egraph中查找这个Id对应的enode
+        let nodes = egraph[id].nodes.clone();
+        for node in nodes.iter() {
+          // 如果这个enode的args数目为0，就取出这个enode
+          if node.args().is_empty() {
+            let new_node: AstNode<Op, PartialExpr<Op, Var>> =
+              AstNode::new(node.operation().clone(), vec![]);
+            filled_vars.insert(*var, new_node);
+            break; // 找到后就跳出循环
+          }
+        }
+      }
+    }
+    let mut fill_holes = |var: Var| -> PartialExpr<Op, Var> {
+      if filled_vars.contains_key(&var) {
+        // 如果filled_vars中有这个var，就用对应的enode替换
+        PartialExpr::Node(filled_vars[&var].clone())
+      } else {
+        // 否则返回一个Hole
+        PartialExpr::Hole(var)
+      }
+    };
+    let filled_expr = au.au.expr.clone().fill(&mut fill_holes);
+    let mut new_au = au.clone();
+    // 更新search_len
+    new_au.au.set_search_len(results.len());
+    new_au.au.expr = filled_expr;
+    // 除此之外， 还需要更新detailed_io和对应的ty_map，
+    // 将替换后的var对应的type对应的项删掉
+    filled_vars.keys().for_each(|var| {
+      new_au.detailed_io.remove(&var.to_string());
+      new_au.ty_map.remove(var);
+    });
+
+    new_au
   }
 
   // 这个函数可以用，只不过将Hole排除在外就可以
@@ -2297,8 +2420,9 @@ where
         if op1 == op2 {
           same = true;
           if args1.is_empty() && args2.is_empty() {
-            // FIXME: is that right?
-            let new_expr = AstNode::leaf(op1.clone()).into();
+            // FIXME: 从此只插入Hole，不插入op
+            // let new_expr = AstNode::leaf(op1.clone()).into();
+            let new_expr = PartialExpr::Hole(state);
             aus.insert(AU::new_with_expr(
               new_expr,
               self.liblearn_config.cost.clone(),
@@ -2324,6 +2448,7 @@ where
               for au in aus {
                 if !filter_get_arg_aus(&au.expr)
                   || !filter_fused_vec_aus(op1.is_vector_op(), &au.expr)
+                  || !au.expr().leaves_are_all_holes()
                 {
                   if past_len == 1 {
                     // 加入Hole
@@ -2345,6 +2470,7 @@ where
               //     aus.len()
               //   );
               // }
+              // println!("filtered_aus: {:?}", filtered_aus);
               filtered_aus
             });
             info!("get_range_aus");
@@ -2479,14 +2605,15 @@ where
           //   || au.num_nodes() > 1 + num_vars
           let mut flag = true;
           let mut ty_map = HashMap::new();
-          let mut ty_vec = vec![];
+          let mut ty_map_detailed_io = HashMap::new();
 
           if learn_trivial
             || (self.meta_au_config.enable_meta_au
               && self.meta_au_config.learn_trivial)
             || (self.find_packs && self.find_pack_config.learn_trivial)
             || self.find_packs
-            || num_vars < au.num_holes()
+            //FIXME: 目前num_vars = au.num_holes()也可以被选入
+            || num_vars <= au.num_holes()
             || au.num_nodes() > 1 + num_vars
           {
             if au.size() == 1 {
@@ -2531,7 +2658,7 @@ where
 
               let ty_merged = AstNode::merge_types(&ty0, &ty1);
               if !ty_merged.is_state_type() {
-                ty_vec.push(ty_merged.clone());
+                ty_map_detailed_io.insert(k.to_string(), ty_merged.clone());
               }
               let tys = vec![ty_neglecting_width];
               ty_map.insert(k.clone(), tys);
@@ -2553,7 +2680,8 @@ where
               PartialExpr::Hole(_) => Type::default(),
             };
             if !output_ty.is_state_type() {
-              ty_vec.push(output_ty.clone());
+              ty_map_detailed_io
+                .insert("output".to_string(), output_ty.clone());
             }
           } else {
             flag = false;
@@ -2588,7 +2716,7 @@ where
                 self.liblearn_config.cost.clone(),
               ),
               ty_map,
-              detailed_io: ty_vec,
+              detailed_io: ty_map_detailed_io,
             });
           } else {
             None
@@ -2700,65 +2828,65 @@ where
       self.aus.extend(nontrivial_aus.clone());
     }
     // 需要对aus也做一下过滤，去掉无意义的
-    let aus: BTreeSet<AU<Op, (Id, Id), Type>> = aus
-      .into_iter()
-      .filter(|au| {
-        // 主要目的是，将类似于and 1i var 这种无用的模式过滤掉
-        let expr = au.expr.clone();
-        let mut op = Op::default();
-        let mut children_ops = vec![];
-        match expr {
-          PartialExpr::Node(ast_node) => {
-            op = ast_node.operation().clone();
-            children_ops = ast_node
-              .args()
-              .iter()
-              .map(|arg| {
-                match arg {
-                  PartialExpr::Node(child_node) => {
-                    child_node.operation().clone()
-                  }
-                  PartialExpr::Hole(var) => {
-                    // 如果是变量，就返回一个默认的op
-                    // 对var中的两个Id进行排序
-                    if var.0 < var.1 {
-                      Op::make_rule_var(format!("var_{}_{}", var.0, var.1))
-                    } else {
-                      Op::make_rule_var(format!("var_{}_{}", var.1, var.0))
-                    }
-                  }
-                }
-              })
-              .collect::<Vec<_>>();
-          }
-          PartialExpr::Hole(_) => {
-            return true; // 如果是Hole，就不需要过滤
-          }
-        }
-        if op.is_useful_expr(children_ops.as_slice()) {
-          true
-        } else {
-          // println!(
-          //   "op {:?}, child_ops: {:?}, we filter it out",
-          //   op, children_ops
-          // );
-          false
-        }
-      })
-      .collect();
-    // 如果aus为空，就插入一个Hole
-    if aus.is_empty() {
-      let new_expr = PartialExpr::Hole(state);
-      self
-        .aus_by_state
-        .get_mut(&state)
-        .unwrap()
-        .insert(AU::new_with_expr(
-          new_expr,
-          self.liblearn_config.cost.clone(),
-        ));
-      return;
-    }
+    // let aus: BTreeSet<AU<Op, (Id, Id), Type>> = aus
+    //   .into_iter()
+    //   .filter(|au| {
+    //     // 主要目的是，将类似于and 1i var 这种无用的模式过滤掉
+    //     let expr = au.expr.clone();
+    //     let mut op = Op::default();
+    //     let mut children_ops = vec![];
+    //     match expr {
+    //       PartialExpr::Node(ast_node) => {
+    //         op = ast_node.operation().clone();
+    //         children_ops = ast_node
+    //           .args()
+    //           .iter()
+    //           .map(|arg| {
+    //             match arg {
+    //               PartialExpr::Node(child_node) => {
+    //                 child_node.operation().clone()
+    //               }
+    //               PartialExpr::Hole(var) => {
+    //                 // 如果是变量，就返回一个默认的op
+    //                 // 对var中的两个Id进行排序
+    //                 if var.0 < var.1 {
+    //                   Op::make_rule_var(format!("var_{}_{}", var.0, var.1))
+    //                 } else {
+    //                   Op::make_rule_var(format!("var_{}_{}", var.1, var.0))
+    //                 }
+    //               }
+    //             }
+    //           })
+    //           .collect::<Vec<_>>();
+    //       }
+    //       PartialExpr::Hole(_) => {
+    //         return true; // 如果是Hole，就不需要过滤
+    //       }
+    //     }
+    //     if op.is_useful_expr(children_ops.as_slice()) {
+    //       true
+    //     } else {
+    //       // println!(
+    //       //   "op {:?}, child_ops: {:?}, we filter it out",
+    //       //   op, children_ops
+    //       // );
+    //       false
+    //     }
+    //   })
+    //   .collect();
+    // // 如果aus为空，就插入一个Hole
+    // if aus.is_empty() {
+    //   let new_expr = PartialExpr::Hole(state);
+    //   self
+    //     .aus_by_state
+    //     .get_mut(&state)
+    //     .unwrap()
+    //     .insert(AU::new_with_expr(
+    //       new_expr,
+    //       self.liblearn_config.cost.clone(),
+    //     ));
+    //   return;
+    // }
     *self.aus_by_state.get_mut(&state).unwrap() = aus;
   }
 }
@@ -3056,5 +3184,8 @@ where
     body = Op::apply(body, Op::var(index).into()).into();
   }
 
-  PartialExpr::Node(BindingExpr::Lib(ix, fun, body, 0, 0, 0).into())
+  PartialExpr::Node(
+    BindingExpr::Lib(ix, fun, body, OrderedFloat(0.0), OrderedFloat(0.0), 0)
+      .into(),
+  )
 }

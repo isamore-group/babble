@@ -1,6 +1,7 @@
 //! Defines the [`Teachable`] trait for languages that support library learning.
 
 use crate::{ast_node::AstNode, learn::LibId};
+use ordered_float::OrderedFloat;
 use std::{
   fmt::{self, Debug, Display, Formatter},
   hash::Hash,
@@ -58,8 +59,8 @@ where
     name: LibId,
     value: T,
     body: T,
-    latency_cpu: usize,
-    latency_acc: usize,
+    latency_cpu: OrderedFloat<f64>,
+    latency_acc: OrderedFloat<f64>,
     area: usize,
   ) -> AstNode<Self, T> {
     Self::from_binding_expr(BindingExpr::Lib(
@@ -100,7 +101,7 @@ pub enum BindingExpr<T> {
   /// An application of a function to an argument
   Apply(T, T),
   /// An expression defining a named library function within a certain scope
-  Lib(LibId, T, T, usize, usize, usize),
+  Lib(LibId, T, T, OrderedFloat<f64>, OrderedFloat<f64>, usize),
 }
 
 impl<Op, T> From<BindingExpr<T>> for AstNode<Op, T>

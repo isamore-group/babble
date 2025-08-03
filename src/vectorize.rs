@@ -5,7 +5,9 @@ use crate::{
   ast_node::{Arity, AstNode},
   au_filter::TypeAnalysis,
   bb_query::{self, BBInfo, BBQuery},
-  extract::beam_pareto::{ClassMatch, ISAXAnalysis, ISAXCost, TypeInfo},
+  extract::beam_pareto::{
+    ClassMatch, ISAXAnalysis, ISAXCF, ISAXCost, ISAXLpCF, TypeInfo,
+  },
   learn::{LearnedLibraryBuilder, LiblearnMessage, reify},
   perf_infer,
   rewrites::TypeMatch,
@@ -13,7 +15,7 @@ use crate::{
     self, AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo,
     ParetoConfig, ParetoResult,
   },
-  schedule::{Schedulable, Scheduler},
+  schedule::{Schedulable, Scheduler, rec_cost},
   teachable::{ShieldingOp, Teachable},
 };
 
@@ -176,7 +178,7 @@ where
     }
 
     // 合并子节点成本
-    let children_cost: f64 = if vec_len > 0 {
+    let children_cost: f64 = if enode.operation().is_vec() {
       // 向量节点：取最大子成本，突显最长瓶颈路径
       enode.args().iter().map(|&id| costs(id)).fold(0.0, f64::max)
     } else {
@@ -441,9 +443,213 @@ where
   (shuffle_pairs, shuffle_map)
 }
 
+pub struct ReachCache {
+  children: HashMap<Id, Vec<Id>>,
+  cache: HashMap<(Id, Id), bool>,
+}
+
+impl ReachCache {
+  pub fn new<'a, Op, T>(
+    egraph: &'a EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  ) -> Self
+  where
+    Op: std::fmt::Debug
+      + std::hash::Hash
+      + Clone
+      + Ord
+      + Teachable
+      + BBInfo
+      + Arity
+      + Send
+      + Sync
+      + std::fmt::Display
+      + 'static
+      + DiscriminantEq
+      + Default
+      + Printable
+      + OperationInfo,
+    T: std::fmt::Debug
+      + Default
+      + Clone
+      + PartialEq
+      + Ord
+      + std::hash::Hash
+      + Send
+      + Sync
+      + std::fmt::Display
+      + std::str::FromStr
+      + 'static,
+    AstNode<Op>: TypeInfo<T>,
+  {
+    let mut children: HashMap<Id, Vec<Id>> = HashMap::new();
+    // Only consider a child eclass when all enodes in the parent class depend
+    // on it
+    // for class in egraph.classes() {
+    //   // println!("ecls: {}, nodes: {:?}", class.id, class.nodes);
+    //   let enodes = &egraph[class.id].nodes;
+    //   let total = enodes.len();
+    //   // count occurrences per child id across all enodes
+    //   let mut count_map: HashMap<Id, usize> = HashMap::new();
+    //   for enode in enodes {
+    //     // track unique children per enode to avoid double counting
+    //     let mut seen = HashSet::new();
+    //     for &child_id in enode.children() {
+    //       if seen.insert(child_id) {
+    //         *count_map.entry(child_id).or_default() += 1;
+    //       }
+    //     }
+    //   }
+    //   // include only those child_ids seen in every enode
+    //   let common_children = count_map
+    //     .into_iter()
+    //     .filter_map(
+    //       |(child_id, cnt)| if cnt == total { Some(child_id) } else { None },
+    //     )
+    //     .collect::<Vec<_>>();
+    //   if !common_children.is_empty() {
+    //     children.insert(class.id, common_children);
+    //   }
+    // }
+    // 目前考虑任意的子节点
+    for class in egraph.classes() {
+      // println!("ecls: {}, nodes: {:?}", class.id, class.nodes);
+      let enodes = &egraph[class.id].nodes;
+      let children_ids = enodes
+        .into_iter()
+        .flat_map(|enode| enode.args())
+        .map(|&child_id| child_id)
+        .collect::<Vec<_>>();
+      if !children_ids.is_empty() {
+        children.insert(class.id, children_ids);
+      }
+    }
+    Self {
+      children,
+      cache: HashMap::new(),
+    }
+  }
+
+  /// 判断 src 是否能 reach dst，带 cache
+  fn reachable(&mut self, src: Id, dst: Id) -> bool {
+    if let Some(&cached) = self.cache.get(&(src, dst)) {
+      return cached;
+    }
+
+    let mut visited = HashSet::new();
+    let mut stack = vec![src];
+    let mut found = false;
+
+    while let Some(cur) = stack.pop() {
+      if cur == dst {
+        found = true;
+        break;
+      }
+      if !visited.insert(cur) {
+        continue;
+      }
+      if let Some(children) = self.children.get(&cur) {
+        for &child in children {
+          stack.push(child);
+        }
+      }
+    }
+
+    self.cache.insert((src, dst), found);
+    found
+  }
+
+  /// 判断给定 group 是否内部无依赖（可打包）
+  pub fn can_pack(&mut self, group: &[Id]) -> bool {
+    for (i, &a) in group.iter().enumerate() {
+      for &b in &group[i + 1..] {
+        if self.reachable(a, b) || self.reachable(b, a) {
+          // println!("Cannot pack {:?} and {:?} due to reachability", a, b);
+          return false;
+        }
+      }
+    }
+    true
+  }
+}
+
+fn add_packs<Op, T>(
+  egraph: &mut EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  id_set: &mut HashSet<Vec<Id>>,
+  reach_cache: &mut ReachCache,
+  packs: &HashMap<Vec<Id>, Vec<String>>,
+) where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + BBInfo
+    + Arity
+    + Send
+    + Sync
+    + Debug
+    + 'static
+    + DiscriminantEq
+    + Default
+    + Printable
+    + OperationInfo,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + Display
+    + FromStr
+    + 'static,
+  AstNode<Op>: TypeInfo<T>,
+{
+  for (id_pack, bbs) in packs.into_iter() {
+    // 如果 id_pack 已经存在，直接跳过
+    if id_set.contains(id_pack) {
+      // println!("id_pack already exists, skip");
+      continue;
+    }
+    // 如果id_pack不能pack，直接跳过
+    if !reach_cache.can_pack(&id_pack) {
+      // println!("id_pack cannot pack, skip");
+      continue;
+    }
+    id_set.insert(id_pack.clone());
+    // println!("id_pack: {:?}", id_pack);
+    // println!("found {} matches for {:?}", results.len(), rewrite);
+    let mut tys = Vec::new();
+    for &matched_eclass_id in id_pack {
+      // 获取每个eclass的类型信息
+      let ty = egraph[matched_eclass_id].data.ty.to_string();
+      tys.push(ty);
+    }
+    let vec_node =
+      AstNode::new(Op::make_vec(tys.clone(), bbs.clone()), id_pack.clone());
+
+    let list_id = egraph.add(vec_node);
+
+    // 针对每个id，构造一个get节点
+    for i in 0..id_pack.len() {
+      let get_node = AstNode::new(
+        Op::make_get_from_vec(i, vec![tys[i].clone()], bbs.clone()),
+        vec![list_id],
+      );
+      // println!("tys[i]: {:?}", tys[i]);
+      let get_id = egraph.add(get_node);
+      // println!("get_eclass: {:?}", egraph[get_id]);
+      // 进行替换
+      egraph.union(id_pack[i], get_id);
+      // println!("success union");
+    }
+    egraph.rebuild();
+  }
+}
+
 /// 目前向量化直接使用liblearn中的au-search进行向量化
 pub fn vectorize<Op, T, LA, LD>(
-  egraph_without_dsrs: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   egraph_running_scalar_dsrs: EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
   root: Id,
   lift_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
@@ -451,8 +657,8 @@ pub fn vectorize<Op, T, LA, LD>(
   transfrom_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
   config: ParetoConfig<LA, LD>,
   bb_query: BBQuery,
+  max_lib_id: usize,
 ) -> (
-  (EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id),
   (EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>, Id),
   Vec<LiblearnMessage<Op, T, ISAXAnalysis<Op, T>>>,
 )
@@ -494,12 +700,6 @@ where
     "        • there are {} transfrom dsrs",
     transfrom_dsrs.len()
   );
-  // 打印没有跑dsrs的egraph的大小
-  println!(
-    "      • without running dsrs, eclass size: {}, egraph size: {}",
-    egraph_without_dsrs.classes().len(),
-    egraph_without_dsrs.total_size(),
-  );
   let timeout = Duration::from_secs(60 * 100_000);
   let mut egraph = egraph_running_scalar_dsrs.clone();
   println!(
@@ -507,6 +707,27 @@ where
     egraph.classes().len(),
     egraph.total_size()
   );
+  // 第一步，拿到list_packs
+  // list节点的子节点也需要加入，只要子节点的bbs信息相同
+  let mut id_set = HashSet::new();
+  let mut reach_cache = ReachCache::new(&egraph);
+  let mut list_packs: HashMap<Vec<Id>, Vec<String>> = HashMap::new();
+  for eclass in egraph.classes() {
+    for node in eclass.nodes.iter() {
+      if node.operation().is_lib() {
+        // 获取子节点的bbs信息
+        let bbs = eclass.data.bb.clone();
+        // 获取子节点的id
+        let ids = node.args().to_vec();
+        if ids.len() < 2 {
+          continue; // 至少需要两个子节点
+        }
+        // 将ids和bbs信息加入到list_packs中
+        list_packs.insert(ids, bbs);
+      }
+    }
+  }
+  add_packs(&mut egraph, &mut id_set, &mut reach_cache, &list_packs);
   let vetorize_lib_config = LiblearnConfig::new(
     LiblearnCost::Size,
     AUMergeMod::Boundary,
@@ -526,7 +747,7 @@ where
   // // 进行向量化组发现
   // egraph.dot().to_png("target/foo1.png").unwrap();
   // 进行库学习
-  let learned_lib = LearnedLibraryBuilder::default()
+  let mut learned_lib = LearnedLibraryBuilder::default()
     .learn_constants(config.learn_constants)
     .max_arity(config.max_arity)
     // .with_co_occurs(co_occurs)
@@ -539,6 +760,8 @@ where
     .with_find_pack_config(config.find_pack_config.clone())
     .with_bb_query(bb_query.clone())
     .build(&egraph, vec![root]);
+
+  learned_lib.delete_libs_according_size();
   let mut lib_rewrites: HashMap<
     usize,
     Vec<(Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, Pattern<_>)>,
@@ -557,9 +780,8 @@ where
   // for lib in learned_lib.libs() {
   //   println!("lib: {}", lib);
   // }
-  let mut id_set = HashSet::new();
-  let mut pack_cnt = 0;
   let egraph_clone = egraph.clone();
+
   for (id, rewrites) in lib_rewrites.clone().into_iter() {
     // let rewrite = rewrite.0.clone();
     let (tx, rx) = mpsc::channel();
@@ -592,57 +814,39 @@ where
             acc.entry(bbs.clone()).or_default().push(*eclass);
             acc
           });
-        // println!("bbs_packs: {:?}", bbs_packs);
-        for bbs_pack in bbs_packs {
-          if bbs_pack.1.len() < 2 {
-            continue;
-          }
-          let bbs = bbs_pack.0.clone();
-          // println!("bbs: {:?}", bbs);
-          // 检查当前的包是不是已经存在
-          let mut id_pack = bbs_pack.1.clone();
-          // println!("id_pack: {:?}", id_pack);
-          // 向量包超过8时，机器无法支持这种过高的并行度，不会进行深度的向量化
-          if id_pack.len() > config.vectorize_config.max_vec_len {
-            // println!("too many, I give up");
-            continue;
-          }
-          id_pack.sort();
-          id_pack.dedup();
-          if id_set.contains(&id_pack) {
-            continue;
-          }
-          id_set.insert(id_pack.clone());
-          pack_cnt += 1;
-          // println!("found {} matches for {:?}", results.len(), rewrite);
-          let mut tys = Vec::new();
-          for &matched_eclass_id in &id_pack {
-            // 获取每个eclass的类型信息
-            let ty = egraph[matched_eclass_id].data.ty.to_string();
-            tys.push(ty);
-          }
-          let vec_node = AstNode::new(
-            Op::make_vec(tys.clone(), bbs.clone()),
-            id_pack.clone(),
-          );
+        let mut fine_packs: HashMap<Vec<Id>, Vec<String>> = HashMap::new();
 
-          let list_id = egraph.add(vec_node);
+        for (bbs, ids) in bbs_packs.iter() {
+          // 排序去重
+          let mut sorted_ids = ids.clone();
+          sorted_ids.sort();
+          sorted_ids.dedup();
 
-          // 针对每个id，构造一个get节点
-          for i in 0..id_pack.len() {
-            let get_node = AstNode::new(
-              Op::make_get_from_vec(i, vec![tys[i].clone()], bbs.clone()),
-              vec![list_id],
-            );
-            // println!("tys[i]: {:?}", tys[i]);
-            let get_id = egraph.add(get_node);
-            // println!("get_eclass: {:?}", egraph[get_id]);
-            // 进行替换
-            egraph.union(id_pack[i], get_id);
-            // println!("success union");
+          let mut current = Vec::new();
+          for &id in &sorted_ids {
+            let mut trial = current.clone();
+            trial.push(id);
+
+            if trial.len() <= 8 && reach_cache.can_pack(&trial) {
+              // 可以扩包
+              current.push(id);
+            } else {
+              // 达到上限或达不到 pack 条件，先收录已有的 current（需至少 2
+              // 个元素）
+              if current.len() >= 2 {
+                fine_packs.insert(current.clone(), bbs.clone());
+              }
+              // 不足 2 的就直接丢弃掉（或根据需求另行处理）
+              // 开启新包
+              current = vec![id];
+            }
           }
-          egraph.rebuild();
+          // 处理最后剩下的 current
+          if current.len() >= 2 {
+            fine_packs.insert(current.clone(), bbs.clone());
+          }
         }
+        add_packs(&mut egraph, &mut id_set, &mut reach_cache, &fine_packs);
 
         // 重建egraph
       }
@@ -653,7 +857,7 @@ where
       }
     }
   }
-  println!("        • Vectorization::found {} packs", pack_cnt);
+
   // egraph.dot().to_png("target/foo1.png").unwrap();
   println!(
     "       • after add list, egraph size: {}, class size: {}",
@@ -668,8 +872,8 @@ where
     .with_iter_limit(4)
     .run(lift_dsrs);
 
-  // // 目前已经实现了各类vec的构建，现在需要去寻找egraph中含有的vec
-  // // enode，然后加入gather节点
+  // 目前已经实现了各类vec的构建，现在需要去寻找egraph中含有的vec
+  // enode，然后加入gather节点
   let mut egraph = runner.egraph.clone();
   // 首先，将eclass中的bbs信息加入空bbs的enode
   for class in egraph.classes_mut() {
@@ -783,12 +987,12 @@ where
   );
 
   // 使用transform_dsrs进行重写
-  let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
-    .with_egraph(egraph)
-    .with_time_limit(timeout)
-    .with_iter_limit(4)
-    .run(transfrom_dsrs);
-  egraph = runner.egraph.clone();
+  // let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
+  //   .with_egraph(egraph)
+  //   .with_time_limit(timeout)
+  //   .with_iter_limit(4)
+  //   .run(transfrom_dsrs);
+  // egraph = runner.egraph.clone();
 
   // 恢复类型信息，将每个eclass的类型信息传给里面的enode
 
@@ -815,13 +1019,20 @@ where
   println!("        • begin vectorize root expression");
 
   // egraph.dot().to_png("target/foo3.png").unwrap();
-  // let mut lp_extractor = LpExtractor::new(&egraph, MaxVectorCF::new(0.7,
-  // 10.0)); let expr = lp_extractor.solve(root);
+  // let mut lp_extractor =
+  //   LpExtractor::new(&egraph, ISAXLpCF::new(bb_query.clone()));
+  // let expr = lp_extractor.solve(root);
+
+  // for ecls in egraph.classes() {
+  //   println!("eclass id: {}, nodes: {:?}", ecls.id, ecls.nodes);
+  // }
 
   let (cost, expr) =
     Extractor::new(&egraph, MaxVectorCF::new(0.9, 1000.0)).find_best(root);
+  // let (cost, expr) =
+  //   Extractor::new(&egraph, ISAXCF::new(bb_query.clone())).find_best(root);
 
-  debug!("cost: {:?}", cost);
+  // debug!("cost: {:?}", cost);
 
   let mut vecop_cnt = 0;
   for (id, node) in expr.iter().enumerate() {
@@ -830,6 +1041,9 @@ where
       vecop_cnt += 1;
     }
   }
+
+  let (cycles, area) = rec_cost(&expr, &bb_query, HashMap::new());
+  println!("cycles: {}, area: {}", cycles, area);
 
   println!("        • Vectorized Nodes in root_expr: {}", vecop_cnt);
 
@@ -856,6 +1070,7 @@ where
   //   println!("{}: {:?}", i, node);
   // }
   let root_aus = expr_vec2lib(&expr);
+
   println!(
     "        • vectorize root expression done, size: {}",
     root_aus.len()
@@ -869,9 +1084,19 @@ where
 
   let mut lib_messages = Vec::new();
   for (i, au) in aus.iter().enumerate() {
+    // 如果au的size过小，扔掉
+    if au.0.size() < config.liblearn_config.min_lib_size {
+      println!(
+        "        • Vectorization::lib {}: skip, size: {}",
+        i,
+        au.0.size()
+      );
+      continue;
+    }
+
     let searcher: Pattern<_> = au.0.clone().into();
     let applier_pe = reify(
-      LibId(i),
+      LibId(max_lib_id + i),
       au.0.clone(),
       config.clock_period,
       config.area_estimator.clone(),
@@ -915,13 +1140,19 @@ where
     if area == 0 || lat_acc >= lat_cpu {
       println!(
         "        • Vectorization::lib {}: skip, latency cpu: {}, latency acc: {}, area: {}",
-        i, lat_cpu, lat_acc, area
+        max_lib_id + i,
+        lat_cpu,
+        lat_acc,
+        area
       );
       continue;
     }
     println!(
       "        • Vectorization::lib {}: latency cpu: {}, latency acc: {}, area: {}",
-      i, lat_cpu, lat_acc, area
+      max_lib_id + i,
+      lat_cpu,
+      lat_acc,
+      area
     );
     // println!("lib: {}", searcher);
     for node in applier.ast.iter_mut() {
@@ -946,12 +1177,10 @@ where
       condition.insert(var.clone(), tys_parse);
     }
     let condition = TypeMatch::new(condition);
-    // let conditional_applier = ConditionalApplier {
-    //   condition: condition.clone(),
-    //   applier: applier.clone(),
-    // };
+    // 用searcher搜索egraph，取得results.len()
+    let results = searcher.search(&egraph);
     lib_messages.push(LiblearnMessage {
-      lib_id: i,
+      lib_id: max_lib_id + i,
       rewrite: Rewrite::new(
         format!("vec_lib_{}", i),
         searcher.clone(),
@@ -961,6 +1190,7 @@ where
       searcher_pe: au.0.clone(),
       applier_pe: applier_pe,
       condition: condition,
+      search_len: results.len(),
     });
   }
   println!(
@@ -968,7 +1198,11 @@ where
     lib_messages.len()
   );
   for message in lib_messages.iter() {
-    println!("vec_lib: {}", Pattern::from(message.applier_pe.clone()));
+    debug!(
+      "vec_lib: {}, results: {}",
+      Pattern::from(message.applier_pe.clone()),
+      message.search_len
+    );
   }
 
   // 建立fused EGraph,在egraph_without_dsrs的基础上，添加向量化的expr,
@@ -986,39 +1220,240 @@ where
     let new_id = new_egraph.add_expr(&expr);
     new_egraph.union(new_id, root);
     new_egraph.rebuild();
-    // 之后使用lower_rules进行重写
-    let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
-      .with_egraph(new_egraph)
-      .with_time_limit(timeout)
-      .with_iter_limit(4)
-      .run(lower_dsrs);
-    let egraph = runner.egraph;
+    // 之后加入get节点
+    add_get_to_build_attach(&mut new_egraph, lower_dsrs);
+    let egraph = new_egraph.clone();
     (egraph.clone(), egraph.find(new_id))
   };
-
-  //向两个egraph中添加向量化的表达式，并使用lower_dsrs进行重写
-  let new_egraph_without_dsrs = add_vec_expr2_egraph(&egraph_without_dsrs);
 
   let new_egraph_running_scalar_dsrs =
     add_vec_expr2_egraph(&egraph_running_scalar_dsrs);
 
-  // 打印必要信息
   println!(
-    "       • after vectorization, egraph(without running scalar dsrs) size: {}, class size: {}",
-    new_egraph_without_dsrs.0.total_size(),
-    new_egraph_without_dsrs.0.classes().len()
-  );
-  println!(
-    "       • after vectorization, egraph(running scalar dsrs) size: {}, class size: {}",
+    "       • after vectorization, egraph(running scalar dsrs) size: {},
+  class size: {}",
     new_egraph_running_scalar_dsrs.0.total_size(),
     new_egraph_running_scalar_dsrs.0.classes().len()
   );
 
-  (
-    new_egraph_without_dsrs,
-    new_egraph_running_scalar_dsrs,
-    lib_messages,
-  )
+  (new_egraph_running_scalar_dsrs, lib_messages)
+}
+
+fn can_add_get<Op, T>(
+  egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  enode: &AstNode<Op>,
+) -> bool
+where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + BBInfo
+    + Arity
+    + Send
+    + Sync
+    + Debug
+    + 'static
+    + DiscriminantEq
+    + Default
+    + Printable
+    + OperationInfo,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + Display
+    + FromStr
+    + 'static,
+  AstNode<Op>: TypeInfo<T>,
+{
+  if enode.operation().is_vec() {
+    // 如果是vec节点，直接返回false
+    return false;
+  }
+  let is_lit_vec = |n: &AstNode<Op>| {
+    // 检查是否是vec节点，并且args全为0
+    if n.operation().is_vec() {
+      let args = n.args();
+      return args
+        .iter()
+        .all(|&a| egraph[a].nodes.iter().all(|n| n.args().len() == 0));
+    }
+    false
+  };
+  if enode.operation().is_vector_op() {
+    // 如果是vector_op节点，需要其子节点不是vec节点
+    for arg in enode.args() {
+      if egraph[*arg]
+        .nodes
+        .iter()
+        .any(|n| n.operation().is_vec() && !is_lit_vec(n))
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+  false
+}
+
+pub fn add_get_to_build_attach<Op, T>(
+  egraph: &mut EGraph<AstNode<Op>, ISAXAnalysis<Op, T>>,
+  lower_dsrs: &Vec<Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>>,
+) where
+  Op: Display
+    + Hash
+    + Clone
+    + Ord
+    + Teachable
+    + BBInfo
+    + Arity
+    + Send
+    + Sync
+    + Debug
+    + 'static
+    + DiscriminantEq
+    + Default
+    + Printable
+    + OperationInfo,
+  T: Debug
+    + Default
+    + Clone
+    + PartialEq
+    + Ord
+    + Hash
+    + Send
+    + Sync
+    + Display
+    + FromStr
+    + 'static,
+  AstNode<Op>: TypeInfo<T>,
+{
+  // println!("egraph.classes().len(): {}", egraph.classes().len());
+  // 此处是为了避免添加循环
+  // let can_add_get = |enode: &AstNode<Op>| -> bool {
+  //   if enode.operation().is_vec() {
+  //     // 如果是vec节点，直接返回false
+  //     return false;
+  //   }
+  //   if enode.operation().is_vector_op() {
+  //     // 如果是vector_op节点，需要其子节点不是vec节点
+  //     for arg in enode.args() {
+  //       if egraph[*arg].nodes.iter().any(|n| !can_add_get(n)) {
+  //         return false;
+  //       }
+  //     }
+  //     return true;
+  //   }
+  //   false
+  // };
+  let is_lit_vec = |n: &AstNode<Op>| {
+    // 检查是否是vec节点，并且args全为0
+    if n.operation().is_vec() {
+      let args = n.args();
+      return args
+        .iter()
+        .all(|&a| egraph[a].nodes.iter().all(|n| n.args().len() == 0));
+    }
+    false
+  };
+  // for ecls in egraph.classes() {
+  //   println!("original eclass: {}, nodes: {:?}", ecls.id, ecls.nodes);
+  // }
+  let mut vec_op_nodes = Vec::new();
+  let mut vec_nodes = Vec::new();
+  for class in egraph.classes() {
+    for node in class.nodes.iter() {
+      if can_add_get(egraph, node) {
+        vec_op_nodes.push((class.id, node.operation().get_vec_len()));
+      } else if node.operation().is_vector_op() && !is_lit_vec(node) {
+        // 如果是vec节点，记录下来
+        vec_nodes.push((class.id, node.operation().get_vec_len()));
+      }
+    }
+  }
+  // println!("vec_op_nodes: {:?}", vec_op_nodes);
+  // println!("vec_nodes: {:?}", vec_nodes);
+  // 对于每个vector_op节点，添加get节点
+  for (id, vec_len) in vec_op_nodes {
+    // 对于每个vec_len，添加get节点
+    let bbs = egraph[id].data.bb.clone();
+    for i in 0..vec_len {
+      let get_node = AstNode::new(
+        Op::make_get_from_vec(i, vec!["unknown".to_string()], bbs.clone()),
+        vec![id],
+      );
+      let _ = egraph.add(get_node);
+    }
+  }
+  // 重新构建egraph
+  egraph.rebuild();
+
+  println!(
+    "       • after add get, egraph size: {}, class size: {}",
+    egraph.total_size(),
+    egraph.classes().len()
+  );
+
+  let origin_ids: Vec<Id> = egraph.classes().map(|class| class.id).collect();
+
+  let mut mirror_egraph = egraph.clone();
+  // 为刚才没有加入的vec节点添加get节点
+  for (id, vec_len) in vec_nodes {
+    // 对于每个vec_len，添加get节点
+    let bbs = egraph[id].data.bb.clone();
+    for i in 0..vec_len {
+      let get_node = AstNode::new(
+        Op::make_get_from_vec(i, vec!["unknown".to_string()], bbs.clone()),
+        vec![id],
+      );
+      let _ = mirror_egraph.add(get_node);
+    }
+  }
+
+  // 用一个mirror runner运行lower_dsrs
+  let runner = Runner::<_, _, ()>::new(ISAXAnalysis::empty())
+    .with_egraph(mirror_egraph)
+    .with_time_limit(Duration::from_secs(60 * 100_000))
+    .with_iter_limit(1000)
+    .run(lower_dsrs);
+  // for ecls in runner.egraph.classes() {
+  //   println!("lower eclass: {}, nodes: {:?}", ecls.id, ecls.nodes);
+  // }
+  let mut new_union_map = HashMap::new();
+  for id in origin_ids {
+    let new_id = runner.egraph.find(id);
+    new_union_map
+      .entry(new_id)
+      .or_insert_with(Vec::new)
+      .push(id);
+  }
+  for (_, old_ids) in new_union_map {
+    if old_ids.len() > 1 {
+      // 如果有多个old_id对应同一个new_id，则进行union
+      let first_id = old_ids[0];
+      for &id in &old_ids[1..] {
+        egraph.union(egraph.find(first_id), egraph.find(id));
+      }
+    }
+  }
+
+  // 重新构建egraph
+  egraph.rebuild();
+  // egraph.dot().to_png("target/foo4.png").unwrap();
+  // for ecls in egraph.classes() {
+  //   println!("eclass: {}, nodes: {:?}", ecls.id, ecls.nodes);
+  // }
+  println!(
+    "       • after running lower dsrs, egraph size: {}, class size: {}",
+    egraph.total_size(),
+    egraph.classes().len()
+  );
 }
 
 // pub struct VecExtractor<'a, Op, T>
@@ -1439,49 +1874,45 @@ fn expr_vec2lib<
   }
 
   let n = rec_expr.len();
-  // 存储每个节点的结果集
-  let mut node_results: Vec<
-    Vec<(PartialExpr<Op, Var>, HashMap<Var, Vec<String>>)>,
-  > = vec![Vec::new(); n];
 
-  // 按拓扑顺序处理节点（索引小->大，确保子节点先处理）
+  // —— 1. 构建父节点列表 ——
+  let mut parents: Vec<Vec<usize>> = vec![Vec::new(); n];
   for i in 0..n {
-    let node = &rec_expr[Id::from(i)];
-    let op = node.operation();
-
-    if !op.is_vector_op() || op.is_vec() {
-      // 非向量操作：收集所有子节点的结果
-      let mut seen = HashSet::new();
-      let mut combined = Vec::new();
-
-      for child_id in node.children() {
-        for result in &node_results[usize::from(*child_id)] {
-          // 去重：基于PartialExpr内容
-          if seen.insert(&result.0) {
-            combined.push(result.clone());
-          }
-        }
-      }
-
-      node_results[i] = combined;
-    } else {
-      // 向量操作：生成模板
-      let mut local_cache = HashMap::new();
-      let mut var_index = 0;
-      let mut type_map = HashMap::new();
-
-      let body = build_template(
-        rec_expr,
-        Id::from(i),
-        &mut local_cache,
-        &mut var_index,
-        &mut type_map,
-      );
-
-      node_results[i] = vec![(body, type_map)];
+    for &child in rec_expr[Id::from(i)].children() {
+      parents[usize::from(child)].push(i);
     }
   }
 
-  // 返回根节点结果（最后一个节点）
-  node_results[n - 1].clone()
+  // —— 2. 筛选出所有「符合条件」的 vector_op 节点 ——
+  let mut libs = Vec::new();
+  for i in 0..n {
+    let node = &rec_expr[Id::from(i)];
+    let op = node.operation();
+    // 条件①：本身是 vector_op 且不是 Vec 构造
+    if !op.is_vector_op() || op.is_vec() {
+      continue;
+    }
+    // 条件②：所有父节点都是 Vec 构造 or 不是 vector_op（即 scalar）
+    if !parents[i].iter().all(|&pi| {
+      let pop = rec_expr[Id::from(pi)].operation();
+      pop.is_vec() || !pop.is_vector_op()
+    }) {
+      continue;
+    }
+
+    // 满足条件，提取这个子表达式模板
+    let mut local_cache = HashMap::new();
+    let mut var_index = 0;
+    let mut type_map = HashMap::new();
+    let body = build_template(
+      rec_expr,
+      Id::from(i),
+      &mut local_cache,
+      &mut var_index,
+      &mut type_map,
+    );
+    libs.push((body, type_map));
+  }
+
+  libs
 }

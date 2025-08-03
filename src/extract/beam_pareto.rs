@@ -17,12 +17,13 @@ use egg::{
 };
 use lexpr::print;
 use log::debug;
+use nom::Or;
 use ordered_float::OrderedFloat;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use rustc_hash::FxHashMap;
 use std::{
   cmp::Ordering,
-  collections::{HashMap, HashSet, hash_map::Entry},
+  collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
   fmt::{Debug, Display},
   hash::{DefaultHasher, Hash, Hasher},
 };
@@ -164,37 +165,14 @@ impl CostSet {
 
   /// Performs trivial partial order reduction: Only keeps the Pareto frontier
   pub fn unify(&mut self) {
-    // println!("unify");
-    fn dominates(a: &LibSel, b: &LibSel) -> bool {
-      a.cycles <= b.cycles
-        && a.area <= b.area
-        && (a.cycles < b.cycles || a.area < b.area)
-    }
-
-    let mut new_set = Vec::new();
-
-    for (i, cand) in self.set.iter().enumerate() {
-      let mut is_dominated = false;
-
-      for (j, other) in self.set.iter().enumerate() {
-        if i != j && dominates(other, cand) {
-          // println!("{:?} dominates {:?}", other, cand);
-          is_dominated = true;
-          break;
-        }
-      }
-
-      if !is_dominated {
-        new_set.push(cand.clone());
-      }
-    }
     // 使用HashMap来去重，并选择最小的cycles
-    let mut unique_set: HashMap<Vec<(LibId, LibInfo)>, LibSel> = HashMap::new();
-
+    let mut unique_set: BTreeMap<Vec<LibId>, LibSel> = BTreeMap::new();
+    let new_set = self.set.clone();
     for cand in new_set.into_iter() {
       // 将 HashMap<LibId, LibInfo> 转换为 Vec<(LibId, LibInfo)>
-      let libs_as_vec: Vec<(LibId, LibInfo)> =
-        cand.libs.clone().into_iter().collect();
+      let mut libs_as_vec: Vec<LibId> = cand.libs.keys().cloned().collect();
+      // 排序
+      libs_as_vec.sort();
 
       // 如果libs已存在，选择cycles最小的
       unique_set
@@ -202,12 +180,15 @@ impl CostSet {
         .and_modify(|existing| {
           if existing.cycles > cand.cycles {
             *existing = cand.clone();
+          } else if existing.area > cand.area {
+            *existing = cand.clone();
           }
         })
         .or_insert(cand);
     }
 
     // 最后把去重后的集合赋值回self.set
+    // let mut unique_set: Vec<LibSel> = Vec::new();
     self.set = unique_set.into_iter().map(|(_, v)| v).collect();
   }
 
@@ -218,6 +199,8 @@ impl CostSet {
     latency_acc: f64,
     latency_cpu: f64,
     area: usize,
+    search_result: usize,
+    exe_count: usize,
     id: Id,
     // 没有嵌套lib，不再使用
     // nested_libs: &CostSet,
@@ -227,7 +210,16 @@ impl CostSet {
     let mut set = Vec::new();
 
     for ls2 in &self.set {
-      match ls2.add_lib(lib, latency_acc, latency_cpu, area, id, lps) {
+      match ls2.add_lib(
+        lib,
+        latency_acc,
+        latency_cpu,
+        area,
+        search_result,
+        exe_count,
+        id,
+        lps,
+      ) {
         None => continue,
         Some(ls) => {
           if let Err(pos) = set.binary_search(&ls) {
@@ -240,25 +232,47 @@ impl CostSet {
     CostSet { set }
   }
 
-  /// If the set is too large, prune it down to the best `beam_size` items.
   pub fn prune(&mut self, beam_size: usize) {
     if beam_size == 0 {
       self.set.clear();
+      return;
     }
-    // println!("prune");
-    if self.set.len() > beam_size {
-      // Keeps the `beam_size` `LibSel` with the highest latency gain.
-      self.set.sort_by(|a, b| {
-        a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area).then({
-          let mut a_libids = a.libs.keys().collect::<Vec<_>>();
-          a_libids.sort();
-          let mut b_libids = b.libs.keys().collect::<Vec<_>>();
-          b_libids.sort();
-          a_libids.cmp(&b_libids)
-        }))
+
+    // 1. 先从所有解里筛出非支配解集合 Pareto
+    let mut pareto: Vec<LibSel> = Vec::new();
+    for cand in &self.set {
+      if !self.set.iter().any(|other| {
+        // other 支配 cand？
+        (other.cycles <= cand.cycles && other.area <= cand.area)
+          && (other.cycles < cand.cycles || other.area < cand.area)
+      }) {
+        pareto.push(cand.clone());
+      }
+    }
+
+    // 2. 如果非支配解多于 beam_size，按 cycles+area 排序截断
+    if pareto.len() > beam_size {
+      pareto.sort_by(|a, b| {
+        a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area))
+        // （可加 libs id 作为 tiebreaker）
       });
-      self.set.truncate(beam_size);
+      pareto.truncate(beam_size);
+      self.set = pareto;
+      return;
     }
+
+    // 3. 如果不够 beam_size，就在剩余解里按 cycles+area 排序补充
+    let mut rest: Vec<LibSel> = self
+      .set
+      .drain(..)
+      .filter(|cand| !pareto.iter().any(|p| p.libs == cand.libs))
+      .collect();
+    rest.sort_by(|a, b| a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area)));
+
+    // 合并，并截断到 beam_size
+    pareto.extend(rest.into_iter());
+    pareto.truncate(beam_size);
+    self.set = pareto;
   }
 
   // pub fn update_cost(&mut self, exe_count: usize) {
@@ -422,9 +436,21 @@ impl LibSel {
             }
           }
         }
+        Entry::Vacant(_entry) => {
+          continue;
+        }
+      }
+    }
+    // 更新完所有旧libs之后，再更新新的lib
+    for (lib_id, lib_info) in &other.libs {
+      match res.libs.entry(*lib_id) {
+        Entry::Occupied(_entry) => {
+          continue;
+        }
         Entry::Vacant(entry) => {
           entry.insert(lib_info.clone());
           res.area += lib_info.area;
+
           // 修复，不能超过lps就返回None，这样如果原来就有lps个，
           // 那么就会直接返回空 这会导致无法添加新的lib
           // 我们需要更改策略，如果超过lps个(此时必然是lps+1个)，
@@ -433,8 +459,9 @@ impl LibSel {
             let mut gain_map = Vec::new();
             // 计算每个lib的gain
             for (lib_id, lib_info) in &res.libs {
+              let exe_count_sum = lib_info.instances.values().sum::<usize>();
               let gain = (lib_info.latency_cpu - lib_info.latency_acc)
-                * OrderedFloat::from(lib_info.instances.len() as f64);
+                * OrderedFloat::from(exe_count_sum as f64);
               gain_map.push((*lib_id, gain, lib_info.area));
             }
             // 按照gain排序
@@ -445,7 +472,7 @@ impl LibSel {
                 .then(a.2.cmp(&b.2))
                 .then(a.0.cmp(&b.0)) // 按照lib_id排序，确保稳定性
             });
-            // 取出最小的gain的lib
+
             if let Some((min_lib_id, _, _)) = gain_map.first() {
               // 删除这个lib
               res.libs.remove(min_lib_id);
@@ -460,7 +487,7 @@ impl LibSel {
       }
     }
     res.cycles += other.cycles;
-    // println!("res: {:?}", res);
+
     Some(res)
   }
 
@@ -471,6 +498,8 @@ impl LibSel {
     latency_acc: f64,
     latency_cpu: f64,
     area: usize,
+    search_result: usize,
+    exe_count: usize,
     id: Id,
     // // 没有嵌套lib，不再使用
     // _nested_libs: &LibSel,
@@ -478,35 +507,14 @@ impl LibSel {
   ) -> Option<LibSel> {
     let mut res = self.clone();
 
-    // Add all nested libs that the lib uses, then add the lib itself.
-    // for (nested_lib, lib_info) in &nested_libs.libs {
-    //   match res.libs.entry(*nested_lib) {
-    //     Entry::Occupied(mut entry) => {
-    //       let (_, _, set) = entry.get_mut();
-    //       for (id, count) in lib_info.2.iter() {
-    //         if let None = set.get_mut(id) {
-    //           set.insert(*id, *count);
-    //         }
-    //       }
-    //     }
-    //     Entry::Vacant(entry) => {
-    //       entry.insert(lib_info.clone());
-    //       res.area += lib_info.1;
-    //       if res.libs.len() > lps {
-    //         return None;
-    //       }
-    //     }
-    //   }
-    // }
-
     match res.libs.entry(lib) {
       Entry::Occupied(mut entry) => {
         let set = &mut entry.get_mut().instances;
-        set.insert(id, 1);
+        set.insert(id, exe_count);
       }
       Entry::Vacant(entry) => {
         let mut set = HashMap::new();
-        set.insert(id, 1);
+        set.insert(id, exe_count);
         let info = LibInfo {
           latency_acc: OrderedFloat::from(latency_acc),
           latency_cpu: OrderedFloat::from(latency_cpu),
@@ -548,6 +556,25 @@ impl LibSel {
 
     res.cycles += OrderedFloat::from(latency_acc as f64);
 
+    // 如果res的libs中含有lib_id，但是set.len()<
+    // search_result,则添加奖励项，cycles减去(search_result
+    // - set.len()) * latency_acc * exe_count
+    if let Some(lib_info) = res.libs.get_mut(&lib) {
+      let set_len = lib_info.instances.len();
+      if set_len < search_result {
+        res.cycles += OrderedFloat::from(
+          (search_result - set_len) as f64
+            * (latency_cpu - latency_acc)
+            * exe_count as f64
+            * 0.1,
+        );
+        // // 最低不能为0
+        // if res.cycles < OrderedFloat::from(0.0) {
+        //   res.cycles = OrderedFloat::from(0.0);
+        // }
+      }
+    }
+
     Some(res)
   }
 
@@ -585,7 +612,9 @@ where
   lps: usize,
   bb_query: BBQuery,
   /// a map to store the true lat_acc for (lib_id, bbs)
-  lat_acc_map: HashMap<(usize, Vec<String>), usize>,
+  lat_acc_map: HashMap<(usize, Vec<String>), f64>,
+  /// a map to store the length of matches for a lib
+  search_len_map: HashMap<usize, usize>,
   /// Marker to indicate that this struct uses the Op type parameter
   op_phantom: PhantomData<Op>,
   ty_phantom: PhantomData<T>,
@@ -608,6 +637,7 @@ where
       lps,
       bb_query,
       lat_acc_map: HashMap::new(),
+      search_len_map: HashMap::new(),
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
     }
@@ -621,6 +651,7 @@ where
       lps: 1,
       bb_query: BBQuery::default(),
       lat_acc_map: HashMap::new(),
+      search_len_map: HashMap::new(),
       op_phantom: PhantomData,
       ty_phantom: PhantomData,
     }
@@ -628,20 +659,39 @@ where
 
   pub fn with_lat_map(
     &mut self,
-    lat_map: HashMap<(usize, Vec<String>), usize>,
+    lat_map: HashMap<(usize, Vec<String>), f64>,
   ) -> &mut Self {
     self.lat_acc_map = lat_map;
     self
   }
 
   #[must_use]
-  pub fn get_lat_acc(&self, lib_id: usize, bbs: Vec<String>) -> Option<usize> {
+  pub fn get_lat_acc(&self, lib_id: usize, bbs: Vec<String>) -> Option<f64> {
     // 如果lat_acc_map中有对应的key，则返回对应的值
     if let Some(lat_acc) = self.lat_acc_map.get(&(lib_id, bbs)) {
       Some(*lat_acc)
     } else {
       // 否则返回0
       None
+    }
+  }
+
+  pub fn with_search_len_map(
+    &mut self,
+    search_len_map: HashMap<usize, usize>,
+  ) -> &mut Self {
+    self.search_len_map = search_len_map;
+    self
+  }
+
+  #[must_use]
+  pub fn get_search_len(&self, lib_id: usize) -> usize {
+    // 如果search_len_map中有对应的key，则返回对应的值
+    if let Some(search_len) = self.search_len_map.get(&lib_id) {
+      *search_len
+    } else {
+      // 否则返回1
+      1
     }
   }
 }
@@ -837,7 +887,7 @@ where
   type Data = ISAXCost<T>;
 
   fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-    // println!("merge: {:?} -> {:?}", from, to);
+    // println!("merge ");
     // println!("{:?}", to);
     // println!("{:?}", &from);
     let a0 = to.clone();
@@ -861,6 +911,7 @@ where
     //   },
     // };
     // to.cs.update_cost(exe_count);
+
     to.cs.unify();
     // println!("unified cost set: {:?}", to.cs);
     to.cs.prune(self.beam_size);
@@ -977,13 +1028,24 @@ where
         if lat_cpu <= lat_acc || area == 0 {
           return ISAXCost::new(x(b).clone(), ty, bbs, vec_len);
         }
+        // 从analysis中取出在egraph中匹配了多少次
+        let search_result = egraph.analysis.get_search_len(id.0);
         // 固连的latency是错误的，需要进一步schedule计算，
         // 首先从f中利用extractor获取完整的表达式
+        let b_bbs = egraph[*b].data.bb.clone();
+        let mut b_exe_count = 1;
+        if b_bbs.len() > 0 {
+          if let Some(bb_entry) = self_ref.bb_query.get(&b_bbs[0]) {
+            b_exe_count = bb_entry.execution_count;
+          }
+        }
         let mut e = x(b).add_lib(
           id,
-          lat_acc as f64, // as f64 / vec_len as f64,
-          lat_cpu as f64, // as f64 / vec_len as f64,
+          lat_acc.0,
+          lat_cpu.0, // as f64 / vec_len as f64,
           area,
+          search_result,
+          b_exe_count,
           *b,
           // x(f),
           self_ref.lps,
@@ -994,7 +1056,6 @@ where
         // }
         e.unify();
         e.prune(self_ref.inter_beam);
-
         // println!("make done");
         ISAXCost::new(e, ty, bbs, vec_len)
       }
@@ -1017,7 +1078,6 @@ where
           // }
 
           e.inc_cycles(op_latency * exe_count as f64);
-
           // 如果是get_vec节点，那么就需要除以vec_len
           if enode.operation().is_get_from_vec() {
             // 拿到子节点的vec_len
@@ -1034,15 +1094,28 @@ where
           let mut e = args[0].clone();
           // println!("begin cross,args.len: {}", enode.args().len());
           // println!("{:#?}", e);
+          // if args.len() == 7 {
+          //   println!("begin cross, cs: {:#?}", e);
+          // }
           for cs in &args[1..] {
-            // println!("crossing with: {:#?}", cs);
             e = e.cross(cs, self_ref.lps);
-
+            let cloned_cs = e.clone();
             e.unify();
-            // println!("crossed: {:#?}", e);
+
+            if cloned_cs.set.iter().any(|l| l.libs.contains_key(&LibId(3)))
+              && e.set.iter().all(|l| !l.libs.contains_key(&LibId(3)))
+              && args.len() == 7
+            {
+              println!("before: {:?}, cs: {:?}, e: {:?}", cloned_cs, cs, e);
+            }
+
+            // if args.len() == 7 {
+            //   println!("crossed: {:#?}", e);
+            // }
           }
 
           e.prune(self_ref.inter_beam);
+
           // println!("inter beam: {}", self_ref.inter_beam);
           // println!("e.len after update: {}", e.set.len());
           e.inc_cycles(op_latency * exe_count as f64);
@@ -1604,8 +1677,15 @@ where
 
   fn cost_rec(&mut self, expr: &RecExpr<AstNode<Op>>) -> Self::Cost {
     let (cycles, _) = rec_cost(expr, &self.bb_query, HashMap::new());
-    println!("cycles: {:?}", cycles);
-    OrderedFloat::from(cycles)
+    let mut vec_num = 0;
+    for node in expr.iter() {
+      if node.operation().is_vector_op() {
+        vec_num += 1;
+      }
+    }
+    // 给vec_num一个奖励项，但又不能太大
+
+    OrderedFloat::from(cycles) / (1.0 + (vec_num / expr.len()) as f64 * 0.01)
   }
 }
 
@@ -1690,6 +1770,20 @@ where
     _eclass: Id,
     enode: &AstNode<Op>,
   ) -> f64 {
+    let bbs = enode.operation().get_bbs_info();
+    if bbs.is_empty() {
+      return 0.0; // No BBS, no cost
+    }
+    let bb = bbs[0].clone();
+    if bb.starts_with("main") {
+      // If this is the main function, we don't count its cost
+      return 0.0;
+    }
+    // if !bb.starts_with("naive_cross_product#entry") {
+    //   // Skip the naive_point_product entry BB
+    //   return 0.0;
+    // }
+
     let analysis = egraph.analysis.clone();
     let exe_count = enode.operation().op_execution_count(&self.bb_query);
     if let Some(BindingExpr::Lib(lib_id, _, _, _, lat_acc, _)) =
@@ -1704,9 +1798,9 @@ where
       } else {
         // If we don't have latency for this lib, use the default
         // latency from the binding expr
-        lat_acc
+        lat_acc.0
       };
-      (lat_acc * exe_count) as f64
+      lat_acc * exe_count as f64
     } else if enode.operation().is_op() {
       enode.op_latency_cpu(&self.bb_query) * exe_count as f64
     } else {

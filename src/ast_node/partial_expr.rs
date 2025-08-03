@@ -261,6 +261,33 @@ impl<Op: OperationInfo + Clone + Ord, T: Clone + Ord> PartialExpr<Op, T> {
     }
   }
 
+  #[must_use]
+  pub fn leaves_are_all_holes(&self) -> bool {
+    match self {
+      PartialExpr::Hole(_) => true, // 是一个 Hole，符合要求
+      PartialExpr::Node(ast_node) => {
+        // 如果是节点，递归检查所有子节点
+        ast_node
+          .args()
+          .iter()
+          .all(|child| child.leaves_are_all_holes())
+      }
+    }
+  }
+
+  #[must_use]
+  pub fn has_vector_op(&self) -> bool {
+    match self {
+      PartialExpr::Node(node) => {
+        if node.operation().is_vector_op() {
+          return true;
+        }
+        node.iter().any(Self::has_vector_op)
+      }
+      PartialExpr::Hole(_) => false,
+    }
+  }
+
   /// Replaces the holes in a partial expression of type `PartialExpr<Op, T>`
   /// with partial expressions of type `PartialExpr<Op, U>` to produce a new
   /// partial expression of type `PartialExpr<Op, U>`. Each hole's replacement

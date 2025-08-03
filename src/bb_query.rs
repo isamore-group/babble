@@ -58,6 +58,8 @@ impl BBQuery {
         / execution_count as f64
         / operation_count as f64
         / 1000.0;
+      // println!("bbs: {:?}, cpo: {}, cpi: {}", name, cpo, cpi);
+      let cpo = if cpo / cpi > 20.0 { cpi * 2.0 } else { cpo };
       map.insert(
         name.clone(),
         BBEntry::new(

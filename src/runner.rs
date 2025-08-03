@@ -47,11 +47,12 @@ pub trait OperationInfo {
   fn is_dowhile(&self) -> bool;
   fn is_liblearn_banned_op(&self) -> bool;
   fn is_lib(&self) -> bool;
+  fn is_list_op(&self) -> bool;
   fn is_lib_op(&self) -> bool;
   /// Get the library ID of the operation
   fn get_libid(&self) -> usize;
   /// Make a lib node
-  fn make_lib(id: LibId, lat_cpu: usize, lat_acc: usize, cost: usize) -> Self;
+  fn make_lib(id: LibId, lat_cpu: f64, lat_acc: f64, cost: usize) -> Self;
   /// make a list op
   fn make_vec(result_tys: Vec<String>, bbs: Vec<String>) -> Self;
   /// make a get_from_vec op
@@ -744,6 +745,7 @@ where
     // 这样可以忽略掉不必要的lambda和apply节点
 
     let mut aeg = origin_aeg.clone();
+    // aeg.dot().to_png("target/initial_egraph.png").unwrap();
     let mut aeg_roots = vec![root];
 
     for partial_expr in self.past_lib_message.get_exprs() {
@@ -755,18 +757,21 @@ where
     // 进行BB信息的推断
     perf_infer::perf_infer(&mut aeg, &aeg_roots);
 
+    // 在进行learn之前，先提取出之前库学习最大的lib，直接利用past_libs的keys就行
+    let max_lib_id = self
+      .past_lib_message
+      .appliers
+      .keys()
+      .max()
+      .map_or(0, |&id| id + 1); // past_libs的keys是从0开始的，所以+1
+
     let mut vectorized_liblearn_messages = vec![];
     let mut vectorized_egraph_with_root = None;
 
     // aeg.dot().to_png("target/initial_egraph.png").unwrap();
     if self.config.vectorize_config.vectorize {
       let vectorize_time = Instant::now();
-      let (
-        vecegraph_without_dsrs_with_root,
-        vecegraph_running_dsrs_with_root,
-        lib_messages,
-      ) = vectorize(
-        egraph_without_dsrs,
+      let (vecegraph_running_dsrs_with_root, lib_messages) = vectorize(
         aeg.clone(),
         root,
         &self.lift_dsrs,
@@ -774,11 +779,12 @@ where
         &self.transform_dsrs,
         self.config.clone(),
         self.bb_query.clone(),
+        max_lib_id,
       );
-      origin_aeg = vecegraph_running_dsrs_with_root.0;
+      origin_aeg = vecegraph_running_dsrs_with_root.0.clone();
       vectorized_liblearn_messages = lib_messages;
       root = vecegraph_running_dsrs_with_root.1;
-      vectorized_egraph_with_root = Some(vecegraph_without_dsrs_with_root);
+      vectorized_egraph_with_root = Some(vecegraph_running_dsrs_with_root);
       println!(
         "     • Vectorized egraph in {}ms",
         vectorize_time.elapsed().as_millis()
@@ -819,16 +825,13 @@ where
 
     println!("      🧠 Anti-Unification Phase...");
     let au_time = Instant::now();
-    // 在进行learn之前，先提取出之前库学习最大的lib，直接利用past_libs的keys就行
-    let max_lib_id = self
-      .past_lib_message
-      .appliers
-      .keys()
-      .max()
-      .map_or(0, |&id| id + 1); // past_libs的keys是从0开始的，所以+1
+
     // 如果启用了expand选项，那么就不走这一条路，
     // 直接使用expand的操作获取到所以用到的rewrites
-    let mut expand_message = if self.config.op_pack_config.enable_meta_au {
+    // 用于提前获取信息用于指导CostSet
+    let mut lib_search_results = HashMap::new();
+
+    let expand_message = if self.config.op_pack_config.enable_meta_au {
       expand(
         aeg.clone(),
         root,
@@ -840,6 +843,9 @@ where
       let liblearn_messages = if self.config.vectorize_config.vectorize {
         vectorized_liblearn_messages
       } else {
+        // for ecls in aeg.classes() {
+        //   println!("eclass id: {}, nodes: {:?}", ecls.id, ecls.nodes);
+        // }
         let mut learned_lib = LearnedLibraryBuilder::default()
           .learn_constants(self.config.learn_constants)
           .max_arity(self.config.max_arity)
@@ -867,6 +873,16 @@ where
         println!("        • Deduplicating patterns... ");
         let dedup_time = Instant::now();
         learned_lib.deduplicate(&aeg);
+        // for msg in learned_lib.messages() {
+        //   let searcher = Pattern::from(msg.searcher_pe);
+        //   let results = searcher.search(&origin_aeg);
+        //   println!(
+        //     "lib_id: {}, applier: {}, results.len: {}",
+        //     msg.lib_id,
+        //     Pattern::from(msg.applier_pe),
+        //     results.len()
+        //   );
+        // }
 
         println!(
           "         • Deduplicated to {} patterns in {}ms",
@@ -902,6 +918,7 @@ where
         searchers.insert(lib_id, vec![msg.searcher_pe.clone()]);
         let applier: Pattern<_> = msg.applier_pe.into();
         appliers.insert(lib_id, applier);
+        lib_search_results.insert(lib_id, msg.search_len);
       }
 
       ExpandMessage {
@@ -911,24 +928,24 @@ where
       }
     };
 
-    // FIXME: 复用性至上！！！
-    // 需要筛掉一些lib，如果所有lib对应的searcher匹配到的片段只有一个，
-    // 那么就删除这个lib
-    for lib in expand_message.libs() {
-      let searchers = expand_message.searchers.get(&lib).unwrap();
-      let mut cnt = 0;
-      for searcher in searchers {
-        let searcher = Pattern::from(searcher.clone());
-        let results = searcher.search(&aeg);
-        cnt += results.len();
-        if cnt > 1 {
-          break;
-        }
-      }
-      if cnt <= 1 {
-        expand_message.delete_lib(lib);
-      }
-    }
+    // // FIXME: 复用性至上！！！
+    // // 需要筛掉一些lib，如果所有lib对应的searcher匹配到的片段只有一个，
+    // // 那么就删除这个lib
+    // for lib in expand_message.libs() {
+    //   let searchers = expand_message.searchers.get(&lib).unwrap();
+    //   let mut cnt = 0;
+    //   for searcher in searchers {
+    //     let searcher = Pattern::from(searcher.clone());
+    //     let results = searcher.search(&aeg);
+    //     cnt += results.len();
+    //     if cnt > 1 {
+    //       break;
+    //     }
+    //   }
+    //   if cnt <= 1 {
+    //     expand_message.delete_lib(lib);
+    //   }
+    // }
 
     println!("      🔁 Adding Libs + Beam Search...");
     // let mut vec_applier = Vec::new();
@@ -979,6 +996,10 @@ where
     // for eclass in origin_aeg.classes() {
     //   println!("eclass: {:?}", eclass);
     // }
+    // origin_aeg的analysi带上lib_search_results
+    origin_aeg
+      .analysis
+      .with_search_len_map(lib_search_results.clone());
     let runner = EggRunner::<_, _, ()>::new(ISAXAnalysis::new(
       self.config.final_beams,
       self.config.inter_beams,
@@ -1217,8 +1238,6 @@ where
       // for ecls in aeg.classes() {
       //   println!("eclass {}: nodes: {:?}", ecls.id, ecls.nodes,);
       // }
-
-      // aeg.dot().to_png("target/aeg.png").unwrap();
 
       let lp_cf = ISAXLpCF::new(self.bb_query.clone());
       aeg = eliminate_lambda(&aeg);

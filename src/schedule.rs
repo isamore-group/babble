@@ -70,7 +70,7 @@ pub struct Scheduler<LA, LD> {
 
 /// The result type of scheduling operations, containing (latency_cpu,
 /// latency_acc, area)
-pub type ScheduleResult = (usize, usize, usize);
+pub type ScheduleResult = (f64, f64, usize);
 
 impl<LA, LD> Scheduler<LA, LD> {
   pub fn new(
@@ -94,84 +94,90 @@ impl<LA, LD> Scheduler<LA, LD> {
   {
     // println!("Scheduling...");
     // Start cycle of each AST node
-    let mut sc: Vec<usize> = vec![0; expr.len()];
-    // Start time in the cycle of each AST node
-    let mut stic: Vec<usize> = vec![0; expr.len()];
-    let mut scheduled: Vec<bool> = vec![false; expr.len()];
-    let mut unscheduled_count = expr.len();
+    // let mut sc: Vec<usize> = vec![0; expr.len()];
+    // // Start time in the cycle of each AST node
+    // let mut stic: Vec<usize> = vec![0; expr.len()];
+    // let mut scheduled: Vec<bool> = vec![false; expr.len()];
+    // let mut unscheduled_count = expr.len();
 
-    // ASAP scheduling
-    let mut cycle = 0;
-    while unscheduled_count > 0 {
-      for i in 0..expr.len() {
-        if !scheduled[i] {
-          let node = &expr[i.into()];
-          // Check if the operation is ready to be scheduled and calculate the
-          // earliest time in the cycle the operation can start
-          let mut ready = true;
-          let mut earlist_stic = 0;
-          for &child in node.args() {
-            let idx: usize = child.into();
-            if !scheduled[idx] {
-              ready = false;
-              break;
-            } else {
-              let dep = &expr[idx.into()];
-              let mut delay =
-                dep.op_delay(&self.delay_estimator, dep.get_op_args(expr));
-              let mut latency = dep.op_latency();
-              if dep.operation().is_mem() {
-                latency = dep.op_latency_cpu(&self.bb_query).ceil() as usize;
-              }
-              latency += delay / self.clock_period;
-              delay %= self.clock_period;
-              let is_sequential = latency > 0;
-              if is_sequential {
-                // Check if the dependent operation is ready
-                if sc[idx] + latency > cycle {
-                  ready = false;
-                  break;
-                } else if sc[idx] + latency == cycle {
-                  earlist_stic = cmp::max(earlist_stic, delay);
-                }
-              } else {
-                if sc[idx] == cycle {
-                  earlist_stic = cmp::max(earlist_stic, stic[idx] + delay);
-                }
-              }
-            }
-          }
-          if ready {
-            let mut delay =
-              node.op_delay(&self.delay_estimator, node.get_op_args(expr));
-            let mut latency = node.op_latency();
-            if node.operation().is_mem() {
-              latency = node.op_latency_cpu(&self.bb_query).ceil() as usize;
-            }
-            latency += delay / self.clock_period;
-            delay %= self.clock_period;
-            let is_sequential = latency > 0;
-            match is_sequential {
-              true => {
-                sc[i] = cycle;
-                stic[i] = earlist_stic;
-                scheduled[i] = true;
-                unscheduled_count -= 1;
-              }
-              false => {
-                if earlist_stic + delay <= self.clock_period {
-                  sc[i] = cycle;
-                  stic[i] = earlist_stic;
-                  scheduled[i] = true;
-                  unscheduled_count -= 1;
-                }
-              }
-            }
-          }
-        }
-      }
-      cycle += 1;
-    }
+    // // ASAP scheduling
+    // let mut cycle = 0;
+    // while unscheduled_count > 0 {
+    //   for i in 0..expr.len() {
+    //     if !scheduled[i] {
+    //       let node = &expr[i.into()];
+    //       // Check if the operation is ready to be scheduled and calculate
+    // the       // earliest time in the cycle the operation can start
+    //       let mut ready = true;
+    //       let mut earlist_stic = 0;
+    //       for &child in node.args() {
+    //         let idx: usize = child.into();
+    //         if !scheduled[idx] {
+    //           ready = false;
+    //           break;
+    //         } else {
+    //           let dep = &expr[idx.into()];
+    //           let mut delay =
+    //             dep.op_delay(&self.delay_estimator, dep.get_op_args(expr));
+    //           let mut latency = dep.op_latency();
+    //           if dep.operation().is_mem() {
+    //             // latency = dep.op_latency_cpu(&self.bb_query).ceil() as
+    // usize;             latency = 0;
+    //             delay = (dep.op_latency_cpu(&self.bb_query)
+    //               * self.clock_period as f64) as usize;
+    //           }
+    //           latency += delay / self.clock_period;
+    //           delay %= self.clock_period;
+    //           let is_sequential = latency > 0;
+    //           if is_sequential {
+    //             // Check if the dependent operation is ready
+    //             if sc[idx] + latency > cycle {
+    //               ready = false;
+    //               break;
+    //             } else if sc[idx] + latency == cycle {
+    //               earlist_stic = cmp::max(earlist_stic, delay);
+    //             }
+    //           } else {
+    //             if sc[idx] == cycle {
+    //               earlist_stic = cmp::max(earlist_stic, stic[idx] + delay);
+    //             }
+    //           }
+    //         }
+    //       }
+    //       if ready {
+    //         let mut delay =
+    //           node.op_delay(&self.delay_estimator, node.get_op_args(expr));
+    //         let mut latency = node.op_latency();
+    //         if node.operation().is_mem() {
+    //           // latency = node.op_latency_cpu(&self.bb_query).ceil() as
+    // usize;           latency = 0;
+    //           delay = (node.op_latency_cpu(&self.bb_query)
+    //             * self.clock_period as f64) as usize;
+    //         }
+    //         latency += delay / self.clock_period;
+    //         delay %= self.clock_period;
+    //         let is_sequential = latency > 0;
+    //         match is_sequential {
+    //           true => {
+    //             sc[i] = cycle;
+    //             stic[i] = earlist_stic;
+    //             scheduled[i] = true;
+    //             unscheduled_count -= 1;
+    //           }
+    //           false => {
+    //             if earlist_stic + delay <= self.clock_period {
+    //               sc[i] = cycle;
+    //               stic[i] = earlist_stic;
+    //               scheduled[i] = true;
+    //               unscheduled_count -= 1;
+    //             }
+    //           }
+    //         }
+    //       }
+    //     }
+    //   }
+    //   cycle += 1;
+    // }
 
     // Identify the loop in the expression
     let root: usize = expr.root().into();
@@ -198,31 +204,52 @@ impl<LA, LD> Scheduler<LA, LD> {
     //   min_exe_count, max_exe_count
     // );
     if min_exe_count == usize::MAX {
-      return (0, 0, 0);
+      return (0.0, 0.0, 0);
     }
     let loop_length = max_exe_count / min_exe_count;
 
     // Calculate the gain
     // println!("Calculating gain...");
     // println!("Calculating gain...");
-    let mut latency_accelerator = 0;
+    let mut delay_exprs = vec![0; expr.len()];
+    let mut delay_accelerator = 0;
     for i in 0..expr.len() {
       let node = &expr[i.into()];
-      let delay = node.op_delay(&self.delay_estimator, node.get_op_args(expr));
-      let mut latency = node.op_latency();
-      if node.operation().is_mem() {
-        latency = node.op_latency_cpu(&self.bb_query).ceil() as usize;
-      }
-      latency += delay / self.clock_period;
-      let is_sequential = latency > 0;
-      if is_sequential {
-        latency_accelerator = cmp::max(latency_accelerator, sc[i] + latency);
+      // let mut delay =
+      //   node.op_delay(&self.delay_estimator, node.get_op_args(expr));
+      // let mut latency = node.op_latency();
+      // if node.operation().is_mem() {
+      //   // latency = node.op_latency_cpu(&self.bb_query).ceil() as usize;
+      //   latency = 0;
+      //   delay = (node.op_latency_cpu(&self.bb_query) * self.clock_period as
+      // f64)     as usize;
+      // }
+      // latency += delay / self.clock_period;
+      let delay = if node.operation().is_mem() {
+        (node.op_latency_cpu(&self.bb_query) * self.clock_period as f64)
+          as usize
       } else {
-        latency_accelerator = cmp::max(latency_accelerator, sc[i] + 1);
-      }
+        node.op_delay(&self.delay_estimator, node.get_op_args(expr))
+      };
+      // println!("Node: {:?}, Delay: {}", node.operation(), delay);
+      let child_delay = node
+        .args()
+        .iter()
+        .map(|id| {
+          let idx: usize = (*id).into();
+          delay_exprs[idx]
+        })
+        .max();
+      delay_exprs[i] = match child_delay {
+        Some(d) => d + delay,
+        None => delay,
+      };
+      delay_accelerator = cmp::max(delay_accelerator, delay_exprs[i]);
     }
+    let mut latency_accelerator =
+      delay_accelerator as f64 / self.clock_period as f64;
     if have_loop {
-      latency_accelerator += loop_length - 1;
+      latency_accelerator += (loop_length - 1) as f64;
     }
 
     let mut latency_cpu_f64 = 0.0;
@@ -243,7 +270,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     //   latency_accelerator, latency_cpu_f64
     // );
     // 取上界
-    let latency_cpu = latency_cpu_f64.ceil() as usize;
+    // let latency_cpu = latency_cpu_f64.ceil() as usize;
     // Calculate the area
     // println!("Calculating area...");
     let mut area = 0;
@@ -254,17 +281,16 @@ impl<LA, LD> Scheduler<LA, LD> {
       area += node_area;
     }
     // println!("Number of nodes: {}", expr.len());
-
-    if latency_accelerator > latency_cpu {
-      (0, 0, 0) // If the accelerator is slower, return a large cost
+    // println!(
+    //   "Latency accelerator: {}, Latency CPU: {}, Area: {}",
+    //   latency_accelerator, latency_cpu_f64, area
+    // );
+    if latency_accelerator > latency_cpu_f64 {
+      (0.0, 0.0, 0) // If the accelerator is slower, return a large cost
     } else if area == 0 {
-      (0, 0, 0)
+      (0.0, 0.0, 0)
     } else {
-      // println!(
-      //   "Latency accelerator: {}, Latency CPU: {}, Area: {}",
-      //   latency_accelerator, latency_cpu, area
-      // );
-      (latency_cpu, latency_accelerator, area)
+      (latency_cpu_f64, latency_accelerator, area)
     }
   }
 }
@@ -273,34 +299,50 @@ impl<LA, LD> Scheduler<LA, LD> {
 pub fn rec_cost<Op, LA, LD>(
   expr: &RecExpr<AstNode<Op>>,
   bb_query: &BBQuery,
-  lat_acc_map: HashMap<(usize, Vec<String>), usize>,
+  lat_acc_map: HashMap<(usize, Vec<String>), f64>,
 ) -> (f64, usize)
 where
   AstNode<Op>: Schedulable<LA, LD>,
   Op: Teachable + OperationInfo + Clone + Debug,
 {
   let mut expr_mut = expr.clone();
-  // Identify the lambda nodes and their children in the expression
-  for (i, node) in expr.iter().enumerate() {
-    if let Some(BindingExpr::Lambda(_)) = node.as_binding_expr() {
-      // Recursively remove the lambda node and its children
-      let mut stack = vec![i];
-      // Remove the lambda node and its children
-      while let Some(idx) = stack.pop() {
-        let cur_node = expr_mut.get_mut(idx).unwrap();
-        *cur_node.operation_mut() = Op::make_rule_var("Lambda".into());
-        for child in cur_node.args() {
-          let child_idx = usize::from(*child);
-          stack.push(child_idx);
-        }
-      }
-    }
-  }
+  // // Identify the lambda nodes and their children in the expression
+  // for (i, node) in expr.iter().enumerate() {
+  //   if let Some(BindingExpr::Lambda(_)) = node.as_binding_expr() {
+  //     // Recursively remove the lambda node and its children
+  //     let mut stack = vec![i];
+  //     // Remove the lambda node and its children
+  //     while let Some(idx) = stack.pop() {
+  //       let cur_node = expr_mut.get_mut(idx).unwrap();
+  //       *cur_node.operation_mut() = Op::make_rule_var("Lambda".into());
+  //       for child in cur_node.args() {
+  //         let child_idx = usize::from(*child);
+  //         stack.push(child_idx);
+  //       }
+  //     }
+  //   }
+  // }
 
   let mut used_lib: HashSet<LibId> = HashSet::new();
   let mut cycles = 0.0;
   let mut area: usize = 0;
+  let mut cnt = 0;
   for node in expr_mut.iter() {
+    let bbs = node.operation().get_bbs_info();
+    if bbs.is_empty() {
+      continue; // Skip nodes without BB info
+    }
+    let bb = bbs[0].clone();
+
+    if bb.starts_with("main") {
+      // Skip the main BB
+      continue;
+    }
+
+    // if !bb.starts_with("naive_cross_product#entry") {
+    //   // Skip the naive_point_product entry BB
+    //   continue;
+    // }
     let exe_count = node.operation().op_execution_count(bb_query);
     if let Some(BindingExpr::Lib(lid, _, _, _, lat_acc, cost)) =
       node.as_binding_expr()
@@ -310,15 +352,23 @@ where
       let lat_acc = if let Some(lat) = lat_acc_map.get(&(lid.0, bbs.clone())) {
         *lat
       } else {
-        lat_acc
+        lat_acc.0
       };
-      cycles += (lat_acc * exe_count) as f64;
+      cycles += lat_acc * exe_count as f64;
+
       if used_lib.insert(lid) {
         area += cost;
       }
     } else if node.operation().is_op() {
       cycles += node.op_latency_cpu(bb_query) * exe_count as f64;
+      cnt += 1;
+      // println!(
+      //   "Node: {:?}, Latency: {}",
+      //   node.operation(),
+      //   node.op_latency_cpu(bb_query)
+      // );
     }
   }
+  // println!("cnt: {}", cnt);
   (cycles, area)
 }
