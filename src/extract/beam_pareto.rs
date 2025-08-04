@@ -167,7 +167,16 @@ impl CostSet {
   pub fn unify(&mut self) {
     // 使用HashMap来去重，并选择最小的cycles
     let mut unique_set: BTreeMap<Vec<LibId>, LibSel> = BTreeMap::new();
-    let new_set = self.set.clone();
+    let mut new_set = self.set.clone();
+    new_set.sort_by(|a, b| {
+      a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area)).then({
+        let mut a_libids = a.libs.keys().cloned().collect::<Vec<_>>();
+        a_libids.sort();
+        let mut b_libids = b.libs.keys().cloned().collect::<Vec<_>>();
+        b_libids.sort();
+        a_libids.cmp(&b_libids)
+      })
+    });
     for cand in new_set.into_iter() {
       // 将 HashMap<LibId, LibInfo> 转换为 Vec<(LibId, LibInfo)>
       let mut libs_as_vec: Vec<LibId> = cand.libs.keys().cloned().collect();
