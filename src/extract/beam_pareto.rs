@@ -1783,15 +1783,6 @@ where
     if bbs.is_empty() {
       return 0.0; // No BBS, no cost
     }
-    let bb = bbs[0].clone();
-    if bb.starts_with("main") {
-      // If this is the main function, we don't count its cost
-      return 0.0;
-    }
-    // if !bb.starts_with("naive_cross_product#entry") {
-    //   // Skip the naive_point_product entry BB
-    //   return 0.0;
-    // }
 
     let analysis = egraph.analysis.clone();
     let exe_count = enode.operation().op_execution_count(&self.bb_query);

@@ -334,11 +334,6 @@ where
     }
     let bb = bbs[0].clone();
 
-    if bb.starts_with("main") {
-      // Skip the main BB
-      continue;
-    }
-
     // if !bb.starts_with("naive_cross_product#entry") {
     //   // Skip the naive_point_product entry BB
     //   continue;
