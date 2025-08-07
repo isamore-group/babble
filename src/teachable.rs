@@ -294,6 +294,7 @@ pub enum CastOp {
 pub enum VectorOp {
   Vec,
   VecAdd,
+  VecCmp,
   VecSub,
   VecMul,
   VecDiv,
