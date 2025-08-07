@@ -9,7 +9,9 @@ use std::{
 };
 
 use crate::{
-  BindingExpr, LibId, Teachable, ast_node::AstNode, bb_query::BBQuery,
+  BindingExpr, LibId, Teachable,
+  ast_node::AstNode,
+  bb_query::{self, BBQuery},
   runner::OperationInfo,
 };
 use egg::{Language, RecExpr};
@@ -366,4 +368,47 @@ where
   }
   // println!("cnt: {}", cnt);
   (cycles, area)
+}
+
+pub fn cycles_for_every_function<Op, LA, LD>(
+  expr: &RecExpr<AstNode<Op>>,
+  bb_query: &BBQuery,
+  lat_acc_map: HashMap<(usize, Vec<String>), f64>,
+) -> HashMap<String, f64>
+where
+  AstNode<Op>: Schedulable<LA, LD>,
+  Op: Teachable + OperationInfo + Clone + Debug,
+{
+  let mut func_costs = HashMap::new();
+  for node in expr.iter() {
+    let bbs = node.operation().get_bbs_info();
+    if bbs.is_empty() {
+      continue; // Skip nodes without BB info
+    }
+
+    let bb = bbs[0].clone();
+    let func_name = bb.split('#').next().unwrap_or(&bb).to_string();
+    let exe_count = node.operation().op_execution_count(bb_query);
+    if let Some(BindingExpr::Lib(lid, _, _, _, lat_acc, _)) =
+      node.as_binding_expr()
+    {
+      let lat_acc = if let Some(lat) = lat_acc_map.get(&(lid.0, bbs.clone())) {
+        *lat
+      } else {
+        lat_acc.0
+      };
+      let cycles = lat_acc * exe_count as f64;
+      func_costs
+        .entry(func_name)
+        .and_modify(|e| *e += cycles)
+        .or_insert(cycles);
+    } else if node.operation().is_op() {
+      let cycles = node.op_latency_cpu(bb_query) * exe_count as f64;
+      func_costs
+        .entry(func_name)
+        .and_modify(|e| *e += cycles)
+        .or_insert(cycles);
+    }
+  }
+  func_costs
 }

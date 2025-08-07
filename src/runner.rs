@@ -30,7 +30,7 @@ use crate::{
   },
   perf_infer,
   rewrites::{self, TypeMatch},
-  schedule::{Schedulable, Scheduler, rec_cost},
+  schedule::{Schedulable, Scheduler, cycles_for_every_function, rec_cost},
   vectorize::{VectorConfig, vectorize},
 };
 use egg::{
@@ -212,6 +212,7 @@ where
   pub libs: HashMap<usize, Pattern<AstNode<Op>>>,
   pub cycles: f64,
   pub area: usize,
+  pub func_cycles: HashMap<String, f64>,
   _phantom: std::marker::PhantomData<T>,
 }
 
@@ -259,12 +260,14 @@ where
     libs: HashMap<usize, Pattern<AstNode<Op>>>,
     cycles: f64,
     area: usize,
+    func_cycles: HashMap<String, f64>,
   ) -> Self {
     Self {
       expr,
       libs,
       cycles,
       area,
+      func_cycles,
       _phantom: std::marker::PhantomData,
     }
   }
@@ -1257,9 +1260,18 @@ where
         }
       }
       chosen_libs_per_libsel.retain(|lib_id, _| lib_ids.contains(lib_id));
-      let (cycles, area) = rec_cost(&best, &self.bb_query, exact_lat_acc_map);
+      let (cycles, area) =
+        rec_cost(&best, &self.bb_query, exact_lat_acc_map.clone());
+      let func_cycles =
+        cycles_for_every_function(&best, &self.bb_query, exact_lat_acc_map);
       // 组装成一个ExtractResult
-      let es = ExtractResult::new(best, chosen_libs_per_libsel, cycles, area);
+      let es = ExtractResult::new(
+        best,
+        chosen_libs_per_libsel,
+        cycles,
+        area,
+        func_cycles,
+      );
       chosen_libids.extend(es.libs.keys().cloned());
       extract_results.push(es);
     }
