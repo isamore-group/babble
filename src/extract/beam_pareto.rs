@@ -166,7 +166,7 @@ impl CostSet {
   /// Performs trivial partial order reduction: Only keeps the Pareto frontier
   pub fn unify(&mut self) {
     // 使用HashMap来去重，并选择最小的cycles
-    let mut unique_set: BTreeMap<Vec<LibId>, LibSel> = BTreeMap::new();
+    let mut unique_set: HashMap<Vec<LibId>, LibSel> = HashMap::new();
     let mut new_set = self.set.clone();
     new_set.sort_by(|a, b| {
       a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area)).then({
@@ -199,6 +199,16 @@ impl CostSet {
     // 最后把去重后的集合赋值回self.set
     // let mut unique_set: Vec<LibSel> = Vec::new();
     self.set = unique_set.into_iter().map(|(_, v)| v).collect();
+    // // 按照cycles和area排序
+    self.set.sort_by(|a, b| {
+      a.cycles.cmp(&b.cycles).then(a.area.cmp(&b.area)).then({
+        let mut a_libids = a.libs.keys().cloned().collect::<Vec<_>>();
+        a_libids.sort();
+        let mut b_libids = b.libs.keys().cloned().collect::<Vec<_>>();
+        b_libids.sort();
+        a_libids.cmp(&b_libids)
+      })
+    });
   }
 
   #[must_use]
@@ -806,10 +816,8 @@ where
   T: Debug + Default + Clone + PartialEq + Ord + Hash,
 {
   fn eq(&self, other: &Self) -> bool {
-    self.cs == other.cs
-      && self.ty == other.ty
-      && self.bb == other.bb
-      && self.vec_len == other.vec_len
+    // self.cs == other.cs
+    self.ty == other.ty && self.bb == other.bb && self.vec_len == other.vec_len
   }
 }
 
@@ -947,6 +955,7 @@ where
     //   println!("{}", to.cs.set[0].latency_gain);
     // }
     to.vec_len = from.vec_len.max(to.vec_len);
+    // println!("after merge: {:?}", to);
     DidMerge(&a0 != to, to != &from)
     // DidMerge(false, false)
   }
@@ -956,7 +965,7 @@ where
     enode: &AstNode<Op>,
   ) -> Self::Data {
     // calculate the type
-    // println!("enode: {:?}", enode);
+    // println!("begin make");
     let children = enode.children().to_vec();
     // 按照operation进行排序，如果operation可交换
     // if enode.operation().is_commutative() {
@@ -1107,23 +1116,13 @@ where
           //   println!("begin cross, cs: {:#?}", e);
           // }
           for cs in &args[1..] {
+            // println!("begin prune");
             e = e.cross(cs, self_ref.lps);
-            let cloned_cs = e.clone();
             e.unify();
-
-            if cloned_cs.set.iter().any(|l| l.libs.contains_key(&LibId(3)))
-              && e.set.iter().all(|l| !l.libs.contains_key(&LibId(3)))
-              && args.len() == 7
-            {
-              println!("before: {:?}, cs: {:?}, e: {:?}", cloned_cs, cs, e);
-            }
-
-            // if args.len() == 7 {
-            //   println!("crossed: {:#?}", e);
-            // }
+            e.prune(self_ref.inter_beam);
           }
 
-          e.prune(self_ref.inter_beam);
+          // e.prune(self_ref.inter_beam);
 
           // println!("inter beam: {}", self_ref.inter_beam);
           // println!("e.len after update: {}", e.set.len());
