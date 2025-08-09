@@ -339,18 +339,24 @@ where
     //   continue;
     // }
     let exe_count = node.operation().op_execution_count(bb_query);
+    // println!("exe_count: {}", exe_count);
     if let Some(BindingExpr::Lib(lid, _, _, _, lat_acc, cost)) =
       node.as_binding_expr()
     {
-      let mut bbs = node.operation().get_bbs_info();
-      bbs.sort();
+      let bbs = node.operation().get_bbs_info();
       let lat_acc = if let Some(lat) = lat_acc_map.get(&(lid.0, bbs.clone())) {
         *lat
       } else {
         lat_acc.0
       };
-      cycles += lat_acc * exe_count as f64;
 
+      cycles += lat_acc * exe_count as f64;
+      // println!(
+      //   "Node: {:?}, Latency: {}, Area: {}",
+      //   node.operation(),
+      //   lat_acc * exe_count as f64,
+      //   cost
+      // );
       if used_lib.insert(lid) {
         area += cost;
       }

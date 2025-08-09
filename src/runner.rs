@@ -213,6 +213,7 @@ where
   pub cycles: f64,
   pub area: usize,
   pub func_cycles: HashMap<String, f64>,
+  pub lib_reuses: HashMap<usize, usize>,
   _phantom: std::marker::PhantomData<T>,
 }
 
@@ -261,6 +262,7 @@ where
     cycles: f64,
     area: usize,
     func_cycles: HashMap<String, f64>,
+    lib_reuses: HashMap<usize, usize>,
   ) -> Self {
     Self {
       expr,
@@ -268,6 +270,7 @@ where
       cycles,
       area,
       func_cycles,
+      lib_reuses,
       _phantom: std::marker::PhantomData,
     }
   }
@@ -303,7 +306,7 @@ where
   /// The time taken to run the experiment
   pub run_time: Duration,
   /// message map to record the message
-  pub message: HashMap<String, String>,
+  pub egraph_size: (usize, usize),
 }
 
 impl<Op, T> std::fmt::Debug for ParetoResult<Op, T>
@@ -682,7 +685,6 @@ where
     perf_infer::perf_infer(&mut egraph, &[root]);
     // 保存这个egraph，在向量化的时候需要
     let egraph_without_dsrs = egraph.clone();
-    let mut message = HashMap::new();
     let timeout = Duration::from_secs(60 * 100_000);
     // let mut egraph = egraph.clone();
     // let root = egraph.add(AstNode::new(Op::list(), roots.iter().copied()));
@@ -691,10 +693,6 @@ where
       "     • Initial egraph size: {}, eclasses: {}",
       egraph.total_size(),
       egraph.classes().len()
-    );
-    message.insert(
-      "initial_eclass_size".to_string(),
-      format!("{}", egraph.classes().len()).to_string(),
     );
     println!("     • After applying {} DSRs... ", self.dsrs.len());
     let start_time = Instant::now();
@@ -710,6 +708,8 @@ where
     .run(&self.dsrs);
 
     let mut origin_aeg = runner.egraph;
+    let liblearn_egraph_size =
+      (origin_aeg.classes().len(), origin_aeg.total_size());
 
     let cloned_egraph = origin_aeg.clone();
     for class in origin_aeg.classes_mut() {
@@ -792,26 +792,12 @@ where
         "     • Vectorized egraph in {}ms",
         vectorize_time.elapsed().as_millis()
       );
-      message.insert(
-        "vectorize_time".to_string(),
-        format!("{}ms", vectorize_time.elapsed().as_millis()).to_string(),
-      );
     }
 
     println!(
       "       - Final egraph size: {}, eclasses: {}",
       aeg.total_size(),
       aeg.classes().len()
-    );
-
-    message.insert(
-      "final_eclass_size".to_string(),
-      format!("{}", aeg.classes().len()).to_string(),
-    );
-
-    message.insert(
-      "running_dsr_time".to_string(),
-      format!("{}ms", start_time.elapsed().as_millis()).to_string(),
     );
 
     info!(
@@ -867,12 +853,6 @@ where
           learned_lib.size(),
           au_time.elapsed().as_millis()
         );
-
-        message.insert(
-          "au_time".to_string(),
-          format!("{}ms", au_time.elapsed().as_millis()).to_string(),
-        );
-
         println!("        • Deduplicating patterns... ");
         let dedup_time = Instant::now();
         learned_lib.deduplicate(&aeg);
@@ -898,16 +878,8 @@ where
           dedup_time.elapsed().as_millis()
         );
 
-        message.insert(
-          "dedup_time".to_string(),
-          format!("{}ms", dedup_time.elapsed().as_millis()).to_string(),
-        );
         println!("        • learned {} libs", learned_lib.size());
 
-        message.insert(
-          "learned_libs".to_string(),
-          format!("{}", learned_lib.size()).to_string(),
-        );
         learned_lib.messages()
       };
 
@@ -1090,7 +1062,7 @@ where
     // panic!("Debugging egraph");
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
-    // println!("cs: {:#?}", isax_cost.cs);
+    println!("cs: {:#?}", isax_cost.cs);
     let mut extract_results = Vec::new();
     let mut chosen_rewrites = Vec::new();
     let mut chosen_libids = HashSet::new();
@@ -1251,15 +1223,16 @@ where
       //   println!("  {}: {:?}", id, node);
       // }
       // 取出来最终表达式之后，取出真正选择的lib_id
-      let mut lib_ids = HashSet::new();
+      let mut lib_reuse_map = HashMap::new();
       for node in best.iter() {
         if node.operation().is_lib() {
           let lib_id = node.operation().get_libid();
-          lib_ids.insert(lib_id);
-          // println!("lib_id: {}", lib_id,);
+          // 记录重用次数
+          *lib_reuse_map.entry(lib_id).or_insert(0) += 1;
         }
       }
-      chosen_libs_per_libsel.retain(|lib_id, _| lib_ids.contains(lib_id));
+      chosen_libs_per_libsel
+        .retain(|lib_id, _| lib_reuse_map.get(lib_id).is_some());
       let (cycles, area) =
         rec_cost(&best, &self.bb_query, exact_lat_acc_map.clone());
       let func_cycles =
@@ -1271,6 +1244,7 @@ where
         cycles,
         area,
         func_cycles,
+        lib_reuse_map,
       );
       chosen_libids.extend(es.libs.keys().cloned());
       extract_results.push(es);
@@ -1306,7 +1280,7 @@ where
       extract_results,
       vectorized_egraph_with_root: vectorized_egraph_with_root,
       run_time: start_time.elapsed(),
-      message,
+      egraph_size: liblearn_egraph_size,
     }
   }
 

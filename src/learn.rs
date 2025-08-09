@@ -2538,7 +2538,6 @@ where
         self.liblearn_config.cost.clone(),
       ));
     }
-
     self.filter_aus(aus, state, egraph);
   }
 

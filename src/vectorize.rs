@@ -1095,6 +1095,13 @@ where
     }
 
     let searcher: Pattern<_> = au.0.clone().into();
+    let results = searcher.search(&egraph);
+    println!(
+      "        • Vectorization::lib {}: searcher: {}, results: {}",
+      i,
+      searcher,
+      results.len()
+    );
     let applier_pe = reify(
       LibId(max_lib_id + i),
       au.0.clone(),
@@ -1154,7 +1161,7 @@ where
       lat_acc,
       area
     );
-    // println!("lib: {}", searcher);
+    // println!("vec_lib{}: {}", i, searcher);
     for node in applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
