@@ -49,15 +49,26 @@ impl BBQuery {
   pub fn new<P: AsRef<Path>>(csr_path: P) -> Self {
     let mut map = HashMap::new();
     let mut rdr = csv::Reader::from_path(csr_path).unwrap();
-    let mut max_execution_count: f64 = 0.0;
-    for result in rdr.records() {
-      let record = result.unwrap();
-      let execution_count = record[1].parse::<f64>().unwrap();
-      max_execution_count = max_execution_count.max(execution_count);
-    }
-    let factor = 10000.0 / max_execution_count;
-    for result in rdr.records() {
-      let record = result.unwrap();
+
+    // 1. Read all records into a Vec first.
+    let records: Vec<_> = rdr.records().collect::<Result<_, _>>().unwrap();
+
+    // 2. Find the max execution count from the collected records.
+    let max_execution_count: f64 = records
+      .iter()
+      .map(|record| record[1].parse::<f64>().unwrap())
+      .fold(0.0, f64::max);
+
+    println!("Max Execution Count: {}", max_execution_count);
+
+    let factor = if max_execution_count > 0.0 {
+      10000.0 / max_execution_count
+    } else {
+      0.0
+    };
+
+    // 3. Process the records from the Vec.
+    for record in records {
       let name = record[0].to_string();
       let execution_count = record[1].parse::<usize>().unwrap();
       let execution_count_normalized =
@@ -67,9 +78,12 @@ impl BBQuery {
       let instr_count = record[4].parse::<usize>().unwrap();
       let operation_count = record[5].parse::<usize>().unwrap();
       let cpi = record[6].parse::<f64>().unwrap() / 1000.0;
-      let cpo =
-        total_ticks / execution_count as f64 / operation_count as f64 / 1000.0;
-      // println!("bbs: {:?}, cpo: {}, cpi: {}", name, cpo, cpi);
+      let cpo = if execution_count > 0 && operation_count > 0 {
+        total_ticks / execution_count as f64 / operation_count as f64 / 1000.0
+      } else {
+        0.0
+      };
+      println!("bbs: {:?}, cpo: {}, cpi: {}", name, cpo, cpi);
       let cpo = if cpo / cpi > 20.0 { cpi * 2.0 } else { cpo };
       map.insert(
         name.clone(),
