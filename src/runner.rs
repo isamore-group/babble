@@ -145,7 +145,7 @@ pub trait OperationInfo {
     true
   }
   fn is_mem(&self) -> bool;
-  fn op_execution_count(&self, bb_query: &BBQuery) -> usize;
+  fn op_execution_count(&self, bb_query: &BBQuery) -> f64;
   // 在lib_learn的时候，有时候需要删除某些信息，将操作符generic化
   fn genericize(&mut self);
 }

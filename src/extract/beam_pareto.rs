@@ -219,7 +219,7 @@ impl CostSet {
     latency_cpu: f64,
     area: usize,
     search_result: usize,
-    exe_count: usize,
+    exe_count: f64,
     id: Id,
     // 没有嵌套lib，不再使用
     // nested_libs: &CostSet,
@@ -341,7 +341,7 @@ pub struct LibInfo {
   /// The instances of this library function in the expression.
   /// The key is the Id of the instance, and the value is the number of times
   /// it appears.
-  pub instances: HashMap<Id, usize>,
+  pub instances: HashMap<Id, OrderedFloat<f64>>,
 }
 
 // 为LibInfo实现Hash
@@ -450,8 +450,7 @@ impl LibSel {
               set.insert(*id, *count);
             } else {
               // use the same lib
-              res.cycles -=
-                lib_info.latency_acc * OrderedFloat::from(*count as f64);
+              res.cycles -= lib_info.latency_acc * (*count);
             }
           }
         }
@@ -478,9 +477,10 @@ impl LibSel {
             let mut gain_map = Vec::new();
             // 计算每个lib的gain
             for (lib_id, lib_info) in &res.libs {
-              let exe_count_sum = lib_info.instances.values().sum::<usize>();
-              let gain = (lib_info.latency_cpu - lib_info.latency_acc)
-                * OrderedFloat::from(exe_count_sum as f64);
+              let exe_count_sum =
+                lib_info.instances.values().sum::<OrderedFloat<f64>>();
+              let gain =
+                (lib_info.latency_cpu - lib_info.latency_acc) * exe_count_sum;
               gain_map.push((*lib_id, gain, lib_info.area));
             }
             // 按照gain排序
@@ -518,7 +518,7 @@ impl LibSel {
     latency_cpu: f64,
     area: usize,
     search_result: usize,
-    exe_count: usize,
+    exe_count: f64,
     id: Id,
     // // 没有嵌套lib，不再使用
     // _nested_libs: &LibSel,
@@ -529,11 +529,11 @@ impl LibSel {
     match res.libs.entry(lib) {
       Entry::Occupied(mut entry) => {
         let set = &mut entry.get_mut().instances;
-        set.insert(id, exe_count);
+        set.insert(id, OrderedFloat::from(exe_count));
       }
       Entry::Vacant(entry) => {
         let mut set = HashMap::new();
-        set.insert(id, exe_count);
+        set.insert(id, OrderedFloat::from(exe_count));
         let info = LibInfo {
           latency_acc: OrderedFloat::from(latency_acc),
           latency_cpu: OrderedFloat::from(latency_cpu),
@@ -1051,10 +1051,10 @@ where
         // 固连的latency是错误的，需要进一步schedule计算，
         // 首先从f中利用extractor获取完整的表达式
         let b_bbs = egraph[*b].data.bb.clone();
-        let mut b_exe_count = 1;
+        let mut b_exe_count = self_ref.bb_query.get_factor();
         if b_bbs.len() > 0 {
           if let Some(bb_entry) = self_ref.bb_query.get(&b_bbs[0]) {
-            b_exe_count = bb_entry.execution_count;
+            b_exe_count = bb_entry.execution_count_normalized;
           }
         }
         let mut e = x(b).add_lib(
@@ -1799,9 +1799,9 @@ where
         // latency from the binding expr
         lat_acc.0
       };
-      lat_acc * exe_count as f64
+      lat_acc * exe_count
     } else if enode.operation().is_op() {
-      enode.op_latency_cpu(&self.bb_query) * exe_count as f64
+      enode.op_latency_cpu(&self.bb_query) * exe_count
     } else {
       0.0 // This is a no-op, so no cost
     }

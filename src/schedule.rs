@@ -187,7 +187,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     // println!("Root node: {:?}", nodes[root].operation().get_bbs_info());
     let min_exe_count =
       nodes[root].operation().op_execution_count(&self.bb_query);
-    let mut max_exe_count = 0;
+    let mut max_exe_count = min_exe_count;
     let mut have_loop = false;
     for node in expr.iter() {
       if node.operation().is_dowhile() {
@@ -197,7 +197,8 @@ impl<LA, LD> Scheduler<LA, LD> {
       if bb_info.len() >= 1 {
         let bb_entry = self.bb_query.get(&bb_info[0]);
         if let Some(bb_entry) = bb_entry {
-          max_exe_count = cmp::max(max_exe_count, bb_entry.execution_count);
+          max_exe_count =
+            max_exe_count.max(bb_entry.execution_count_normalized);
         }
       }
     }
@@ -205,10 +206,7 @@ impl<LA, LD> Scheduler<LA, LD> {
     //   "Min execution count: {}, Max execution count: {}",
     //   min_exe_count, max_exe_count
     // );
-    if min_exe_count == usize::MAX {
-      return (0.0, 0.0, 0);
-    }
-    let loop_length = max_exe_count / min_exe_count;
+    let loop_length = (max_exe_count / min_exe_count).ceil() as usize;
 
     // Calculate the gain
     // println!("Calculating gain...");
@@ -397,13 +395,13 @@ where
       } else {
         lat_acc.0
       };
-      let cycles = lat_acc * exe_count as f64;
+      let cycles = lat_acc * exe_count;
       func_costs
         .entry(func_name)
         .and_modify(|e| *e += cycles)
         .or_insert(cycles);
     } else if node.operation().is_op() {
-      let cycles = node.op_latency_cpu(bb_query) * exe_count as f64;
+      let cycles = node.op_latency_cpu(bb_query) * exe_count;
       func_costs
         .entry(func_name)
         .and_modify(|e| *e += cycles)

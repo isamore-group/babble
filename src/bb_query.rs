@@ -4,7 +4,8 @@ use std::{collections::HashMap, path::Path};
 pub struct BBEntry {
   pub name: String,
   pub execution_count: usize,
-  pub total_ticks: usize,
+  pub execution_count_normalized: f64,
+  pub total_ticks: f64,
   pub average_ticks: f64,
   pub instr_count: usize,
   pub operation_count: usize,
@@ -16,7 +17,8 @@ impl BBEntry {
   pub fn new(
     name: String,
     execution_count: usize,
-    total_ticks: usize,
+    execution_count_normalized: f64,
+    total_ticks: f64,
     average_ticks: f64,
     instr_count: usize,
     operation_count: usize,
@@ -26,6 +28,7 @@ impl BBEntry {
     Self {
       name,
       execution_count,
+      execution_count_normalized,
       total_ticks,
       average_ticks,
       instr_count,
@@ -39,25 +42,33 @@ impl BBEntry {
 #[derive(Debug, Clone)]
 pub struct BBQuery {
   pub map: HashMap<String, BBEntry>,
+  pub factor: f64,
 }
 
 impl BBQuery {
   pub fn new<P: AsRef<Path>>(csr_path: P) -> Self {
     let mut map = HashMap::new();
     let mut rdr = csv::Reader::from_path(csr_path).unwrap();
+    let mut max_execution_count: f64 = 0.0;
+    for result in rdr.records() {
+      let record = result.unwrap();
+      let execution_count = record[1].parse::<f64>().unwrap();
+      max_execution_count = max_execution_count.max(execution_count);
+    }
+    let factor = 10000.0 / max_execution_count;
     for result in rdr.records() {
       let record = result.unwrap();
       let name = record[0].to_string();
       let execution_count = record[1].parse::<usize>().unwrap();
-      let total_ticks = record[2].parse::<usize>().unwrap();
+      let execution_count_normalized =
+        record[1].parse::<f64>().unwrap() * factor;
+      let total_ticks = record[2].parse::<f64>().unwrap();
       let average_ticks = record[3].parse::<f64>().unwrap();
       let instr_count = record[4].parse::<usize>().unwrap();
       let operation_count = record[5].parse::<usize>().unwrap();
       let cpi = record[6].parse::<f64>().unwrap() / 1000.0;
-      let cpo = total_ticks as f64
-        / execution_count as f64
-        / operation_count as f64
-        / 1000.0;
+      let cpo =
+        total_ticks / execution_count as f64 / operation_count as f64 / 1000.0;
       // println!("bbs: {:?}, cpo: {}, cpi: {}", name, cpo, cpi);
       let cpo = if cpo / cpi > 20.0 { cpi * 2.0 } else { cpo };
       map.insert(
@@ -65,6 +76,7 @@ impl BBQuery {
         BBEntry::new(
           name,
           execution_count,
+          execution_count_normalized,
           total_ticks,
           average_ticks,
           instr_count,
@@ -74,7 +86,7 @@ impl BBQuery {
         ),
       );
     }
-    Self { map }
+    Self { map, factor }
   }
 
   pub fn get(&self, name: &str) -> Option<&BBEntry> {
@@ -84,12 +96,17 @@ impl BBQuery {
   pub fn dump(&self) -> String {
     format!("{:#?}", self.map)
   }
+
+  pub fn get_factor(&self) -> f64 {
+    self.factor
+  }
 }
 
 impl Default for BBQuery {
   fn default() -> Self {
     Self {
       map: HashMap::new(),
+      factor: 1.0,
     }
   }
 }
