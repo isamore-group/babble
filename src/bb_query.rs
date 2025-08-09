@@ -83,7 +83,7 @@ impl BBQuery {
       } else {
         0.0
       };
-      println!("bbs: {:?}, cpo: {}, cpi: {}", name, cpo, cpi);
+      // println!("bbs: {:?}, cpo: {}, cpi: {}", name, cpo, cpi);
       let cpo = if cpo / cpi > 20.0 { cpi * 2.0 } else { cpo };
       map.insert(
         name.clone(),
