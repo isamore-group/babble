@@ -1793,7 +1793,7 @@ where
 
       // 如果results.len() <= 1，就说明没有被复用，直接跳过即可
       if results.is_err()
-        || (results.as_ref().unwrap().len() <= 1 && au.au.expr.has_vector_op())
+        || (results.as_ref().unwrap().len() <= 1 && !au.au.expr.has_vector_op())
       {
         debug!(
           "Pruning pattern {} as it has no matches or search timed out",
