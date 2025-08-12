@@ -1062,7 +1062,7 @@ where
     // panic!("Debugging egraph");
     // println!("learned libs");
     // let all_libs: Vec<_> = learned_lib.libs().collect();
-    println!("cs: {:#?}", isax_cost.cs);
+    // println!("cs: {:#?}", isax_cost.cs);
     let mut extract_results = Vec::new();
     let mut chosen_rewrites = Vec::new();
     let mut chosen_libids = HashSet::new();

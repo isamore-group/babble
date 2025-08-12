@@ -313,6 +313,8 @@ pub enum VectorOp {
   VecXor,
   VecLoad,
   VecStore,
+  VecShr,
+  VecShl,
   Concat,
   Gather,
   Shuffle,
