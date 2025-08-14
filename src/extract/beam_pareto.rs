@@ -578,21 +578,21 @@ impl LibSel {
     // 如果res的libs中含有lib_id，但是set.len()<
     // search_result,则添加奖励项，cycles减去(search_result
     // - set.len()) * latency_acc * exe_count
-    if let Some(lib_info) = res.libs.get_mut(&lib) {
-      let set_len = lib_info.instances.len();
-      if set_len < search_result {
-        res.cycles += OrderedFloat::from(
-          (search_result - set_len) as f64
-            * (latency_cpu - latency_acc)
-            * exe_count as f64
-            * 0.1,
-        );
-        // // 最低不能为0
-        // if res.cycles < OrderedFloat::from(0.0) {
-        //   res.cycles = OrderedFloat::from(0.0);
-        // }
-      }
-    }
+    // if let Some(lib_info) = res.libs.get_mut(&lib) {
+    //   let set_len = lib_info.instances.len();
+    //   if set_len < search_result {
+    //     res.cycles += OrderedFloat::from(
+    //       (search_result - set_len) as f64
+    //         * (latency_cpu - latency_acc)
+    //         * exe_count as f64
+    //         * 0.1,
+    //     );
+    //     // // 最低不能为0
+    //     // if res.cycles < OrderedFloat::from(0.0) {
+    //     //   res.cycles = OrderedFloat::from(0.0);
+    //     // }
+    //   }
+    // }
 
     Some(res)
   }
