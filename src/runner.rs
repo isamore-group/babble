@@ -853,6 +853,10 @@ where
           learned_lib.size(),
           au_time.elapsed().as_millis()
         );
+        println!(
+          "       - Matched {} pairs of enodes during anti-unification",
+          learned_lib.au_match_count
+        );
         println!("        • Deduplicating patterns... ");
         let dedup_time = Instant::now();
         learned_lib.deduplicate(&aeg);

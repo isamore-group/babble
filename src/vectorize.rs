@@ -776,6 +776,10 @@ where
     "        • Vectorization::learned {} libs",
     lib_rewrites.len()
   );
+  println!(
+    "        • Matched {} pairs of enodes during anti-unification",
+    learned_lib.au_match_count
+  );
   // println!("        • Vectorization::lib_ids: {}", lib_ids.len());
   // for lib in learned_lib.libs() {
   //   println!("lib: {}", lib);

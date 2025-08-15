@@ -732,6 +732,8 @@ where
   find_packs: bool,
   /// 包搜索模式的配置
   find_pack_config: FindPackConfig,
+  /// AU match count
+  pub au_match_count: usize,
 }
 
 #[allow(unused)]
@@ -944,6 +946,7 @@ where
       ci_encoding_config,
       find_packs,
       find_pack_config,
+      au_match_count: 0,
     };
     let classes: Vec<_> = egraph.classes().map(|cls| cls.id).collect();
 
@@ -2419,6 +2422,7 @@ where
         }
         if op1 == op2 {
           same = true;
+          self.au_match_count += 1;
           if args1.is_empty() && args2.is_empty() {
             // FIXME: 从此只插入Hole，不插入op
             // let new_expr = AstNode::leaf(op1.clone()).into();
