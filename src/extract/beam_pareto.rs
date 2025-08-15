@@ -1030,13 +1030,13 @@ where
 
     // let is_vector_op = enode.operation().is_vector_op();
     let bbs = enode.operation().get_bbs_info();
-    if bbs.len() > 0 {
-      if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
-        exe_count = bb_entry.execution_count;
-        op_latency = bb_entry.cpo;
-      }
-    }
-    op_latency *= vec_len as f64;
+    // if bbs.len() > 0 {
+    //   if let Some(bb_entry) = self_ref.bb_query.get(&bbs[0]) {
+    //     exe_count = bb_entry.execution_count;
+    //     op_latency = bb_entry.cpo;
+    //   }
+    // }
+    // op_latency *= vec_len as f64;
     if !enode.operation().is_op() {
       op_latency = 0.0;
     }
@@ -1061,7 +1061,7 @@ where
           id,
           lat_acc.0,
           lat_cpu.0, // as f64 / vec_len as f64,
-          area,
+          0,
           search_result,
           b_exe_count,
           *b,
@@ -1788,20 +1788,9 @@ where
     if let Some(BindingExpr::Lib(lib_id, _, _, _, lat_acc, _)) =
       enode.as_binding_expr()
     {
-      let lib_id = lib_id.0;
-      let mut bbs = enode.operation().get_bbs_info();
-      bbs.sort();
-      let extract_lat_acc = analysis.get_lat_acc(lib_id, bbs.clone());
-      let lat_acc = if let Some(lat) = extract_lat_acc {
-        lat
-      } else {
-        // If we don't have latency for this lib, use the default
-        // latency from the binding expr
-        lat_acc.0
-      };
-      lat_acc * exe_count
+      lat_acc.0
     } else if enode.operation().is_op() {
-      enode.op_latency_cpu(&self.bb_query) * exe_count
+      1.0
     } else {
       0.0 // This is a no-op, so no cost
     }
