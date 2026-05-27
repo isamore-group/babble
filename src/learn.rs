@@ -2272,8 +2272,12 @@ where
 
     for (op1, args1) in ops1 {
       for (op2, args2) in ops2.clone() {
-        // just using the length of args to judge
-        if args1.len() == args2.len() {
+        // Meta AU may abstract over the operation itself, but only for
+        // compatible operator families. Arity alone is too weak: it would pack
+        // unrelated/effectful operations such as add and load.
+        if args1.len() == args2.len()
+          && (op1 == op2 || op1.meta_au_compatible_with(op2))
+        {
           same = true;
           let new_op = if op1 == op2 {
             // if the same, just use the first one
@@ -2319,7 +2323,7 @@ where
               self.bb_query.clone(),
             );
             let au_merger = AUMerger::new(
-              op1.clone(),
+              new_op,
               scheduler,
               self.liblearn_config.au_merge_mod,
               self.liblearn_config.cost,

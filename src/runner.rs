@@ -145,6 +145,20 @@ pub trait OperationInfo {
     true
   }
   fn is_mem(&self) -> bool;
+  /// Whether two operations may be generalized through Meta AU.
+  ///
+  /// Implementations should keep this conservative: Meta AU abstracts the
+  /// operator itself, so effectful operations or operations from different
+  /// semantic families should not be packed together.
+  fn meta_au_compatible_with(&self, other: &Self) -> bool
+  where
+    Self: Sized,
+  {
+    self.is_arithmetic()
+      && other.is_arithmetic()
+      && !self.is_mem()
+      && !other.is_mem()
+  }
   fn op_execution_count(&self, bb_query: &BBQuery) -> f64;
   // 在lib_learn的时候，有时候需要删除某些信息，将操作符generic化
   fn genericize(&mut self);
