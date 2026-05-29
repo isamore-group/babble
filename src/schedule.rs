@@ -374,6 +374,59 @@ where
   (cycles, area)
 }
 
+pub fn dump_rec_cost<Op, LA, LD>(
+  expr: &RecExpr<AstNode<Op>>,
+  bb_query: &BBQuery,
+  lat_acc_map: HashMap<(usize, Vec<String>), f64>,
+) -> String
+where
+  AstNode<Op>: Schedulable<LA, LD>,
+  Op: Teachable + OperationInfo + Clone + Debug,
+{
+  let mut used_lib: HashSet<LibId> = HashSet::new();
+  let mut cycles = 0.0;
+  let mut area: usize = 0;
+  let mut lines = Vec::new();
+
+  for (idx, node) in expr.iter().enumerate() {
+    let bbs = node.operation().get_bbs_info();
+    if bbs.is_empty() {
+      continue;
+    }
+    let exe_count = node.operation().op_execution_count(bb_query);
+    if let Some(BindingExpr::Lib(lid, _, _, _, lat_acc, cost)) =
+      node.as_binding_expr()
+    {
+      let lat_acc = lat_acc_map
+        .get(&(lid.0, bbs.clone()))
+        .copied()
+        .unwrap_or(lat_acc.0);
+      let contribution = lat_acc * exe_count as f64;
+      cycles += contribution;
+      let counted_area = if used_lib.insert(lid) {
+        area += cost;
+        cost
+      } else {
+        0
+      };
+      lines.push(format!(
+        "node={idx} kind=lib lib={} bbs={:?} exe_count={} lat_acc={} cycles={} area_counted={}",
+        lid.0, bbs, exe_count, lat_acc, contribution, counted_area
+      ));
+    } else if node.operation().is_op() {
+      let latency = node.op_latency_cpu(bb_query);
+      let contribution = latency * exe_count as f64;
+      cycles += contribution;
+      lines.push(format!(
+        "node={idx} kind=op op={:?} bbs={:?} exe_count={} cpu_lat={} cycles={}",
+        node.operation(), bbs, exe_count, latency, contribution
+      ));
+    }
+  }
+  lines.push(format!("total cycles={cycles} area={area}"));
+  lines.join("\n")
+}
+
 pub fn cycles_for_every_function<Op, LA, LD>(
   expr: &RecExpr<AstNode<Op>>,
   bb_query: &BBQuery,

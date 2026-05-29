@@ -13,12 +13,12 @@
 //! expressions (z1, ..., zn) with z1 \in AU(x1, y1), ..., zn \in AU(xn, yn), we
 //! add the partial expression op(z1, ..., zn) to the set AU(a, b).
 //! If the set AU(a, b) is empty, we add to it the partial expression (a, b).
-use crate::au_filter::{CiEncodingConfig, TypeAnalysis, io_filter, max_inputs};
+use crate::au_filter::{io_filter, max_inputs, CiEncodingConfig, TypeAnalysis};
 use crate::bb_query::{self, BBQuery};
 use crate::expand::MetaAUConfig;
 use crate::extract::beam_pareto::{
-  ISAXAnalysis, LevelConflictState, StructuralHash, TypeInfo, TypeSet,
-  compute_full_hash, compute_hash_level,
+  compute_full_hash, compute_hash_level, ISAXAnalysis, LevelConflictState,
+  StructuralHash, TypeInfo, TypeSet,
 };
 use crate::rewrites::TypeMatch;
 // 使用随机数
@@ -27,7 +27,6 @@ use crate::runner::{
   OperationInfo,
 };
 use crate::{
-  COBuilder,
   analysis::SimpleAnalysis,
   ast_node::{Arity, AstNode, Expr, PartialExpr},
   co_occurrence::CoOccurrences,
@@ -35,6 +34,7 @@ use crate::{
   extract::beam_pareto::ClassMatch,
   schedule::{Schedulable, Scheduler},
   teachable::{BindingExpr, Teachable},
+  COBuilder,
 };
 use crate::{ast_node, vectorize};
 use bitvec::prelude::*;
@@ -63,6 +63,81 @@ use thiserror::Error;
 use crate::au_merge::AUMerger;
 
 use rayon::prelude::*;
+
+#[derive(Debug, Default)]
+struct MetaAUMaskProfile {
+  opmask_count: usize,
+  size: usize,
+  has_nested_opmask: bool,
+  root_is_opmask: bool,
+  has_stable_context_op: bool,
+}
+
+fn meta_au_mask_profile<Op, T>(expr: &PartialExpr<Op, T>) -> MetaAUMaskProfile
+where
+  Op: OperationInfo + Clone + Ord,
+  T: Clone + Ord,
+{
+  fn visit<Op, T>(
+    expr: &PartialExpr<Op, T>,
+    inside_opmask: bool,
+    is_root: bool,
+    profile: &mut MetaAUMaskProfile,
+  ) where
+    Op: OperationInfo + Clone + Ord,
+    T: Clone + Ord,
+  {
+    profile.size += 1;
+    match expr {
+      PartialExpr::Node(node) => {
+        let is_opmask = node.operation().is_opmask();
+        if is_opmask {
+          profile.opmask_count += 1;
+          profile.has_nested_opmask |= inside_opmask;
+          profile.root_is_opmask |= is_root;
+        } else {
+          profile.has_stable_context_op = true;
+        }
+        for child in node.iter() {
+          visit(child, inside_opmask || is_opmask, false, profile);
+        }
+      }
+      PartialExpr::Hole(_) => {}
+    }
+  }
+
+  let mut profile = MetaAUMaskProfile::default();
+  visit(expr, false, true, &mut profile);
+  profile
+}
+
+fn meta_au_mask_filter_reason(
+  profile: &MetaAUMaskProfile,
+  config: MetaAUConfig,
+) -> Option<&'static str> {
+  if profile.opmask_count > config.max_opmask_per_meta_au {
+    return Some("too_many_opmask");
+  }
+  if profile.opmask_count <= 1 {
+    return None;
+  }
+  if !config.allow_nested_opmask && profile.has_nested_opmask {
+    return Some("nested_opmask");
+  }
+  if profile.root_is_opmask {
+    return Some("root_opmask");
+  }
+  if !profile.has_stable_context_op {
+    return Some("no_stable_context");
+  }
+  if profile.size > 0
+    && (profile.opmask_count as f64 / profile.size as f64)
+      > config.max_opmask_ratio
+  {
+    return Some("opmask_ratio");
+  }
+  None
+}
 
 /// A library function's name.
 #[derive(
@@ -146,10 +221,10 @@ pub struct AU<Op: OperationInfo + Clone + Ord, T: Clone + Ord, Type> {
 }
 
 impl<
-  Op: PartialEq + OperationInfo + Clone + Ord,
-  T: PartialEq + Clone + Ord,
-  Type,
-> PartialEq for AU<Op, T, Type>
+    Op: PartialEq + OperationInfo + Clone + Ord,
+    T: PartialEq + Clone + Ord,
+    Type,
+  > PartialEq for AU<Op, T, Type>
 {
   fn eq(&self, other: &Self) -> bool {
     self.expr == other.expr
@@ -1107,6 +1182,10 @@ where
               let popcount1 = cls_hash1.count_ones();
               let subtree_cnt1 = subtree_levels1.count_ones();
               for j in i..end {
+                // FIXME:ENUM模式
+                // if i != j {
+                //   continue; // 只考虑同一类型的eclass
+                // }
                 let (ecls2, _, cls_hash2, subtree_levels2) = &class_data[j];
                 // 包搜索模式下，只使用类型匹配
                 if find_packs && !find_pack_config.prune_similar {
@@ -1127,7 +1206,8 @@ where
                 if (subtree_cnt1.max(subtree_cnt2) as f64)
                   < (liblearn_config.jaccard_threshold * all_one as f64)
                 {
-                  continue; // Jaccard相似度不可能> liblearn_config.jaccard_threshold
+                  continue; // Jaccard相似度不可能>
+                            // liblearn_config.jaccard_threshold
                 }
                 if !level_match(
                   &(*cls_hash1, subtree_levels1.clone()),
@@ -1278,20 +1358,37 @@ where
       // 另外一部分为0
       let mut has_mask_aus = BTreeSet::new();
       let mut no_mast_aus = BTreeSet::new();
+      let mut one_mask_count = 0usize;
+      let mut multi_mask_count = 0usize;
+      let mut multi_mask_examples = Vec::new();
       for au in learned_lib.aus.iter() {
-        let mut mask_cnt = 0;
-        let recexpr =
-          RecExpr::from(Expr::try_from(au.au.expr.clone()).unwrap());
-        for node in recexpr.iter() {
-          if node.operation().is_opmask() {
-            mask_cnt += 1;
-          }
-        }
+        let profile = meta_au_mask_profile(&au.au.expr);
+        let mask_cnt = profile.opmask_count;
         if mask_cnt == 1 {
+          one_mask_count += 1;
           has_mask_aus.insert(au.clone());
         } else if mask_cnt == 0 {
           no_mast_aus.insert(au.clone());
+        } else {
+          multi_mask_count += 1;
+          has_mask_aus.insert(au.clone());
+          if multi_mask_examples.len() < 3 {
+            multi_mask_examples
+              .push(format!("{}", Pattern::from(au.au.expr.clone())));
+          }
         }
+      }
+      println!(
+        "        • meta AU final mask summary: one_mask={}, zero_mask={}, multi_mask={}",
+        one_mask_count,
+        no_mast_aus.len(),
+        multi_mask_count
+      );
+      if !multi_mask_examples.is_empty() {
+        println!(
+          "          final multi-opmask examples: {}",
+          multi_mask_examples.join(" || ")
+        );
       }
       // 如果has_mask_aus和no_mask_aus中有一个数量大于50，就选择前50个
       let mut sampled_aus = BTreeSet::new();
@@ -2304,7 +2401,7 @@ where
               args1.iter().copied().zip(args2.iter().copied()).collect();
 
             for next_state in &inputs {
-              self.enumerate_over_egraph(egraph, *next_state);
+              self.enumerate_over_egraph_meta_au(egraph, *next_state);
             }
 
             let smax_arity = self.max_arity;
@@ -2353,7 +2450,7 @@ where
             // Type>>(new_aus); info!("now  is {}",
             // new_aus_dedu.len());
             let start_total = Instant::now(); // 总的执行时间
-            // 为每一个新的模式生成一个AU
+                                              // 为每一个新的模式生成一个AU
             aus.extend(new_aus.map(|au| {
               AU::new_with_expr(au, self.liblearn_config.cost.clone())
             }));
@@ -2425,8 +2522,8 @@ where
           same = true;
           if args1.is_empty() && args2.is_empty() {
             // FIXME: 从此只插入Hole，不插入op
-            // let new_expr = AstNode::leaf(op1.clone()).into();
-            let new_expr = PartialExpr::Hole(state);
+            let new_expr = AstNode::leaf(op1.clone()).into();
+            // let new_expr = PartialExpr::Hole(state);
             aus.insert(AU::new_with_expr(
               new_expr,
               self.liblearn_config.cost.clone(),
@@ -2517,7 +2614,7 @@ where
             //   .deduplicate_from_candidates(new_aus.clone().
             // collect::<Vec<_>>()); new_aus_dedu.len());
             let start_total = Instant::now(); // 总的执行时间//
-            // 打印new_aus的大小 为每一个新的模式生成一个AU
+                                              // 打印new_aus的大小 为每一个新的模式生成一个AU
             aus.extend(new_aus.map(|au| {
               AU::new_with_expr(au, self.liblearn_config.cost.clone())
             }));
@@ -2571,6 +2668,8 @@ where
       let learn_trivial = self.learn_trivial;
       let banned_ops = &self.banned_ops;
 
+      let mut filtered_multi_opmask_count = 0usize;
+      let mut filtered_multi_opmask_examples = Vec::new();
       let nontrivial_aus = aus
         .iter()
         .filter(|au| learn_constants || au.expr.has_holes())
@@ -2777,17 +2876,18 @@ where
           if !self.meta_au_config.enable_meta_au {
             true
           } else {
-            // 计算每一个au中含有的opmask的数目，如果超过1个，就不加入
-            let recexpr: RecExpr<_> =
-              Expr::try_from(au.au.expr.clone()).unwrap().into();
-            let mut opmask_count = 0;
-            for node in recexpr.iter() {
-              if node.operation().is_opmask() {
-                opmask_count += 1;
+            let profile = meta_au_mask_profile(&au.au.expr);
+            if let Some(reason) =
+              meta_au_mask_filter_reason(&profile, self.meta_au_config)
+            {
+              filtered_multi_opmask_count += 1;
+              if filtered_multi_opmask_examples.len() < 3 {
+                filtered_multi_opmask_examples.push(format!(
+                  "{}:{}",
+                  reason,
+                  Pattern::from(au.au.expr.clone())
+                ));
               }
-            }
-            if opmask_count > 1 {
-              info!("opmask count is {}, so we filter it out", opmask_count);
               false
             } else {
               true
@@ -2828,6 +2928,18 @@ where
           })
           .collect::<Vec<_>>()
       };
+      if self.meta_au_config.enable_meta_au && filtered_multi_opmask_count > 0 {
+        println!(
+          "        • meta AU learn filter summary: filtered_multi_opmask={}",
+          filtered_multi_opmask_count
+        );
+        if !filtered_multi_opmask_examples.is_empty() {
+          println!(
+            "          filtered multi-opmask examples: {}",
+            filtered_multi_opmask_examples.join(" || ")
+          );
+        }
+      }
       self.aus.extend(nontrivial_aus.clone());
     }
     // 需要对aus也做一下过滤，去掉无意义的

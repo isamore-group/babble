@@ -17,21 +17,23 @@ use nom::lib;
 use serde::Deserialize;
 
 use crate::{
-  Arity, AstNode, DiscriminantEq, Expr, LearnedLibraryBuilder, LibId,
-  PartialExpr, Pretty, Printable, Teachable,
   analysis::SimpleAnalysis,
   au_filter::{CiEncodingConfig, TypeAnalysis},
   bb_query::{self, BBInfo, BBQuery},
-  expand::{ExpandMessage, MetaAUConfig, expand},
+  expand::{expand, ExpandMessage, MetaAUConfig},
   extract::beam_pareto::{
-    ClassMatch, ISAXAnalysis, ISAXCost, ISAXLpCF, LevelConflictState,
-    LibExtractor, StructuralHash, TypeInfo, TypeSet, compute_full_hash,
-    compute_hash_level, eliminate_lambda,
+    compute_full_hash, compute_hash_level, eliminate_lambda, ClassMatch,
+    ISAXAnalysis, ISAXCost, ISAXLpCF, LevelConflictState, LibExtractor,
+    StructuralHash, TypeInfo, TypeSet,
   },
   perf_infer,
   rewrites::{self, TypeMatch},
-  schedule::{Schedulable, Scheduler, cycles_for_every_function, rec_cost},
-  vectorize::{VectorConfig, vectorize},
+  schedule::{
+    cycles_for_every_function, dump_rec_cost, rec_cost, Schedulable, Scheduler,
+  },
+  vectorize::{vectorize, VectorConfig},
+  Arity, AstNode, BindingExpr, DiscriminantEq, Expr, LearnedLibraryBuilder, LibId,
+  PartialExpr, Pretty, Printable, Teachable,
 };
 use egg::{
   Analysis, EGraph, Extractor, Id, Language, LpExtractor, Pattern, RecExpr,
@@ -96,8 +98,13 @@ pub trait OperationInfo {
   }
   /// 加入Op_pack节点
   fn make_op_pack(ops: Vec<String>, bbs: Vec<String>) -> Self;
+  /// Group a packed operation for Meta AU resource-sharing diagnostics.
+  fn op_pack_area_family(op: &str) -> &'static str {
+    let _ = op;
+    "other"
+  }
   /// 加入Op_select节点
-  fn make_op_select() -> Self;
+  fn make_op_select(idx: usize) -> Self;
   /// 加入rule_var节点
   fn make_rule_var(name: String) -> Self;
   /// 加入Opmask节点
@@ -914,8 +921,11 @@ where
         rewrites_conditions,
         searchers,
         appliers,
+        lib_search_results: lib_search_results.clone(),
+        meta_libs: HashSet::new(),
       }
     };
+    lib_search_results.extend(expand_message.lib_search_results.clone());
 
     // // FIXME: 复用性至上！！！
     // // 需要筛掉一些lib，如果所有lib对应的searcher匹配到的片段只有一个，
@@ -1086,9 +1096,13 @@ where
       let mut chosen_rewrites_per_libsel = vec![];
       let mut chosen_libs_per_libsel: HashMap<usize, Pattern<AstNode<Op>>> =
         HashMap::new();
+      let mut chosen_searchers_per_libsel: HashMap<
+        usize,
+        Pattern<AstNode<Op>>,
+      > = HashMap::new();
       for lib in &isax_cost.cs.set[i].libs {
         // println!("lib: {}, max_lib_id: {}", lib.0.0, max_lib_id);
-        if lib.0.0 < max_lib_id {
+        if lib.0 .0 < max_lib_id {
           // 从self.lib_rewrites中取出
           // 打印self.lib_rewrites
           // println!("{}: {:?}", lib.0.0, self.lib_rewrites_with_condition);
@@ -1097,15 +1111,25 @@ where
             self
               .past_lib_message
               .rewrites_conditions
-              .get(&lib.0.0)
+              .get(&lib.0 .0)
               .unwrap()
               .iter()
               .map(|(r, _)| r.clone())
               .clone(),
           );
-          chosen_libs_per_libsel
-            .insert(lib.0.0, self.past_lib_message.appliers[&lib.0.0].clone());
-          lib_message.insert_from_messages(lib.0.0, &self.past_lib_message);
+          chosen_libs_per_libsel.insert(
+            lib.0 .0,
+            self.past_lib_message.appliers[&lib.0 .0].clone(),
+          );
+          if let Some(searcher) = self
+            .past_lib_message
+            .searchers
+            .get(&lib.0 .0)
+            .and_then(|searchers| searchers.first())
+          {
+            chosen_searchers_per_libsel.insert(lib.0 .0, searcher.clone().into());
+          }
+          lib_message.insert_from_messages(lib.0 .0, &self.past_lib_message);
         } else {
           // let new_lib = lib.0.0 - max_lib_id;
           // chosen_rewrites.push(lib_rewrites[new_lib].clone());
@@ -1122,19 +1146,26 @@ where
           chosen_rewrites_per_libsel.extend(
             expand_message
               .rewrites_conditions
-              .get(&lib.0.0)
+              .get(&lib.0 .0)
               .unwrap()
               .iter()
               .map(|(r, _)| r.clone())
               .clone(),
           );
           chosen_libs_per_libsel
-            .insert(lib.0.0, expand_message.appliers[&lib.0.0].clone());
+            .insert(lib.0 .0, expand_message.appliers[&lib.0 .0].clone());
+          if let Some(searcher) = expand_message
+            .searchers
+            .get(&lib.0 .0)
+            .and_then(|searchers| searchers.first())
+          {
+            chosen_searchers_per_libsel.insert(lib.0 .0, searcher.clone().into());
+          }
           // println!(
           //   "choose: {}",
           //   Pattern::from(expand_message.libs[&lib.0.0].0.clone())
           // );
-          lib_message.insert_from_messages(lib.0.0, &expand_message);
+          lib_message.insert_from_messages(lib.0 .0, &expand_message);
 
           // } else {
           //   // 说明是一个meta lib
@@ -1195,10 +1226,16 @@ where
             bbs.sort();
             let lib_id = node.operation().get_libid();
             if !exact_lat_acc_map.contains_key(&(lib_id, bbs.clone())) {
-              // 拿到lib_id对应的applier
-              let applier_expr =
-                chosen_libs_per_libsel.get(&lib_id).unwrap().clone().ast;
-              let new_expr = applier_expr
+              // Recompute exact latency from the library body/searcher instead
+              // of the applier. Appliers contain Lambda/Apply/Lib wrappers,
+              // which are rewrite templates rather than schedulable datapaths.
+              let Some(searcher_expr) = chosen_searchers_per_libsel.get(&lib_id)
+              else {
+                continue;
+              };
+              let new_expr = searcher_expr
+                .clone()
+                .ast
                 .iter()
                 .map(|node| match node {
                   egg::ENodeOrVar::ENode(ast_node) => {
@@ -1211,7 +1248,29 @@ where
                 })
                 .collect::<Vec<AstNode<Op>>>();
               let new_expr = RecExpr::from(new_expr);
-              let (_, lat_acc, _) = scheduler.asap_schedule(&new_expr);
+              let (exact_lat_cpu, lat_acc, exact_area) =
+                scheduler.asap_schedule(&new_expr);
+              let default = node
+                .as_binding_expr()
+                .and_then(|binding| match binding {
+                  BindingExpr::Lib(_, _, _, lat_cpu, default_lat_acc, area) => {
+                    Some((lat_cpu.0, default_lat_acc.0, area))
+                  }
+                  _ => None,
+                });
+              if std::env::var_os("ISAEGG_DUMP_EXACT_LAT").is_some()
+                && lat_acc == 0.0
+              {
+                println!(
+                  "ISAEGG_EXACT_LAT_ZERO lib={} bbs={:?} default={:?} exact_lat_cpu={} exact_lat_acc={} exact_area={} expr={:?}",
+                  lib_id, bbs, default, exact_lat_cpu, lat_acc, exact_area, new_expr
+                );
+              }
+              let lat_acc = if lat_acc > 0.0 && exact_area > 0 {
+                lat_acc
+              } else {
+                default.map(|(_, default_lat_acc, _)| default_lat_acc).unwrap_or(lat_acc)
+              };
               exact_lat_acc_map.insert((lib_id, bbs), lat_acc);
             }
           }
@@ -1249,6 +1308,36 @@ where
         .retain(|lib_id, _| lib_reuse_map.get(lib_id).is_some());
       let (cycles, area) =
         rec_cost(&best, &self.bb_query, exact_lat_acc_map.clone());
+      if std::env::var_os("ISAEGG_DUMP_EXTRACT").is_some() {
+        println!("--- ISAEGG_DUMP_EXTRACT solution {i} expr ---");
+        for (node_id, node) in best.iter().enumerate() {
+          println!("dump_expr node={node_id} {:?}", node);
+        }
+        println!("--- ISAEGG_DUMP_EXTRACT solution {i} selected_libs ---");
+        let mut selected_lib_ids = chosen_libs_per_libsel
+          .keys()
+          .copied()
+          .collect::<Vec<_>>();
+        selected_lib_ids.sort();
+        for lib_id in selected_lib_ids {
+          if let Some(searcher) = chosen_searchers_per_libsel.get(&lib_id) {
+            println!("dump_lib lib={lib_id} searcher={searcher}");
+          }
+          if let Some(applier) = chosen_libs_per_libsel.get(&lib_id) {
+            println!("dump_lib lib={lib_id} applier={applier}");
+          }
+        }
+        println!("--- ISAEGG_DUMP_EXTRACT solution {i} rec_cost ---");
+        println!(
+          "{}",
+          dump_rec_cost::<Op, LA, LD>(
+            &best,
+            &self.bb_query,
+            exact_lat_acc_map.clone()
+          )
+        );
+        println!("--- ISAEGG_DUMP_EXTRACT solution {i} end ---");
+      }
       let func_cycles =
         cycles_for_every_function(&best, &self.bb_query, exact_lat_acc_map);
       // 组装成一个ExtractResult
@@ -1266,6 +1355,15 @@ where
 
     // 使用chosen_libids过滤lib_message
     lib_message.retain_with_ids(&chosen_libids);
+    let chosen_meta_libids = chosen_libids
+      .iter()
+      .filter(|lib_id| {
+        self.past_lib_message.meta_libs.contains(lib_id)
+          || expand_message.meta_libs.contains(lib_id)
+      })
+      .cloned()
+      .collect::<HashSet<_>>();
+    println!("         • chosen_meta_libs: {:?}", chosen_meta_libids);
 
     // deduplicate chosen_rewrites
     chosen_rewrites.sort_unstable_by_key(|r| r.name.clone());

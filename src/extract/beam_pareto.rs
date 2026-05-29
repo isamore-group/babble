@@ -6,7 +6,7 @@ use crate::{
   bb_query::BBQuery,
   learn::LibId,
   runner::OperationInfo,
-  schedule::{Schedulable, rec_cost},
+  schedule::{rec_cost, Schedulable},
   teachable::{BindingExpr, Teachable},
 };
 use bitvec::{prelude::*, vec};
@@ -19,11 +19,11 @@ use lexpr::print;
 use log::debug;
 use nom::Or;
 use ordered_float::OrderedFloat;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use rustc_hash::FxHashMap;
 use std::{
   cmp::Ordering,
-  collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
+  collections::{hash_map::Entry, BTreeMap, HashMap, HashSet},
   fmt::{Debug, Display},
   hash::{DefaultHasher, Hash, Hasher},
 };
@@ -517,7 +517,7 @@ impl LibSel {
     latency_acc: f64,
     latency_cpu: f64,
     area: usize,
-    search_result: usize,
+    _search_result: usize,
     exe_count: f64,
     id: Id,
     // // 没有嵌套lib，不再使用
@@ -575,24 +575,9 @@ impl LibSel {
 
     res.cycles += OrderedFloat::from(latency_acc as f64);
 
-    // 如果res的libs中含有lib_id，但是set.len()<
-    // search_result,则添加奖励项，cycles减去(search_result
-    // - set.len()) * latency_acc * exe_count
-    // if let Some(lib_info) = res.libs.get_mut(&lib) {
-    //   let set_len = lib_info.instances.len();
-    //   if set_len < search_result {
-    //     res.cycles += OrderedFloat::from(
-    //       (search_result - set_len) as f64
-    //         * (latency_cpu - latency_acc)
-    //         * exe_count as f64
-    //         * 0.1,
-    //     );
-    //     // // 最低不能为0
-    //     // if res.cycles < OrderedFloat::from(0.0) {
-    //     //   res.cycles = OrderedFloat::from(0.0);
-    //     // }
-    //   }
-    // }
+    // Keep cycles as an estimated execution cost only. `search_result` is a
+    // noisy reuse signal from e-graph matching and should not directly change
+    // the Pareto objective.
 
     Some(res)
   }

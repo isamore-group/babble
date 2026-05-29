@@ -1,9 +1,9 @@
 use bitvec::vec;
 use rand::prelude::*;
-use serde::{Deserialize, de};
+use serde::{de, Deserialize};
 use std::{
   collections::{HashMap, HashSet},
-  fmt::{Debug, Display, format},
+  fmt::{format, Debug, Display},
   hash::Hash,
   str::FromStr,
   sync::Arc,
@@ -13,8 +13,6 @@ use std::{
 /// 用于扩展生成的库，如(x * y) + 1 和 (m / n) + 1, 会生成(?a f ?b) + 1 f =
 /// select(idx, (+, *))
 use crate::{
-  Arity, AstNode, BindingExpr, DiscriminantEq, Expr, ParetoConfig, PartialExpr,
-  Printable, Teachable,
   au_filter::TypeAnalysis,
   bb_query::{self, BBInfo, BBQuery},
   extract::beam_pareto::{ISAXAnalysis, TypeInfo},
@@ -23,10 +21,12 @@ use crate::{
   rewrites::TypeMatch,
   runner::{AUMergeMod, EnumMode, LiblearnConfig, LiblearnCost, OperationInfo},
   schedule::{Schedulable, Scheduler},
+  Arity, AstNode, BindingExpr, DiscriminantEq, Expr, ParetoConfig, PartialExpr,
+  Printable, Teachable,
 };
 use egg::{
-  EGraph, ENodeOrVar, Id, Pattern, RecExpr, Rewrite, Runner, Searcher, Symbol,
-  Var, rewrite,
+  rewrite, EGraph, ENodeOrVar, Id, Pattern, RecExpr, Rewrite, Runner, Searcher,
+  Symbol, Var,
 };
 use lexpr::print;
 use log::debug;
@@ -45,6 +45,26 @@ pub struct MetaAUConfig {
   pub num_meta_au_mask: usize,
   /// 至多允许一个pack里面出现多少个operation
   pub max_operation: usize,
+  /// 一个Meta AU中最多允许多少个op_mask节点
+  #[serde(default = "default_max_opmask_per_meta_au")]
+  pub max_opmask_per_meta_au: usize,
+  /// 是否允许op_mask节点嵌套
+  #[serde(default)]
+  pub allow_nested_opmask: bool,
+  /// op_mask节点数占AU大小的最大比例
+  #[serde(default = "default_max_opmask_ratio")]
+  pub max_opmask_ratio: f64,
+  /// 是否允许最终生成的op_pack跨多个资源族
+  #[serde(default)]
+  pub allow_cross_family_op_pack: bool,
+}
+
+fn default_max_opmask_per_meta_au() -> usize {
+  1
+}
+
+fn default_max_opmask_ratio() -> f64 {
+  0.4
 }
 
 impl Default for MetaAUConfig {
@@ -55,6 +75,10 @@ impl Default for MetaAUConfig {
       learn_trivial: true,
       num_meta_au_mask: 100,
       max_operation: 5,
+      max_opmask_per_meta_au: default_max_opmask_per_meta_au(),
+      allow_nested_opmask: false,
+      max_opmask_ratio: default_max_opmask_ratio(),
+      allow_cross_family_op_pack: false,
     }
   }
 }
@@ -262,6 +286,7 @@ where
 fn add_op_pack<Op>(
   initial_pe: PartialExpr<Op, Var>,
   pack_op: Op,
+  select_idx: usize,
 ) -> PartialExpr<Op, Var>
 where
   Op: Display
@@ -275,7 +300,7 @@ where
     + Debug
     + OperationInfo,
 {
-  // 一个递归函数，找到opmask节点，将其替换成op_select(oppack, args)即可
+  // 一个递归函数，找到opmask节点，将其替换成op_select[idx](oppack, args)即可
   match initial_pe {
     PartialExpr::Node(astnode) => {
       let mut operation = astnode.operation().clone();
@@ -285,12 +310,12 @@ where
       if operation.is_opmask() {
         let pack_pe: PartialExpr<Op, Var> =
           PartialExpr::Node(AstNode::leaf(pack_op.clone()));
-        operation = Op::make_op_select();
+        operation = Op::make_op_select(select_idx);
         new_args.push(pack_pe);
       }
       for arg in args {
         let expr: PartialExpr<Op, Var> =
-          add_op_pack(arg.clone(), pack_op.clone());
+          add_op_pack(arg.clone(), pack_op.clone(), select_idx);
         new_args.push(expr);
       }
       let node = AstNode::new(operation, new_args);
@@ -380,6 +405,11 @@ where
     usize,
     Vec<(Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>>, TypeMatch<T>)>,
   >,
+  /// Number of matches observed while learning each lib. The extractor uses
+  /// this as a reuse signal in the cost model.
+  pub lib_search_results: HashMap<usize, usize>,
+  /// Lib ids generated from meta AU/op_pack expansion.
+  pub meta_libs: HashSet<usize>,
   // pub libs: HashMap<usize, (PartialExpr<Op, Var>, Pattern<AstNode<Op>>)>,
   // pub normal_au_count: usize,
   // pub meta_au_rewrites:
@@ -417,6 +447,8 @@ where
       searchers: HashMap::new(),
       appliers: HashMap::new(),
       rewrites_conditions: HashMap::new(),
+      lib_search_results: HashMap::new(),
+      meta_libs: HashSet::new(),
       // libs: HashMap::new(),
       // normal_au_count: 0,
       // meta_au_rewrites: HashMap::new(),
@@ -553,6 +585,12 @@ where
     if let Some(applier) = other_messages.appliers.get(&lib_id) {
       self.appliers.insert(lib_id, applier.clone());
     }
+    if let Some(search_len) = other_messages.lib_search_results.get(&lib_id) {
+      self.lib_search_results.insert(lib_id, *search_len);
+    }
+    if other_messages.meta_libs.contains(&lib_id) {
+      self.meta_libs.insert(lib_id);
+    }
   }
 
   pub fn extend_from_messages(&mut self, other_messages: &Self) {
@@ -569,6 +607,12 @@ where
       self.searchers.insert(lib_id.clone(), searchers);
       let applier = other_messages.appliers[lib_id].clone();
       self.appliers.insert(lib_id.clone(), applier);
+      if let Some(search_len) = other_messages.lib_search_results.get(lib_id) {
+        self.lib_search_results.insert(lib_id.clone(), *search_len);
+      }
+      if other_messages.meta_libs.contains(lib_id) {
+        self.meta_libs.insert(lib_id.clone());
+      }
     }
   }
 
@@ -581,6 +625,10 @@ where
     self.searchers.retain(|lib_id, _| ids.contains(lib_id));
     // 保留lib_id在ids中的applier
     self.appliers.retain(|lib_id, _| ids.contains(lib_id));
+    self
+      .lib_search_results
+      .retain(|lib_id, _| ids.contains(lib_id));
+    self.meta_libs.retain(|lib_id| ids.contains(lib_id));
   }
 
   pub fn delete_lib(&mut self, lib_id: usize) {
@@ -590,6 +638,8 @@ where
     self.searchers.remove(&lib_id);
     // 删除lib_id对应的applier
     self.appliers.remove(&lib_id);
+    self.lib_search_results.remove(&lib_id);
+    self.meta_libs.remove(&lib_id);
   }
 }
 
@@ -693,14 +743,6 @@ where
   let learned_messages: Vec<_> = learned_lib.messages();
   let mut roots = Vec::new();
   for i in (0..learned_aus.len()).rev() {
-    // 这里从大到小检查，能将一些meta_egraph中已经存在的AU去掉
-    let msg = learned_messages[i].clone();
-    // 非常重要，添加之前先看这条规则能不能search到匹配，如果已经有匹配，
-    // 就直接跳过
-    let searcher: Pattern<_> = msg.searcher_pe.into();
-    if searcher.search(&meta_egraph).len() > 0 {
-      continue;
-    }
     let au = learned_aus[i].clone();
     // 在转化的过程中，需要考虑每一个Var如何转化，
     // 目前只是转化成了一个RuleVar，   // 但是不同au中的RuleVar理应是不一样的
@@ -717,7 +759,7 @@ where
   } else {
     let mut bbs = HashSet::new();
     for root in roots.iter() {
-      bbs.extend(egraph[*root].data.bb.clone());
+      bbs.extend(meta_egraph[*root].data.bb.clone());
     }
     let bbs = bbs.into_iter().collect::<Vec<_>>();
     let mut list_op = AstNode::new(Op::list(), roots.iter().copied());
@@ -736,8 +778,8 @@ where
 
   let meta_au_lib_config = LiblearnConfig::new(
     LiblearnCost::Size,
-    AUMergeMod::Random,
-    EnumMode::PruningGold,
+    AUMergeMod::Boundary,
+    EnumMode::All,
     // 后面的配置直接使用config.liblearn中的配置
     config.liblearn_config.sample_num,
     config.liblearn_config.hamming_threshold,
@@ -782,6 +824,21 @@ where
   > = HashMap::new();
   let mut searchers: HashMap<usize, Vec<PartialExpr<Op, Var>>> = HashMap::new();
   let mut appliers: HashMap<usize, Pattern<AstNode<Op>>> = HashMap::new();
+  let mut lib_search_results = HashMap::new();
+  let mut meta_libs = HashSet::new();
+  let mut skipped_no_mask = 0;
+  let mut skipped_too_many_ops = 0;
+  let mut skipped_too_few_ops = 0;
+  let mut skipped_nonbeneficial = 0;
+  let mut trimmed_cross_family = 0;
+  let mut generated_meta_libs = 0;
+  let mut generated_meta_rewrites = 0;
+  let mut concrete_search_cache: HashMap<
+    (PartialExpr<Op, Var>, Op),
+    (PartialExpr<Op, Var>, Pattern<AstNode<Op>>, usize),
+  > = HashMap::new();
+  let mut concrete_search_cache_hits = 0;
+  let mut concrete_search_cache_misses = 0;
 
   for msg in learned_messages {
     let lib_id = msg.lib_id;
@@ -796,6 +853,7 @@ where
       .push(msg.searcher_pe.clone());
     let applier: Pattern<_> = msg.applier_pe.into();
     appliers.insert(lib_id, applier);
+    lib_search_results.insert(lib_id, msg.search_len);
   }
 
   for msg in meta_messages {
@@ -807,29 +865,246 @@ where
     // TODO: 目前只对mask_results进行处理，后续可能需要对var_results进行处理
     // 第一步，拿到OpPack具体需要Pack的操作符
     if mask_results.len() == 0 {
-      // println!("No mask results found for lib_id: {}, skipping", msg.lib_id);
+      skipped_no_mask += 1;
+      println!("        • meta lib {} skipped: no mask results", msg.lib_id);
       continue; // 如果没有mask结果，就跳过
     }
-    if mask_results.len() > config.op_pack_config.max_operation {
-      // println!("Too many mask results for lib_id: {}, skipping", msg.lib_id);
+    let mut family_ops: HashMap<&'static str, Vec<(Op, String)>> =
+      HashMap::new();
+    for op in mask_results.iter() {
+      let op_name = op.to_string();
+      family_ops
+        .entry(Op::op_pack_area_family(&op_name))
+        .or_default()
+        .push((op.clone(), op_name));
+    }
+    for ops in family_ops.values_mut() {
+      ops.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+
+    let allow_cross_family =
+      config.op_pack_config.allow_cross_family_op_pack || family_ops.len() <= 1;
+    let candidate_families = if allow_cross_family {
+      family_ops.keys().copied().collect::<HashSet<_>>()
+    } else {
+      family_ops
+        .iter()
+        .filter_map(|(family, ops)| (ops.len() >= 2).then_some(*family))
+        .collect::<HashSet<_>>()
+    };
+    if candidate_families.is_empty() {
+      skipped_too_few_ops += 1;
+      let mut family_breakdown = family_ops
+        .iter()
+        .map(|(family, ops)| {
+          let op_names = ops
+            .iter()
+            .map(|(_, op_name)| op_name.clone())
+            .collect::<Vec<_>>();
+          format!("{family}={}", op_names.join("|"))
+        })
+        .collect::<Vec<_>>();
+      family_breakdown.sort();
+      println!(
+        "        • meta lib {} skipped: cross-family trim leaves no family with >=2 ops ({})",
+        msg.lib_id,
+        family_breakdown.join(", ")
+      );
+      continue;
+    }
+    let candidate_op_count = candidate_families
+      .iter()
+      .filter_map(|family| family_ops.get(family))
+      .map(Vec::len)
+      .sum::<usize>();
+    if allow_cross_family
+      && candidate_op_count > config.op_pack_config.max_operation
+    {
+      skipped_too_many_ops += 1;
+      let mut family_breakdown = family_ops
+        .iter()
+        .map(|(family, ops)| {
+          let op_names = ops
+            .iter()
+            .map(|(_, op_name)| format!("{op_name}:not_searched"))
+            .collect::<Vec<_>>();
+          format!("{family}={}", op_names.join("|"))
+        })
+        .collect::<Vec<_>>();
+      family_breakdown.sort();
+      println!(
+        "        • meta lib {} skipped: {} mask ops > max_operation {} ({})",
+        msg.lib_id,
+        candidate_op_count,
+        config.op_pack_config.max_operation,
+        family_breakdown.join(", ")
+      );
+      continue;
+    }
+
+    let mut family_matches: HashMap<&'static str, Vec<(Op, String, usize)>> =
+      HashMap::new();
+    for family in candidate_families.iter().copied() {
+      let Some(ops) = family_ops.get(family) else {
+        continue;
+      };
+      for (op, op_name) in ops {
+        let key = (msg.searcher_pe.clone(), op.clone());
+        let search_len =
+          if let Some((_, _, search_len)) = concrete_search_cache.get(&key) {
+            concrete_search_cache_hits += 1;
+            *search_len
+          } else {
+            concrete_search_cache_misses += 1;
+            let concrete_pe =
+              fill_specific_op(msg.searcher_pe.clone(), op.clone());
+            let searcher: Pattern<_> = concrete_pe.clone().into();
+            let search_len = searcher.search(&egraph).len();
+            concrete_search_cache
+              .insert(key, (concrete_pe, searcher, search_len));
+            search_len
+          };
+        family_matches.entry(family).or_default().push((
+          op.clone(),
+          op_name.clone(),
+          search_len,
+        ));
+      }
+    }
+
+    let search_counts = family_matches
+      .values()
+      .flat_map(|ops| {
+        ops
+          .iter()
+          .map(|(_, op_name, search_len)| (op_name.clone(), *search_len))
+      })
+      .collect::<HashMap<_, _>>();
+    let mut family_breakdown = family_matches
+      .iter()
+      .map(|(family, ops)| {
+        let mut op_names = ops
+          .iter()
+          .map(|(_, op_name, search_len)| {
+            format!("{op_name}:matches={search_len}")
+          })
+          .collect::<Vec<_>>();
+        op_names.sort();
+        format!("{family}={}", op_names.join("|"))
+      })
+      .collect::<Vec<_>>();
+    for (family, ops) in family_ops.iter() {
+      if candidate_families.contains(family) {
+        continue;
+      }
+      let mut op_names = ops
+        .iter()
+        .map(|(_, op_name)| {
+          let search_len = search_counts.get(op_name);
+          match search_len {
+            Some(search_len) => format!("{op_name}:matches={search_len}"),
+            None => format!("{op_name}:not_searched"),
+          }
+        })
+        .collect::<Vec<_>>();
+      op_names.sort();
+      family_breakdown.push(format!("{family}={}", op_names.join("|")));
+    }
+    family_breakdown.sort();
+
+    let mut selected_family = "cross_family".to_string();
+    let selected_ops = if allow_cross_family {
+      let mut ops = family_matches
+        .into_iter()
+        .flat_map(|(_, ops)| ops)
+        .collect::<Vec<_>>();
+      ops.sort_by(|a, b| a.1.cmp(&b.1));
+      if family_breakdown.len() == 1 {
+        selected_family = family_breakdown[0]
+          .split('=')
+          .next()
+          .unwrap_or("")
+          .to_string();
+      }
+      ops
+    } else {
+      trimmed_cross_family += 1;
+      let mut families = family_matches.into_iter().collect::<Vec<_>>();
+      families.sort_by(|(family_a, ops_a), (family_b, ops_b)| {
+        let matches_a = ops_a
+          .iter()
+          .map(|(_, _, search_len)| search_len)
+          .sum::<usize>();
+        let matches_b = ops_b
+          .iter()
+          .map(|(_, _, search_len)| search_len)
+          .sum::<usize>();
+        matches_b
+          .cmp(&matches_a)
+          .then_with(|| ops_b.len().cmp(&ops_a.len()))
+          .then_with(|| family_a.cmp(family_b))
+      });
+      let Some((family, mut ops)) = families
+        .into_iter()
+        .filter(|(_, ops)| ops.len() >= 2)
+        .next()
+      else {
+        skipped_too_few_ops += 1;
+        println!(
+          "        • meta lib {} skipped: cross-family trim leaves no family with >=2 ops ({})",
+          msg.lib_id,
+          family_breakdown.join(", ")
+        );
+        continue;
+      };
+      selected_family = family.to_string();
+      ops.sort_by(|a, b| a.1.cmp(&b.1));
+      println!(
+        "        • meta lib {} trimmed cross-family pack to family {} from {}",
+        msg.lib_id,
+        selected_family,
+        family_breakdown.join(", ")
+      );
+      ops
+    };
+
+    if selected_ops.len() < 2 {
+      skipped_too_few_ops += 1;
+      println!(
+        "        • meta lib {} skipped: {} mask op after family selection",
+        msg.lib_id,
+        selected_ops.len()
+      );
+      continue;
+    }
+    if selected_ops.len() > config.op_pack_config.max_operation {
+      skipped_too_many_ops += 1;
+      println!(
+        "        • meta lib {} skipped: {} mask ops > max_operation {}",
+        msg.lib_id,
+        selected_ops.len(),
+        config.op_pack_config.max_operation
+      );
       continue; // 如果操作符的个数超过了限制，就直接跳过
     }
     // 打印lib
     // println!("Processing lib: {}", Pattern::from(msg.searcher_pe.clone()));
     // 否则新建一个OpPack节点和一个OpSelect节点
     let mut pack_bbs = Vec::new();
-    for op in &mask_results {
+    for (op, _, _) in &selected_ops {
       pack_bbs.extend(op.get_bbs_info());
     }
-    let op_pack = Op::make_op_pack(
-      mask_results.iter().map(|x| x.to_string()).collect(),
-      pack_bbs,
-    );
-    // 将新的partial_expr转化成applier
-    let mut new_applier: Pattern<_> =
-      add_op_pack(msg.applier_pe.clone(), op_pack.clone()).into();
+    let mask_ops = selected_ops
+      .iter()
+      .map(|(_, op_name, _)| op_name.clone())
+      .collect::<Vec<_>>();
+    let op_pack = Op::make_op_pack(mask_ops.clone(), pack_bbs);
+    // 将新的partial_expr转化成applier。这里的 idx 只用于给 lib body 一个
+    // 代表性形状；每条 concrete rewrite 会在下面生成自己的 op_select[idx]。
+    let mut default_applier: Pattern<_> =
+      add_op_pack(msg.applier_pe.clone(), op_pack.clone(), 0).into();
     let new_searcher: Pattern<_> =
-      add_op_pack(msg.searcher_pe.clone(), op_pack.clone()).into();
+      add_op_pack(msg.searcher_pe.clone(), op_pack.clone(), 0).into();
     // println!("new_applier: {}", new_applier);
     // Calculate the gain and cost of the new applier
     let ast = &new_searcher.ast;
@@ -849,12 +1124,19 @@ where
     );
     expr_perf_infer(&mut rec_expr);
     let (lat_cpu, lat_acc, area) = scheduler.asap_schedule(&rec_expr);
-    // 如果latency_gain为0，直接跳过
-    // if latency_gain == 0 {
-    //   // println!("Latency gain is zero for lib_id: {}, skipping",
-    // msg.lib_id);   continue; // 如果延迟增益为0，就跳过
-    // }
-    for node in new_applier.ast.iter_mut() {
+    if area == 0 || lat_acc >= lat_cpu {
+      skipped_nonbeneficial += 1;
+      println!(
+        "        • meta lib {} skipped: non-beneficial schedule lat_cpu={}, lat_acc={}, area={} ({})",
+        msg.lib_id,
+        lat_cpu,
+        lat_acc,
+        area,
+        family_breakdown.join(", ")
+      );
+      continue;
+    }
+    for node in default_applier.ast.iter_mut() {
       match node {
         egg::ENodeOrVar::ENode(ast_node) => {
           if let Some(BindingExpr::Lib(id, _, _, _, _, _)) =
@@ -867,9 +1149,44 @@ where
         egg::ENodeOrVar::Var(_) => {}
       };
     }
-    for (id, op) in mask_results.iter().enumerate() {
-      let searcher: Pattern<_> =
-        fill_specific_op(msg.searcher_pe.clone(), op.clone()).into();
+    let mut meta_search_len = 0;
+    let mut concrete_rewrites = Vec::new();
+    for (id, (op, _, search_len)) in selected_ops.iter().enumerate() {
+      let key = (msg.searcher_pe.clone(), op.clone());
+      let (concrete_pe, searcher, cached_search_len) =
+        if let Some((concrete_pe, searcher, search_len)) =
+          concrete_search_cache.get(&key)
+        {
+          concrete_search_cache_hits += 1;
+          (concrete_pe.clone(), searcher.clone(), *search_len)
+        } else {
+          concrete_search_cache_misses += 1;
+          let concrete_pe =
+            fill_specific_op(msg.searcher_pe.clone(), op.clone());
+          let searcher: Pattern<_> = concrete_pe.clone().into();
+          let search_len = searcher.search(&egraph).len();
+          concrete_search_cache
+            .insert(key, (concrete_pe.clone(), searcher.clone(), search_len));
+          (concrete_pe, searcher, search_len)
+        };
+      debug_assert_eq!(*search_len, cached_search_len);
+      meta_search_len += search_len;
+      concrete_rewrites.push(format!("{}:matches={}", op, search_len));
+      let mut new_applier: Pattern<_> =
+        add_op_pack(msg.applier_pe.clone(), op_pack.clone(), id).into();
+      for node in new_applier.ast.iter_mut() {
+        match node {
+          egg::ENodeOrVar::ENode(ast_node) => {
+            if let Some(BindingExpr::Lib(id, _, _, _, _, _)) =
+              ast_node.as_binding_expr()
+            {
+              let op = ast_node.operation_mut();
+              *op = Op::make_lib(id.into(), lat_cpu, lat_acc, area);
+            }
+          }
+          egg::ENodeOrVar::Var(_) => {}
+        };
+      }
       let rewrite: Rewrite<AstNode<Op>, ISAXAnalysis<Op, T>> = Rewrite::new(
         format!("{}_{}", msg.rewrite.name, id),
         searcher,
@@ -883,14 +1200,60 @@ where
       searchers
         .entry(msg.lib_id.clone())
         .or_default()
-        .push(fill_specific_op(msg.searcher_pe.clone(), op.clone()));
+        .push(concrete_pe);
     }
-    appliers.insert(msg.lib_id.clone(), new_applier);
+    appliers.insert(msg.lib_id.clone(), default_applier.clone());
+    // Meta AU expands one abstract op_mask into multiple concrete rewrites. The
+    // aggregate match count is useful for diagnostics, but using it as the
+    // lib's required reuse count over-penalizes meta libs in the extractor.
+    lib_search_results.insert(msg.lib_id, 1);
+    meta_libs.insert(msg.lib_id);
+    generated_meta_libs += 1;
+    generated_meta_rewrites += selected_ops.len();
+    concrete_rewrites.sort();
+    println!(
+      "        • meta lib {} generated: mask_ops={}, rewrites={}, matches={}, lat_cpu={}, lat_acc={}, area={}",
+      msg.lib_id,
+      mask_ops.join("|"),
+      selected_ops.len(),
+      meta_search_len,
+      lat_cpu,
+      lat_acc,
+      area
+    );
+    println!(
+      "          pattern: {}",
+      Pattern::<AstNode<Op>>::from(msg.searcher_pe.clone())
+    );
+    println!("          applier: {}", default_applier);
+    println!(
+      "          area_families: {}; selected_family={}",
+      family_breakdown.join(", "),
+      selected_family
+    );
+    println!(
+      "          concrete_rewrites: {}",
+      concrete_rewrites.join(", ")
+    );
   }
+  println!(
+    "        • meta AU expand summary: generated_libs={}, generated_rewrites={}, skipped_no_mask={}, skipped_too_many_ops={}, skipped_too_few_ops={}, skipped_nonbeneficial={}, trimmed_cross_family={}, concrete_search_cache_hits={}, concrete_search_cache_misses={}",
+    generated_meta_libs,
+    generated_meta_rewrites,
+    skipped_no_mask,
+    skipped_too_many_ops,
+    skipped_too_few_ops,
+    skipped_nonbeneficial,
+    trimmed_cross_family,
+    concrete_search_cache_hits,
+    concrete_search_cache_misses
+  );
   ExpandMessage {
     rewrites_conditions,
     searchers,
     appliers,
+    lib_search_results,
+    meta_libs,
   }
   //   let var_results: HashMap<Var, HashSet<Id>> =
   // searcher.var_results.clone();   //
