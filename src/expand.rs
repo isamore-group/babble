@@ -779,7 +779,11 @@ where
   let meta_au_lib_config = LiblearnConfig::new(
     LiblearnCost::Size,
     AUMergeMod::Boundary,
-    EnumMode::All,
+    if config.op_pack_config.prune_eclass_pair {
+      EnumMode::PruningGold
+    } else {
+      EnumMode::All
+    },
     // 后面的配置直接使用config.liblearn中的配置
     config.liblearn_config.sample_num,
     config.liblearn_config.hamming_threshold,

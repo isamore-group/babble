@@ -47,6 +47,7 @@ use lexpr::print;
 use log::{debug, info};
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::ops;
 use std::sync::mpsc;
@@ -57,7 +58,7 @@ use std::{
   num::ParseIntError,
   str::FromStr,
 };
-use std::{hash::Hash, time::Instant, vec};
+use std::{hash::Hash, hash::Hasher, time::Instant, vec};
 use thiserror::Error;
 
 use crate::au_merge::AUMerger;
@@ -858,6 +859,7 @@ where
   fn calculate_all_hash(
     egraph: &EGraph<AstNode<Op>, ISAXAnalysis<Op, Type>>,
     ids: Vec<Id>,
+    use_meta_au_relaxed_hash: bool,
   ) -> HashMap<Id, StructuralHash> {
     let mut visited = HashSet::new();
     let mut ecls_hash = HashMap::new();
@@ -867,6 +869,7 @@ where
         &mut ecls_hash,
         id,
         &mut visited,
+        use_meta_au_relaxed_hash,
       );
     }
     // 如果还存在没有访问的eclass，则计算它们的哈希
@@ -877,6 +880,7 @@ where
           &mut ecls_hash,
           eclass.id,
           &mut visited,
+          use_meta_au_relaxed_hash,
         );
       }
     }
@@ -888,6 +892,7 @@ where
     ecls_hash: &mut HashMap<Id, StructuralHash>,
     id: Id,
     visited: &mut HashSet<Id>,
+    use_meta_au_relaxed_hash: bool,
   ) {
     if visited.contains(&id) {
       return;
@@ -902,6 +907,36 @@ where
       |node: &AstNode<Op>,
        ecls_hash: &mut HashMap<Id, StructuralHash>|
        -> StructuralHash {
+        let compute_hash_level_for_node = |node: &AstNode<Op>, child_hashes: &[u64]| {
+          if !use_meta_au_relaxed_hash {
+            return compute_hash_level(node, child_hashes);
+          }
+          let mut hasher = DefaultHasher::new();
+          if let Some(key) = node.operation().meta_au_hash_key() {
+            key.hash(&mut hasher);
+          } else {
+            node.operation().to_shielding_op().hash(&mut hasher);
+          }
+          for &h in child_hashes {
+            h.hash(&mut hasher);
+          }
+          (hasher.finish() % 64) as usize
+        };
+        let compute_full_hash_for_node = |node: &AstNode<Op>, child_hashes: &[u64]| {
+          if !use_meta_au_relaxed_hash {
+            return compute_full_hash(node, child_hashes);
+          }
+          let mut hasher = DefaultHasher::new();
+          if let Some(key) = node.operation().meta_au_hash_key() {
+            key.hash(&mut hasher);
+          } else {
+            node.operation().to_shielding_op().hash(&mut hasher);
+          }
+          for &h in child_hashes {
+            hasher.write_u64(h);
+          }
+          hasher.finish()
+        };
         let mut children = node.children().to_vec();
         // 如果有子节点和当前节点相同，则不需要计算哈希
         children.retain(|&child| child != id);
@@ -925,7 +960,7 @@ where
           })
           .collect::<Vec<_>>();
         // 计算当前节点哈希
-        let current_level = compute_hash_level(node, &child_hashes);
+        let current_level = compute_hash_level_for_node(node, &child_hashes);
         // 合并子树层级
         let mut subtree_levels = bitvec![u64, Lsb0; 0; 64];
         subtree_levels.set(current_level, true);
@@ -937,7 +972,7 @@ where
           subtree_levels |= child_level;
         }
         // 计算完整哈希
-        let extract_hash = compute_full_hash(node, &child_hashes);
+        let extract_hash = compute_full_hash_for_node(node, &child_hashes);
 
         let hash = StructuralHash {
           cls_hash: extract_hash,
@@ -953,7 +988,13 @@ where
           // Avoid infinite recursion
           continue;
         }
-        Self::calculate_all_hash_with_visited(egraph, ecls_hash, *arg, visited);
+        Self::calculate_all_hash_with_visited(
+          egraph,
+          ecls_hash,
+          *arg,
+          visited,
+          use_meta_au_relaxed_hash,
+        );
       }
       struc_hashes.push(make_new_structural_hash(node, ecls_hash));
     }
@@ -991,7 +1032,8 @@ where
     <AstNode<Op> as Language>::Discriminant: Sync + Send,
   {
     // 计算所有eclass的哈希
-    let ecls_hash = Self::calculate_all_hash(egraph, roots);
+    let ecls_hash =
+      Self::calculate_all_hash(egraph, roots, meta_au_config.enable_meta_au);
     for ecls in egraph.classes() {
       // 看看有没有eclass没有被计算哈希
       if !ecls_hash.contains_key(&ecls.id) {
@@ -1324,6 +1366,10 @@ where
           // println!("matched patterns: {:?}",
           // matched_patterns.get(pattern));
         }
+        println!(
+          "         candidate eclass pairs after pruning/filtering: {}",
+          eclass_pairs.len()
+        );
         let enum_start = Instant::now();
 
         if meta_au_config.enable_meta_au {

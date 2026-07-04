@@ -166,6 +166,15 @@ pub trait OperationInfo {
       && !self.is_mem()
       && !other.is_mem()
   }
+  /// Returns a coarser operator identity for Meta AU structural hashing.
+  ///
+  /// The default keeps the original operator identity by returning `None`.
+  /// Meta AU implementations may override this to normalize compatible
+  /// operators into a shared family-level key so that pair pruning does not
+  /// accidentally discard cross-operator matches such as `add/sub`.
+  fn meta_au_hash_key(&self) -> Option<String> {
+    None
+  }
   fn op_execution_count(&self, bb_query: &BBQuery) -> f64;
   // 在lib_learn的时候，有时候需要删除某些信息，将操作符generic化
   fn genericize(&mut self);
